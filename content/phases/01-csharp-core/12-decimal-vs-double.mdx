@@ -1,0 +1,247 @@
+---
+title: "decimal vs double — Financial Calculations"
+slug: "decimal-vs-double"
+order: 12
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["decimal", "double", "float", "floating point", "precision", "financial", "IEEE 754", "rounding"]
+summary: "Using double for money is a career-defining mistake — here's exactly why floating point fails and what decimal guarantees."
+docsLinks:
+  - label: "decimal type (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types"
+  - label: "Floating-point numeric types"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types"
+  - label: "Math.Round and rounding modes"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.math.round"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Floating Point Surprise
+
+```csharp
+double a = 0.1;
+double b = 0.2;
+Console.WriteLine(a + b);        // 0.30000000000000004 — NOT 0.3!
+Console.WriteLine(a + b == 0.3); // false
+
+decimal c = 0.1m;
+decimal d = 0.2m;
+Console.WriteLine(c + d);        // 0.3 — exact
+Console.WriteLine(c + d == 0.3m); // true
+```
+
+This isn't a bug in C# or .NET. It's how floating point arithmetic works — and you need to understand exactly why.
+
+---
+
+## Why double Loses Precision: IEEE 754
+
+`double` and `float` use **IEEE 754 binary floating point** format. Numbers are stored as `± mantissa × 2^exponent` in base 2. The problem: most decimal fractions cannot be represented exactly in binary:
+
+- `0.1` in binary = `0.0001100110011...` (repeating) — like `1/3` in decimal
+- `0.2` in binary = `0.0011001100110...` (repeating)
+- `0.1 + 0.2` in binary accumulates the rounding error → `0.30000000000000004`
+
+```csharp
+// Show the exact representation
+Console.WriteLine(0.1.ToString("R")); // 0.1 (rounded display)
+Console.WriteLine(0.1.ToString("G17")); // 0.10000000000000001 (full precision)
+Console.WriteLine(0.2.ToString("G17")); // 0.20000000000000001
+
+// Addition error accumulates
+double sum = 0.0;
+for (int i = 0; i < 10; i++) sum += 0.1;
+Console.WriteLine(sum);           // 0.9999999999999999 — NOT 1.0
+Console.WriteLine(sum == 1.0);    // false
+
+// NEVER compare doubles with == for computed values
+// Always use a tolerance (epsilon comparison)
+const double Epsilon = 1e-10;
+Console.WriteLine(Math.Abs(sum - 1.0) < Epsilon); // true — correct way
+```
+
+---
+
+## Why decimal Is Exact for Monetary Values
+
+`decimal` (128-bit) stores numbers as `± integer × 10^(-exponent)` — base 10. Because human monetary systems are base 10, decimal values like `0.1`, `0.99`, `1.234` are stored exactly:
+
+```csharp
+// decimal: exact for up to 28-29 significant digits in base 10
+decimal price = 19.99m;
+decimal tax = 0.085m;        // 8.5%
+decimal taxAmount = price * tax;
+Console.WriteLine(taxAmount); // 1.69915 — exact
+
+decimal rounded = Math.Round(taxAmount, 2, MidpointRounding.AwayFromZero);
+Console.WriteLine(rounded);  // 1.70 — exactly
+
+// Banker's rounding vs AwayFromZero (financial vs statistical)
+Console.WriteLine(Math.Round(2.5m, 0));                                      // 2 (banker's rounding — rounds to even)
+Console.WriteLine(Math.Round(2.5m, 0, MidpointRounding.AwayFromZero));       // 3
+Console.WriteLine(Math.Round(3.5m, 0, MidpointRounding.AwayFromZero));       // 4
+Console.WriteLine(Math.Round(3.5m, 0, MidpointRounding.ToEven));             // 4 (rounds to even)
+```
+
+---
+
+<Callout type="critical">
+**NEVER Use double or float for Financial Calculations**
+
+Using `double` for money is a production financial error that can cost real money:
+
+```csharp
+// Scenario: invoice total calculation
+var lineItems = new[] { 1.10, 2.20, 3.30 }; // doubles
+double wrongTotal = lineItems.Sum(); // 6.6000000000000005 — wrong!
+
+// Display rounded: shows "6.60" — appears correct
+Console.WriteLine(wrongTotal.ToString("F2")); // "6.60" — MASKS the error
+
+// But further calculations compound the error:
+double tax = wrongTotal * 0.20;
+Console.WriteLine(tax.ToString("F2")); // might show "1.32" but internally "1.3200000000000001"
+
+// After thousands of transactions, these errors accumulate
+// Real-world consequence: your totals don't balance, audits fail
+
+// CORRECT — use decimal throughout
+var items = new[] { 1.10m, 2.20m, 3.30m };
+decimal correctTotal = items.Sum(); // 6.60 — exact
+decimal correctTax = correctTotal * 0.20m; // 1.3200 — exact
+```
+
+**The rule**: if the value represents money, a measurement that will be reported to humans with fixed decimal places, or any quantity where exact decimal representation matters — use `decimal`.
+</Callout>
+
+---
+
+## Code Challenge: Floating Point Surprise
+
+<CodeChallenge
+  id="01-csharp-core/decimal-vs-double/challenge-1"
+  title="What Does This Actually Print?"
+  description="What does this code output on a standard .NET 8 runtime?"
+  code={`double x = 0.1 + 0.1 + 0.1;
+decimal y = 0.1m + 0.1m + 0.1m;
+
+Console.WriteLine(x == 0.3);  // Line 1
+Console.WriteLine(y == 0.3m); // Line 2
+Console.WriteLine(x);          // Line 3`}
+  options={[
+    "Line 1: true, Line 2: true, Line 3: 0.3",
+    "Line 1: false, Line 2: true, Line 3: 0.30000000000000004",
+    "Line 1: false, Line 2: false, Line 3: 0.3",
+    "Line 1: true, Line 2: true, Line 3: 0.30000000000000004"
+  ]}
+  correctAnswer={1}
+  explanation="Line 1: double arithmetic is binary floating point. 0.1 cannot be represented exactly in binary — adding three of them yields 0.30000000000000004, not 0.3. So == 0.3 is false. Line 2: decimal arithmetic is base-10 exact. 0.1m + 0.1m + 0.1m = 0.3m exactly. So == 0.3m is true. Line 3: Console.WriteLine with a double uses the default 'G' format which shows enough digits to uniquely identify the value — yields 0.30000000000000004."
+/>
+
+---
+
+## Comparison Table: Numeric Types
+
+<ComparisonTable
+  headers={["Dimension", "float (Single)", "double", "decimal"]}
+  rows={[
+    ["Size", "32-bit (4 bytes)", "64-bit (8 bytes)", "128-bit (16 bytes)"],
+    ["Precision", "~7 significant digits", "~15-17 significant digits", "28-29 significant decimal digits"],
+    ["Base", "Base 2 (IEEE 754)", "Base 2 (IEEE 754)", "Base 10"],
+    ["Range", "±1.5e-45 to ±3.4e38", "±5e-324 to ±1.7e308", "±1e-28 to ±7.9e28"],
+    ["Performance", "Fastest — hardware FPU", "Fast — hardware FPU", "Slowest — software emulation"],
+    ["Use for", "Graphics, game physics (speed over precision)", "Scientific calculations, statistics", "Money, financial, fixed-decimal quantities"],
+    ["Exact for 0.1?", "No", "No", "Yes"],
+    ["Special values", "NaN, +Infinity, -Infinity", "NaN, +Infinity, -Infinity", "No special values (overflow throws)"],
+    ["Suffix literal", "1.5f", "1.5 or 1.5d", "1.5m"],
+  ]}
+/>
+
+---
+
+## Rounding Modes — Know the Difference
+
+```csharp
+// MidpointRounding.ToEven (Banker's rounding) — DEFAULT
+// Rounds to the nearest even number at the midpoint
+// Reduces systematic bias in large datasets (statistics, scientific)
+Console.WriteLine(Math.Round(0.5m, MidpointRounding.ToEven));  // 0 (even)
+Console.WriteLine(Math.Round(1.5m, MidpointRounding.ToEven));  // 2 (even)
+Console.WriteLine(Math.Round(2.5m, MidpointRounding.ToEven));  // 2 (even)
+Console.WriteLine(Math.Round(3.5m, MidpointRounding.ToEven));  // 4 (even)
+
+// MidpointRounding.AwayFromZero — what most humans expect
+// Always rounds up at the midpoint (for positive numbers)
+Console.WriteLine(Math.Round(0.5m, MidpointRounding.AwayFromZero)); // 1
+Console.WriteLine(Math.Round(1.5m, MidpointRounding.AwayFromZero)); // 2
+Console.WriteLine(Math.Round(2.5m, MidpointRounding.AwayFromZero)); // 3
+Console.WriteLine(Math.Round(3.5m, MidpointRounding.AwayFromZero)); // 4
+
+// For financial use: check your accounting rules.
+// Many financial systems use AwayFromZero.
+// GAAP and banking may specify different rounding rules for different scenarios.
+```
+
+---
+
+## Quiz: decimal Overflow
+
+<Quiz
+  id="01-csharp-core/decimal-vs-double/challenge-2"
+  question="What happens when a decimal calculation overflows its maximum value (approximately 7.9 × 10^28)?"
+  options={[
+    "It silently wraps around to a negative value like integer overflow",
+    "It produces decimal.MaxValue with no indication of overflow",
+    "It throws OverflowException",
+    "It produces NaN (Not a Number) similar to double overflow"
+  ]}
+  correctAnswer={2}
+  explanation="Unlike double (which produces +Infinity or -Infinity on overflow), decimal throws OverflowException when the result exceeds its range. decimal also has no NaN or Infinity concepts — it either produces an exact value or throws. This is one reason decimal is safer for financial code: overflow is always visible, never silent. double overflow to Infinity silently continues computation with infinite values, which can propagate undetected through a calculation chain."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: When to Use double Legitimately**
+
+`double` is not wrong — it's wrong *for money*. Use it correctly:
+
+1. **Scientific and engineering calculations**: physics simulations, signal processing, machine learning (neural network weights are always float/double)
+2. **Graphics and games**: position, rotation, color — hardware FPU is optimized for IEEE 754
+3. **Performance-critical statistics**: when precision loss is negligible compared to measurement uncertainty
+4. **Intermediate calculations**: when only the final rounded result matters and you control rounding
+
+```csharp
+// Legitimate double use: physics simulation
+double gravity = 9.81; // m/s²
+double time = 1.5;     // seconds
+double distance = 0.5 * gravity * time * time; // 11.036... m — precision is fine here
+
+// Machine learning — float (32-bit) is preferred for GPU efficiency
+float[] weights = new float[1024]; // neural network layer
+
+// Statistical aggregation where exact cents don't matter
+double averageAge = people.Average(p => p.Age); // fine — ages are integers
+
+// NEVER mix: don't take a decimal financial value, convert to double for math,
+// then convert back to decimal — you introduce binary floating point error
+decimal price = 19.99m;
+double doublePirce = (double)price;   // WRONG pattern — introduces error
+decimal wrong = (decimal)(doublePirce * 1.085); // compounding error!
+
+// CORRECT: stay in decimal throughout
+decimal correct = price * 1.085m;
+```
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Floating-point numeric types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types" },
+    { label: "Math.Round — MidpointRounding modes", url: "https://learn.microsoft.com/en-us/dotnet/api/system.math.round" },
+    { label: "Decimal struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.decimal" },
+  ]}
+/>

@@ -1,0 +1,234 @@
+---
+title: "var, dynamic, object — Three Different Things"
+slug: "var-dynamic-object"
+order: 7
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["var", "dynamic", "object", "type inference", "DLR", "static typing", "late binding"]
+summary: "var is static typing with inference, dynamic is runtime-resolved, object is the root type — mixing them up reveals a shallow understanding of the type system."
+docsLinks:
+  - label: "var (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/declarations#implicitly-typed-local-variables"
+  - label: "dynamic type (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/reference-types#the-dynamic-type"
+  - label: "Using type dynamic"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/interop/using-type-dynamic"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Three Contenders
+
+```csharp
+var x = 42;          // int — inferred at compile time. x IS an int.
+dynamic d = 42;      // dynamic — resolved at runtime. d's operations resolved by DLR.
+object o = 42;       // object — boxing. o is an int boxed to System.Object.
+```
+
+They look similar in declaration but behave completely differently. Let's break down each.
+
+---
+
+## var: Compile-Time Type Inference
+
+`var` is **not** a type. It's an instruction to the compiler: "infer the type from the right-hand side." After inference, the variable has a **concrete, static type** — identical to writing the type name explicitly.
+
+```csharp
+var name = "Alice";          // string
+var count = 42;              // int
+var list = new List<int>();  // List<int>
+var dict = new Dictionary<string, List<int>>(); // Dictionary<string, List<int>>
+
+// var and explicit type are IDENTICAL at IL level:
+string name2 = "Alice";     // same IL as: var name = "Alice"
+
+// var is mandatory for anonymous types
+var anon = new { FirstName = "Alice", Age = 30 };
+Console.WriteLine(anon.FirstName); // "Alice"
+// You CANNOT write: AnonymousType a = new { ... }; — the type has no name
+
+// LINQ often produces anonymous types — var is required
+var results = from c in customers
+              select new { c.Name, c.Email }; // anonymous type
+```
+
+`var` does NOT work for:
+- Method parameters (`void Process(var x)` — illegal)
+- Fields (`private var count;` — illegal)
+- Properties (`public var Name` — illegal)
+- Multi-declarations (`var x = 1, y = 2;` — illegal, ambiguous types)
+
+---
+
+## dynamic: Runtime Resolution via the DLR
+
+`dynamic` bypasses compile-time type checking. All operations on a `dynamic` value (method calls, property access, operators) are resolved **at runtime** by the Dynamic Language Runtime (DLR).
+
+```csharp
+dynamic d = "hello";
+Console.WriteLine(d.Length);     // 5 — resolved at runtime (string.Length)
+
+d = 42;
+Console.WriteLine(d + 10);       // 52 — runtime resolves int + int
+
+d = new List<int> { 1, 2, 3 };
+Console.WriteLine(d.Count);      // 3 — runtime resolves List<int>.Count
+
+// Errors happen at RUNTIME, not compile time
+dynamic bad = "hello";
+bad.NonExistentMethod(); // RuntimeBinderException — no compile-time error!
+```
+
+### Where dynamic Is Legitimately Useful
+
+```csharp
+// 1. COM interop (Word/Excel automation)
+dynamic wordApp = Activator.CreateInstance(Type.GetTypeFromProgID("Word.Application")!);
+wordApp.Visible = true;
+dynamic doc = wordApp.Documents.Add();
+doc.Content.Text = "Hello from C#";
+// Without dynamic, COM interop requires explicit casting and reflection
+
+// 2. Consuming JSON/dynamic data (before JsonNode was added)
+dynamic json = JsonConvert.DeserializeObject(jsonString)!;
+string name = json.user.name; // no type, but convenient for scripting
+
+// 3. ExpandoObject — dynamic property bag
+dynamic expando = new ExpandoObject();
+expando.Name = "Alice";
+expando.Age = 30;
+Console.WriteLine(expando.Name); // "Alice"
+
+// 4. Duck typing for cross-framework scenarios
+dynamic obj = GetSomeThirdPartyObject();
+obj.Execute(); // if it has Execute(), great. If not — runtime exception.
+```
+
+---
+
+## object: The Root Type
+
+`object` is `System.Object` — the base class of all types in .NET. Every class, struct (when boxed), interface, and delegate ultimately derives from it.
+
+```csharp
+object o = 42;       // boxing — int copied to heap
+object s = "hello";  // no boxing — string is already a reference type
+object arr = new int[3]; // no boxing — array is reference type
+
+// You must cast to use the actual type
+int i = (int)o;     // unbox — type-checked at runtime
+string str = (string)s; // downcast — type-checked at runtime
+
+// Safe cast with 'as' (reference types only)
+string? safe = s as string; // null if wrong type, not an exception
+int? safeInt = o as int?;   // works with nullable for value types
+
+// Type checking
+Console.WriteLine(o.GetType()); // System.Int32
+Console.WriteLine(o is int);    // True
+```
+
+---
+
+## MythBuster: var is the Same as dynamic
+
+<MythBuster
+  myth="var is dynamic typing — using var makes your code dynamically typed like Python or JavaScript."
+  reality="var is statically typed. The compiler infers the type at compile time and the variable has that exact type forever. You get full IntelliSense, compile-time errors for wrong member access, and zero runtime overhead. dynamic is a fundamentally different mechanism — it defers ALL type checking to runtime via the DLR. var and dynamic have completely different IL representations."
+  example={`var x = "hello";
+x = 42;          // CS0029: Cannot implicitly convert type 'int' to 'string'
+                 // var is NOT dynamic — x is a 'string', period.
+
+dynamic d = "hello";
+d = 42;          // OK — dynamic allows reassignment to different types
+d.Whatever();    // Compiles fine — RuntimeBinderException at runtime`}
+/>
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "var", "dynamic", "object"]}
+  rows={[
+    ["Type resolution", "Compile time (inferred)", "Runtime (DLR)", "Compile time (System.Object)"],
+    ["Type safety", "Fully type-safe — same as explicit type", "None — all operations deferred to runtime", "Type-safe but requires explicit casts to use"],
+    ["Performance", "Zero overhead — identical to explicit type", "Overhead — DLR caching, reflection invocation", "Boxing cost for value types; cast cost for use"],
+    ["IntelliSense support", "Full — IDE knows the concrete type", "None — IDE cannot predict runtime type", "Limited — only System.Object members visible"],
+    ["Compile-time errors", "Yes — member access validated at compile time", "No — errors are runtime RuntimeBinderException", "Partially — only Object members compile-checked"],
+    ["Cross-type reassignment", "No — type is fixed after inference", "Yes — can hold any type", "Yes — all types assignable to object"],
+    ["Primary use case", "Reduce verbosity, anonymous types, LINQ", "COM interop, dynamic JSON, DLR languages", "Heterogeneous collections (legacy), base class APIs"],
+  ]}
+/>
+
+---
+
+## Code Challenge: What Happens at Compile Time?
+
+<CodeChallenge
+  id="01-csharp-core/var-dynamic-object/challenge-1"
+  title="Compile or Runtime Error?"
+  description="Which of these produces a COMPILE-TIME error (not a runtime error)?"
+  code={`// Option A:
+var a = "hello";
+Console.WriteLine(a.NonExistentProperty);
+
+// Option B:
+dynamic b = "hello";
+Console.WriteLine(b.NonExistentProperty);
+
+// Option C:
+object c = "hello";
+Console.WriteLine(c.NonExistentProperty);`}
+  options={[
+    "Only Option A produces a compile-time error",
+    "Options A and C produce compile-time errors; B fails at runtime",
+    "All three fail at compile time",
+    "Only Option B fails, and it's a compile-time error"
+  ]}
+  correctAnswer={1}
+  explanation="Option A: var infers 'string'. 'string' has no 'NonExistentProperty'. Compile-time CS1061 error. Option B: dynamic defers all resolution to runtime. No compile-time error — RuntimeBinderException at runtime. Option C: object (System.Object) has no 'NonExistentProperty'. Compile-time CS1061 error. So A and C fail at compile time, B fails at runtime."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The DLR Caching Model and dynamic Performance**
+
+`dynamic` is not as slow as pure reflection — the DLR uses **call site caching** to amortize the cost:
+
+1. First call: DLR resolves the operation (expensive — uses reflection internally)
+2. Subsequent calls with the same runtime type: DLR hits the cached binder (much faster — but still slower than static dispatch)
+
+In practice, `dynamic` in a tight loop is 10-100x slower than static dispatch. For one-off scenarios (initialization, COM, scripting), this is acceptable.
+
+```csharp
+// Benchmark insight: DLR caches per call site per runtime type
+dynamic d = new Foo();
+d.Bar(); // Slow first call (DLR resolution)
+d.Bar(); // Faster (cached for Foo.Bar at this call site)
+d = new Bar(); // New type at same call site — cache miss, re-resolves
+
+// Better alternatives in modern .NET:
+// 1. Source generators (compile-time code generation)
+// 2. Expression trees (compile once, execute fast)
+// 3. Interfaces/generics (static dispatch, no DLR)
+
+// If you find yourself using 'dynamic' for performance-sensitive code,
+// it's a design smell — reach for generic constraints or source generators instead.
+```
+
+In .NET 8, the C# 12 `interceptors` feature and source generators (like System.Text.Json's JsonSerializerContext) eliminate many traditional uses of `dynamic` with zero runtime overhead. If you're reaching for `dynamic` in new code, ask whether a source generator or generic interface solves the problem better.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Implicitly typed local variables (var)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/declarations#implicitly-typed-local-variables" },
+    { label: "dynamic type", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/reference-types#the-dynamic-type" },
+    { label: "Using type dynamic (DLR)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/interop/using-type-dynamic" },
+    { label: "object type (System.Object)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/reference-types#the-object-type" },
+  ]}
+/>

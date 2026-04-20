@@ -1,0 +1,264 @@
+---
+title: "DateTime vs DateTimeOffset vs DateOnly"
+slug: "datetime"
+order: 11
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["DateTime", "DateTimeOffset", "DateOnly", "TimeOnly", "timezone", "UTC", "time handling"]
+summary: "Getting time wrong in distributed systems is a production incident waiting to happen — these three types exist for distinct reasons."
+docsLinks:
+  - label: "DateTime struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.datetime"
+  - label: "DateTimeOffset struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.datetimeoffset"
+  - label: "DateOnly and TimeOnly structs"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.dateonly"
+  - label: "Time zones in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/datetime/time-zone-overview"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Problem With Getting Time Wrong
+
+In distributed systems, time bugs cause:
+- Orders logged with wrong timestamps across regions
+- Schedules that fire at the wrong hour after DST changes
+- Audit trails that are unsortable
+- Security tokens that expire at the wrong moment
+- Database queries that miss data due to timezone mismatch
+
+Choosing the right type is a core discipline, not a detail.
+
+---
+
+## DateTime: The Original (and Most Dangerous)
+
+`DateTime` stores a date and time as a **tick count** (100-nanosecond intervals since January 1, 0001). It also stores a `Kind` property with three values:
+
+- `DateTimeKind.Unspecified` — no timezone info (default from parsing)
+- `DateTimeKind.Local` — represents local machine time
+- `DateTimeKind.Utc` — represents UTC time
+
+```csharp
+// Three different "kinds" — all look the same, very different semantics
+DateTime local = DateTime.Now;      // Kind = Local, uses OS timezone
+DateTime utc = DateTime.UtcNow;     // Kind = Utc — always UTC
+DateTime parsed = DateTime.Parse("2024-01-15 10:30:00"); // Kind = Unspecified!
+
+Console.WriteLine(local.Kind);   // Local
+Console.WriteLine(utc.Kind);     // Utc
+Console.WriteLine(parsed.Kind);  // Unspecified — DANGEROUS
+
+// The kind affects comparisons and conversions
+DateTime utcNoon = new DateTime(2024, 1, 15, 12, 0, 0, DateTimeKind.Utc);
+DateTime localNoon = new DateTime(2024, 1, 15, 12, 0, 0, DateTimeKind.Local);
+
+Console.WriteLine(utcNoon == localNoon); // true — DateTime ignores Kind in comparison!
+// They represent different moments in time, but DateTime says they're equal!
+```
+
+---
+
+## DateTime.Now vs DateTime.UtcNow
+
+<Callout type="warning">
+**Never Use DateTime.Now for Timestamps in Distributed Systems**
+
+`DateTime.Now` returns the current local machine time. In a cloud environment where servers may be in different regions or where the OS timezone is inconsistently configured, `DateTime.Now` produces meaningless, non-comparable timestamps:
+
+```csharp
+// WRONG: server A (US-East) and server B (EU-West) both store "local" times
+// They look the same type but represent completely different moments
+DateTime timestampA = DateTime.Now; // 2024-01-15 14:00:00 (EST = UTC-5)
+DateTime timestampB = DateTime.Now; // 2024-01-15 20:00:00 (CET = UTC+1)
+// Both stored in a database as bare DateTime — they appear to differ by 6 hours
+// but actually represent the SAME moment in time!
+
+// CORRECT for timestamps: always use UTC
+DateTime timestamp = DateTime.UtcNow;
+
+// BEST for timestamps with offset info: DateTimeOffset
+DateTimeOffset betterTimestamp = DateTimeOffset.UtcNow;
+```
+
+**The rule**: if you're storing when something happened (audit log, event timestamp, token expiry), use UTC. `DateTime.Now` should only appear in UI display code, where you want to show the user their local time.
+</Callout>
+
+---
+
+## DateTimeOffset: The Correct Tool for Timestamps
+
+`DateTimeOffset` stores a `DateTime` AND an `Offset` (the UTC offset at the time of creation). This makes it unambiguous:
+
+```csharp
+DateTimeOffset eastern = new DateTimeOffset(2024, 1, 15, 14, 0, 0, TimeSpan.FromHours(-5));
+DateTimeOffset central = new DateTimeOffset(2024, 1, 15, 13, 0, 0, TimeSpan.FromHours(-6));
+DateTimeOffset utc     = new DateTimeOffset(2024, 1, 15, 19, 0, 0, TimeSpan.Zero);
+
+// All three represent the SAME moment in time
+Console.WriteLine(eastern == central); // true — compares UTC instants
+Console.WriteLine(central == utc);     // true
+Console.WriteLine(eastern.UtcDateTime == utc.UtcDateTime); // true
+
+// Preserves the original local time AND the offset
+Console.WriteLine(eastern.ToString("o")); // 2024-01-15T14:00:00.0000000-05:00
+Console.WriteLine(eastern.UtcDateTime);   // 2024-01-15 19:00:00 UTC
+
+// DateTimeOffset.UtcNow is the preferred way to get "now"
+DateTimeOffset now = DateTimeOffset.UtcNow;
+```
+
+### Working with TimeZoneInfo
+
+```csharp
+// Convert UTC to a specific timezone — correct DST handling
+var utcTime = DateTimeOffset.UtcNow;
+var easternZone = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+DateTimeOffset easternTime = TimeZoneInfo.ConvertTime(utcTime, easternZone);
+
+Console.WriteLine(easternTime); // Correctly adjusted for EST or EDT depending on date
+
+// NodaTime library — even more correct for complex timezone scenarios
+// Install-Package NodaTime
+// using NodaTime;
+// Instant instant = SystemClock.Instance.GetCurrentInstant();
+// ZonedDateTime zoned = instant.InZone(DateTimeZoneProviders.Tzdb["America/New_York"]);
+```
+
+---
+
+## DateOnly and TimeOnly (.NET 6+)
+
+Often you genuinely need only the date or only the time, without any timezone ambiguity:
+
+```csharp
+// DateOnly — just a date, no time, no timezone
+DateOnly birthday = new DateOnly(1990, 6, 15);
+DateOnly today = DateOnly.FromDateTime(DateTime.Today);
+int daysUntilBirthday = birthday.DayOfYear - today.DayOfYear;
+
+Console.WriteLine(birthday.ToShortDateString()); // 06/15/1990 (culture-dependent)
+Console.WriteLine(birthday.ToString("yyyy-MM-dd")); // 1990-06-15
+
+// TimeOnly — just a time of day, no date, no timezone
+TimeOnly openingTime = new TimeOnly(9, 0);   // 09:00
+TimeOnly closingTime = new TimeOnly(17, 30); // 17:30
+TimeOnly now = TimeOnly.FromDateTime(DateTime.Now);
+
+bool isOpen = now >= openingTime && now <= closingTime;
+Console.WriteLine($"Store is {(isOpen ? "open" : "closed")}");
+
+// Great for recurring schedules, business hours, alarm times
+public class BusinessHours
+{
+    public DateOnly StartDate { get; init; }
+    public TimeOnly OpenTime { get; init; }
+    public TimeOnly CloseTime { get; init; }
+}
+```
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "DateTime", "DateTimeOffset", "DateOnly", "TimeOnly"]}
+  rows={[
+    ["Stores", "Date + time + Kind (Local/Utc/Unspecified)", "Date + time + UTC offset", "Date only (no time, no timezone)", "Time of day only (no date)"],
+    ["Timezone aware", "Partially — Kind is a hint, not enforced", "Yes — offset is part of the value", "No — date is universal", "No — time is universal"],
+    ["Comparison semantics", "Ignores Kind — same ticks = equal even across kinds", "UTC-normalized — compares actual moments", "Date-only comparison", "Time-of-day comparison"],
+    ["Best for", "Internal calculations where timezone is known/irrelevant", "Any stored timestamp — event logs, audit trails, APIs", "Birthdays, holidays, schedule dates", "Business hours, alarms, recurring times"],
+    ["JSON serialization", "Loses Kind info without custom converter", "Includes offset — round-trips correctly", "ISO 8601 date format", "ISO 8601 time format"],
+    ["Database mapping (EF Core)", "datetime2 — loses timezone", "datetimeoffset — preserves offset", "date column (EF Core 6+)", "time column (EF Core 6+)"],
+    ["Added in", ".NET 1.0", ".NET 1.0", ".NET 6", ".NET 6"],
+  ]}
+/>
+
+---
+
+## Code Challenge: Which Type for Which Scenario?
+
+<CodeChallenge
+  id="01-csharp-core/datetime/challenge-1"
+  title="Choose the Right Time Type"
+  description="You're building an e-commerce system. An order is placed and you need to store when it happened for audit purposes — across multiple international servers. Which type should the 'PlacedAt' property use?"
+  code={`public class Order
+{
+    public Guid Id { get; init; }
+    public string CustomerId { get; init; } = "";
+
+    // Which type for PlacedAt?
+    // A: public DateTime PlacedAt { get; init; }
+    // B: public DateTimeOffset PlacedAt { get; init; }
+    // C: public DateOnly PlacedAt { get; init; }
+    // D: public long PlacedAt { get; init; } // Unix timestamp
+}`}
+  options={[
+    "A: DateTime — it's the standard type and always works",
+    "B: DateTimeOffset — preserves the exact moment and the local offset, unambiguous across regions",
+    "C: DateOnly — orders only need the date, not the exact time",
+    "D: long (Unix timestamp) — most portable and unambiguous"
+  ]}
+  correctAnswer={1}
+  explanation="DateTimeOffset is correct for event timestamps in distributed systems. It stores both the exact UTC moment AND the original local offset — useful for knowing what time it was for the customer. DateTime loses timezone info (Kind=Unspecified after serialization). DateOnly loses the time component entirely. Unix timestamp (long) works but loses human readability and requires manual timezone handling. DateTimeOffset maps directly to 'datetimeoffset' in SQL Server and serializes correctly in JSON with the offset included."
+/>
+
+---
+
+## Parsing and Formatting
+
+```csharp
+// Parsing — always specify format and culture for non-user input
+DateTimeOffset parsed = DateTimeOffset.Parse("2024-01-15T14:30:00-05:00");
+DateTimeOffset parsedExact = DateTimeOffset.ParseExact(
+    "15/01/2024 14:30:00 -05:00",
+    "dd/MM/yyyy HH:mm:ss zzz",
+    System.Globalization.CultureInfo.InvariantCulture);
+
+// ISO 8601 round-trip format ("o" or "O")
+string iso = DateTimeOffset.UtcNow.ToString("o");
+// "2024-01-15T19:30:00.1234567+00:00"
+DateTimeOffset back = DateTimeOffset.Parse(iso); // lossless round-trip
+
+// TryParse for user input
+if (DateOnly.TryParse(userInput, out DateOnly date))
+    Console.WriteLine($"Parsed: {date:yyyy-MM-dd}");
+```
+
+<Callout type="senior">
+**Senior Insight: Database and API Timezone Consistency**
+
+The most common production bug pattern: storing timestamps correctly in C# but losing information at the boundary:
+
+1. **EF Core**: Map `DateTimeOffset` to `datetimeoffset` (SQL Server) or `timestamptz` (PostgreSQL). Avoid `datetime2` — it strips the offset. In `DbContext.OnModelCreating`: `entity.Property(e => e.PlacedAt).HasColumnType("datetimeoffset")`.
+
+2. **JSON/REST APIs**: `System.Text.Json` serializes `DateTimeOffset` as ISO 8601 with offset by default. Ensure your OpenAPI spec declares the format as `date-time`. Consumers in JavaScript should use `new Date(value)` which handles ISO 8601 correctly.
+
+3. **gRPC/Protobuf**: Use `google.protobuf.Timestamp` (which is always UTC) and convert to/from `DateTimeOffset` using `Google.Protobuf.WellKnownTypes.Timestamp.ToDateTimeOffset()`.
+
+4. **The NodaTime library**: For applications with complex timezone requirements (user-local scheduling, recurring events across DST boundaries), consider `NodaTime`. It provides `Instant` (UTC moment), `ZonedDateTime` (with IANA timezone), `LocalDate`, and `LocalTime` — a much richer model than the BCL types.
+
+```csharp
+// EF Core configuration for correct timezone handling
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Order>()
+        .Property(o => o.PlacedAt)
+        .HasColumnType("datetimeoffset(7)"); // SQL Server
+}
+```
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DateTime struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.datetime" },
+    { label: "DateTimeOffset struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.datetimeoffset" },
+    { label: "DateOnly struct (.NET 6+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.dateonly" },
+    { label: "TimeOnly struct (.NET 6+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.timeonly" },
+    { label: "Time zone overview", url: "https://learn.microsoft.com/en-us/dotnet/standard/datetime/time-zone-overview" },
+  ]}
+/>

@@ -1,0 +1,312 @@
+---
+title: "Parameter Passing: ref, out, in"
+slug: "parameter-passing"
+order: 6
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["ref", "out", "in", "parameters", "pass by reference", "performance", "readonly ref"]
+summary: "ref, out, and in look similar but have distinct semantics and performance implications every senior dev must distinguish."
+docsLinks:
+  - label: "ref keyword (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/ref"
+  - label: "out parameter modifier"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/out-parameter-modifier"
+  - label: "in parameter modifier"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/in-parameter-modifier"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## Default: Pass by Value
+
+By default, C# passes all arguments **by value**:
+- For value types: a copy of the data is passed
+- For reference types: a copy of the **reference** (pointer) is passed — not a copy of the object
+
+```csharp
+void DoubleIt(int x)
+{
+    x *= 2; // modifies the local copy, not the caller's variable
+}
+
+int n = 5;
+DoubleIt(n);
+Console.WriteLine(n); // 5 — unchanged
+
+// For reference types: the reference is copied
+void AppendItem(List<string> list)
+{
+    list.Add("new item"); // modifies the shared heap object — caller sees this
+    list = new List<string>(); // re-assigns the LOCAL reference copy — caller's list unchanged
+}
+
+var myList = new List<string> { "original" };
+AppendItem(myList);
+Console.WriteLine(myList.Count); // 2 — "new item" was added via the shared reference
+Console.WriteLine(myList[0]);    // "original" — list wasn't replaced (reassignment only affects local copy)
+```
+
+---
+
+## ref: Bidirectional Alias
+
+`ref` passes a variable by reference — the parameter becomes an **alias** for the caller's variable. Both caller and callee see the same storage location.
+
+Requirements:
+- Variable must be **initialized before passing**
+- Must use `ref` keyword at **both** call site and declaration
+- Can read AND write through the reference
+
+```csharp
+void Swap<T>(ref T a, ref T b)
+{
+    T temp = a;
+    a = b;
+    b = temp;
+}
+
+int x = 1, y = 2;
+Swap(ref x, ref y);
+Console.WriteLine(x); // 2
+Console.WriteLine(y); // 1
+
+// ref with structs — avoids copying large structs
+void Normalize(ref Vector3 v) // no copy of the Vector3!
+{
+    float len = MathF.Sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z);
+    v.X /= len;
+    v.Y /= len;
+    v.Z /= len;
+}
+
+// ref return — return a reference to a field (advanced)
+ref int GetRef(int[] array, int index) => ref array[index];
+
+int[] nums = { 10, 20, 30 };
+ref int second = ref GetRef(nums, 1);
+second = 99;
+Console.WriteLine(nums[1]); // 99 — modified the array element directly
+```
+
+---
+
+## out: Output Parameter (Must Assign)
+
+`out` is like `ref` but with a different contract:
+- The variable does **not** need to be initialized before passing
+- The method **must** assign the `out` parameter before returning
+- The caller's variable is considered uninitialized entering the method
+
+```csharp
+bool TryParse(string input, out int result)
+{
+    // result does not need to be set at entry — but MUST be set before return
+    if (int.TryParse(input, out result))
+        return true;
+
+    result = 0; // must assign before returning false
+    return false;
+}
+
+// Discards (C# 7+) — discard out params you don't need
+if (int.TryParse("42", out int value))
+    Console.WriteLine(value);
+
+if (int.TryParse("abc", out _)) // _ discards the out param
+    Console.WriteLine("parsed");
+
+// out variable declarations inline (C# 7+)
+if (DateTime.TryParse("2024-01-15", out DateTime date))
+    Console.WriteLine(date.Year); // 2024
+```
+
+---
+
+## in: Read-Only Reference (Defensive ref)
+
+`in` passes by reference for performance (avoids copy of large structs) but **prevents the method from modifying the value**:
+- The parameter is a read-only reference
+- The method cannot assign to the parameter
+- Compiler enforces at compile time
+
+```csharp
+// Large struct — 32 bytes, expensive to copy
+public readonly struct Matrix2x2
+{
+    public readonly float M11, M12, M21, M22;
+    public Matrix2x2(float m11, float m12, float m21, float m22)
+        => (M11, M12, M21, M22) = (m11, m12, m21, m22);
+}
+
+// 'in' passes by reference, guarantees no modification
+float Determinant(in Matrix2x2 m)
+    => m.M11 * m.M22 - m.M12 * m.M21;
+
+var mat = new Matrix2x2(1, 2, 3, 4);
+float det = Determinant(in mat); // -2.0 — no copy of 32 bytes!
+// Note: 'in' at call site is optional but makes intent explicit
+float det2 = Determinant(mat); // also works — 'in' is optional at call site for value types
+```
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "ref", "out", "in"]}
+  rows={[
+    ["Direction", "Bidirectional read/write", "Output only — write required", "Input only — read only"],
+    ["Pre-initialization required", "Yes — must be assigned before call", "No — treated as uninitialized", "Yes — must be assigned before call"],
+    ["Must assign in method", "No — reading before writing is OK", "Yes — compiler enforces assignment", "N/A — cannot assign"],
+    ["Call site keyword", "ref required", "out required", "in optional (value types); in required for readonly refs"],
+    ["Primary use case", "Swap, modify caller's variable, avoid copy + write back", "Multiple return values (Try-pattern)", "Avoid copying large structs, pass read-only"],
+    ["Allowed with async methods", "No — cannot use ref/out with async", "No — cannot use ref/out with async", "No — same restriction"],
+    [".NET 6+ alternatives", "ref fields in ref struct", "Use ValueTuple or record returns", "ref readonly parameters (.NET 8)"],
+  ]}
+/>
+
+---
+
+## Code Challenge: ref Behavior
+
+<CodeChallenge
+  id="01-csharp-core/parameter-passing/challenge-1"
+  title="Track the ref Variable"
+  description="What does this code print?"
+  code={`static void Triple(ref int value)
+{
+    value *= 3;
+}
+
+static void TrySet(out int value)
+{
+    value = 100;
+}
+
+int a = 5;
+Triple(ref a);
+
+TrySet(out int b);
+
+Console.WriteLine(a);
+Console.WriteLine(b);`}
+  options={[
+    "a=5, b=0",
+    "a=15, b=100",
+    "a=5, b=100",
+    "a=15, b=0"
+  ]}
+  correctAnswer={1}
+  explanation="Triple receives 'a' by reference and multiplies in place: 5 * 3 = 15. So a becomes 15. TrySet receives 'b' as an out parameter — it must assign it, and does so: b = 100. Output: a=15, b=100."
+/>
+
+---
+
+<Callout type="trap">
+**The `in` Mutable Struct Defensive Copy Trap**
+
+`in` with a **non-readonly struct** can cause a hidden defensive copy that completely defeats the performance purpose:
+
+```csharp
+public struct MutablePoint // NOT readonly struct!
+{
+    public int X;
+    public void ShiftX(int amount) { X += amount; } // mutating method
+}
+
+void Process(in MutablePoint p)
+{
+    // Because p is 'in' (read-only ref) but MutablePoint is NOT readonly,
+    // the compiler cannot guarantee ShiftX won't mutate p.
+    // So it makes a DEFENSIVE COPY before calling the method!
+    p.ShiftX(10); // silently copies p, calls ShiftX on the copy
+                  // the ORIGINAL p is unchanged
+                  // AND you paid the copy cost — defeating the purpose of 'in'!
+}
+
+// The fix: use readonly struct
+public readonly struct ImmutablePoint
+{
+    public int X { get; }
+    public void ShiftX(int amount) => throw new InvalidOperationException("I'm readonly!");
+    // or use 'with' expression: return this with { X = X + amount };
+}
+
+// With readonly struct, the compiler knows no mutation is possible
+// → no defensive copy → 'in' works as intended
+```
+
+**Rule**: Only use `in` with `readonly struct` types. With mutable structs, `in` may silently degrade to copy semantics. Use a JIT disassembler (SharpLab.io) to verify no defensive copies are generated.
+</Callout>
+
+---
+
+## ref Locals and ref Returns (Advanced)
+
+C# 7+ allows local variables and return values to be references:
+
+```csharp
+// ref local — alias to another variable
+int[] data = { 1, 2, 3, 4, 5 };
+ref int first = ref data[0];
+first = 99;
+Console.WriteLine(data[0]); // 99 — modified the array element
+
+// ref return — powerful for performance-critical scenarios
+public ref T Find<T>(T[] array, Predicate<T> match)
+{
+    for (int i = 0; i < array.Length; i++)
+        if (match(array[i]))
+            return ref array[i]; // return reference to the element itself
+
+    throw new KeyNotFoundException();
+}
+
+int[] numbers = { 1, 2, 3, 4, 5 };
+ref int found = ref Find(numbers, n => n == 3);
+found = 300; // modifies the array element directly!
+Console.WriteLine(numbers[2]); // 300
+
+// ref readonly return — return a reference but prevent modification
+public ref readonly Matrix2x2 Identity => ref _identity;
+```
+
+<Callout type="senior">
+**Senior Insight: ref struct and Span\<T\>**
+
+`ref struct` types (like `Span<T>` and `ReadOnlySpan<T>`) are stack-only types that contain ref fields. They are the foundation of .NET's high-performance I/O and parsing APIs:
+
+- They can only live on the stack (cannot be boxed, cannot be fields of non-ref classes)
+- They can contain `ref` fields pointing directly into heap memory (managed pointers)
+- `Span<T>` is essentially a `ref T reference + int length` — a ref struct
+
+```csharp
+// Span<T> is a ref struct — can reference stack, heap, or unmanaged memory
+void ProcessData(Span<byte> buffer)
+{
+    // Zero-copy processing — works whether buffer is stackalloc, array slice, or unmanaged
+    buffer[0] = 0xFF;
+}
+
+byte[] array = new byte[1024];
+ProcessData(array);                         // array segment
+ProcessData(stackalloc byte[64]);           // stack memory
+ProcessData(new Span<byte>(array, 10, 50)); // slice — no allocation
+
+// This is how ASP.NET Core's Kestrel achieves near-zero-allocation request parsing
+```
+
+In .NET 8, `ref` fields in `ref struct` are fully supported, enabling even more powerful zero-copy data structures like `SequenceReader<T>` and `PipeReader`.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ref keyword (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/ref" },
+    { label: "out parameter modifier", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/out-parameter-modifier" },
+    { label: "in parameter modifier", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/in-parameter-modifier" },
+    { label: "Span<T> and memory-related types", url: "https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/" },
+  ]}
+/>

@@ -1,0 +1,19 @@
+{
+  "slug": "03-intermediate-csharp",
+  "number": 3,
+  "title": "Intermediate C#",
+  "subtitle": "Delegates, LINQ, generics, and pattern matching",
+  "level": "mid",
+  "estimatedHours": 10,
+  "emoji": "🔧",
+  "color": "violet",
+  "description": "The features that separate mid-level from senior developers: closures, deferred execution, generic variance, and the full power of pattern matching in modern C#.",
+  "prerequisites": ["01-csharp-core", "02-oop"],
+  "learningOutcomes": [
+    "Explain deferred vs immediate LINQ execution",
+    "Understand closure capture and its traps",
+    "Distinguish IEnumerable from IQueryable",
+    "Use generic constraints and variance (in/out)",
+    "Apply modern pattern matching (C# 7–12)"
+  ]
+}

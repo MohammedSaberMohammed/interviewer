@@ -1,0 +1,19 @@
+{
+  "slug": "04-memory-gc",
+  "number": 4,
+  "title": "Memory, GC & Performance",
+  "subtitle": "GC generations, Span<T>, and profiling",
+  "level": "senior",
+  "estimatedHours": 8,
+  "emoji": "🧠",
+  "color": "purple",
+  "description": "Senior engineers own performance. Learn how the GC actually works, what Span<T> does to your allocations, and how to profile and reduce heap pressure in production.",
+  "prerequisites": ["01-csharp-core", "02-oop"],
+  "learningOutcomes": [
+    "Explain Gen 0/1/2, LOH, and POH",
+    "Know when to use Span<T> vs Memory<T>",
+    "Implement the Dispose pattern correctly",
+    "Use ArrayPool<T> and object pooling",
+    "Profile allocations with dotTrace/PerfView"
+  ]
+}

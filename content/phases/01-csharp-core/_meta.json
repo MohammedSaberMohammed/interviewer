@@ -1,0 +1,20 @@
+{
+  "slug": "01-csharp-core",
+  "number": 1,
+  "title": "C# Language Core",
+  "subtitle": "Foundational syntax, types, and operators",
+  "level": "junior",
+  "estimatedHours": 8,
+  "emoji": "⚙️",
+  "color": "blue",
+  "description": "Master the building blocks every .NET developer must know cold. We go deeper than syntax — you'll understand why C# works the way it does at the CLR level.",
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Explain the CLR, CTS, and CLS from memory",
+    "Distinguish value types from reference types without hesitation",
+    "Explain stack vs heap without the common myths",
+    "Identify boxing/unboxing and its performance cost",
+    "Use nullable types, NRT, and parameter modifiers correctly",
+    "Know exactly when to use const, readonly, and static readonly"
+  ]
+}

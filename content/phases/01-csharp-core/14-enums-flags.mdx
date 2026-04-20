@@ -1,0 +1,314 @@
+---
+title: "Enums & [Flags]"
+slug: "enums-flags"
+order: 14
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["enum", "Flags", "bitwise", "bitmask", "HasFlag", "Enum.Parse", "enum best practices"]
+summary: "Enums are deceptively simple — Flags attributes, bitwise operations, and validation gotchas catch even experienced developers."
+docsLinks:
+  - label: "Enumeration types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/enum"
+  - label: "Enum class (System.Enum)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum"
+  - label: "[Flags] attribute"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.flagsattribute"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## Enum Fundamentals
+
+An `enum` is a value type backed by an integer (default: `int`). Each named constant is an alias for an integer value:
+
+```csharp
+public enum OrderStatus
+{
+    Pending = 0,    // default if not specified
+    Processing = 1,
+    Shipped = 2,
+    Delivered = 3,
+    Cancelled = 4
+}
+
+OrderStatus status = OrderStatus.Processing;
+Console.WriteLine(status);          // "Processing" — ToString() returns name
+Console.WriteLine((int)status);     // 1 — underlying integer value
+Console.WriteLine(status == OrderStatus.Processing); // true
+
+// Enum can be any integral type
+public enum ByteFlag : byte { A = 1, B = 2, C = 4 }
+public enum LongStatus : long { Active = 1L, Inactive = 2L }
+
+// switch expression with enum (C# 8+)
+string GetLabel(OrderStatus s) => s switch
+{
+    OrderStatus.Pending     => "Waiting",
+    OrderStatus.Processing  => "In progress",
+    OrderStatus.Shipped     => "On the way",
+    OrderStatus.Delivered   => "Arrived",
+    OrderStatus.Cancelled   => "Cancelled",
+    _                       => throw new ArgumentOutOfRangeException(nameof(s))
+};
+```
+
+---
+
+## The Enum Validation Trap
+
+Enums are not validated by the runtime. Any integer can be cast to an enum:
+
+```csharp
+// This compiles and runs without exception!
+OrderStatus invalid = (OrderStatus)999;
+Console.WriteLine(invalid); // "999" — not a defined name
+
+// This is a real attack vector in web APIs:
+// If you accept an enum from HTTP request without validation,
+// a client can send any integer value
+
+// Always validate enum values from external sources:
+bool IsValidStatus(int value) => Enum.IsDefined(typeof(OrderStatus), value);
+
+// Or with the generic overload (.NET 5+)
+bool IsValid(OrderStatus value) => Enum.IsDefined(value);
+
+Console.WriteLine(Enum.IsDefined(typeof(OrderStatus), 1));   // true
+Console.WriteLine(Enum.IsDefined(typeof(OrderStatus), 999)); // false
+```
+
+---
+
+## [Flags]: Bitfield Enum
+
+`[Flags]` turns an enum into a bitmask — each value represents a bit, and you can combine multiple values with `|`:
+
+```csharp
+[Flags]
+public enum Permissions
+{
+    None    = 0,        // 0000
+    Read    = 1 << 0,   // 0001 = 1
+    Write   = 1 << 1,   // 0010 = 2
+    Execute = 1 << 2,   // 0100 = 4
+    Delete  = 1 << 3,   // 1000 = 8
+
+    // Convenience combinations
+    ReadWrite = Read | Write,                   // 0011 = 3
+    All = Read | Write | Execute | Delete,     // 1111 = 15
+}
+
+// Combine flags with |
+Permissions userPerms = Permissions.Read | Permissions.Write;
+Console.WriteLine(userPerms);            // "Read, Write" — Flags enum ToString
+Console.WriteLine((int)userPerms);       // 3
+
+// Check a flag with HasFlag
+Console.WriteLine(userPerms.HasFlag(Permissions.Read));    // true
+Console.WriteLine(userPerms.HasFlag(Permissions.Execute)); // false
+
+// Add a flag with |=
+userPerms |= Permissions.Execute;
+Console.WriteLine(userPerms); // "Read, Write, Execute"
+
+// Remove a flag with &= ~
+userPerms &= ~Permissions.Write;
+Console.WriteLine(userPerms); // "Read, Execute"
+
+// Toggle a flag with ^=
+userPerms ^= Permissions.Delete;
+Console.WriteLine(userPerms); // "Read, Execute, Delete" — toggled on
+
+// Check if ANY of multiple flags are set
+bool hasAny = (userPerms & (Permissions.Write | Permissions.Delete)) != 0;
+```
+
+---
+
+## Code Challenge: Bitwise Flags
+
+<CodeChallenge
+  id="01-csharp-core/enums-flags/challenge-1"
+  title="Flags Bitwise Result"
+  description="What is the result of the following Flags enum operations?"
+  code={`[Flags]
+public enum Days
+{
+    None      = 0,
+    Monday    = 1,
+    Tuesday   = 2,
+    Wednesday = 4,
+    Thursday  = 8,
+    Friday    = 16,
+    Weekend   = 64 | 128, // Saturday | Sunday
+}
+
+Days schedule = Days.Monday | Days.Wednesday | Days.Friday;
+schedule &= ~Days.Wednesday; // remove Wednesday
+bool hasTuesday = schedule.HasFlag(Days.Tuesday);
+Console.WriteLine(schedule);
+Console.WriteLine(hasTuesday);`}
+  options={[
+    "Monday, Friday | True",
+    "Monday, Wednesday, Friday | False",
+    "Monday, Friday | False",
+    "Monday | False"
+  ]}
+  correctAnswer={2}
+  explanation="schedule starts as Monday | Wednesday | Friday (1 | 4 | 16 = 21). Then &= ~Wednesday removes Wednesday (21 & ~4 = 21 & 0b11111011 = 17 = Monday | Friday). So schedule = 'Monday, Friday'. HasFlag(Days.Tuesday): Tuesday=2. 17 & 2 = 0, so HasFlag returns false. Output: 'Monday, Friday' and 'False'."
+/>
+
+---
+
+## Quiz: [Flags] Without [Flags]
+
+<Quiz
+  id="01-csharp-core/enums-flags/challenge-2"
+  question="What happens if you use bitwise OR to combine two enum values on an enum WITHOUT the [Flags] attribute?"
+  options={[
+    "A compile-time error — bitwise operations are only allowed on [Flags] enums",
+    "A runtime exception when you try to use the combined value",
+    "The combined integer value is valid C# but ToString() returns the integer, not named values",
+    "The enum automatically becomes a Flags enum when you use bitwise operators"
+  ]}
+  correctAnswer={2}
+  explanation="Without [Flags], bitwise combination compiles and runs fine at the integer level. The combined value (e.g., 3 from Read|Write) is a valid integer cast to the enum. BUT ToString() doesn't know about combinations — it returns '3' instead of 'Read, Write' because it has no [Flags] hint to decompose the value. The [Flags] attribute instructs ToString() to decompose the integer into its flag components. Without it, you can still do bitwise ops but lose the nice string representation and semantic intent."
+/>
+
+---
+
+## Enum Parsing and Conversion
+
+```csharp
+// String to enum
+OrderStatus parsed = Enum.Parse<OrderStatus>("Processing"); // throws if invalid
+bool ok = Enum.TryParse<OrderStatus>("Shipped", out var shipStatus); // safe parse
+bool okIgnoreCase = Enum.TryParse<OrderStatus>("shipped", ignoreCase: true, out var s2);
+
+// Int to enum (always succeeds — watch out!)
+OrderStatus fromInt = (OrderStatus)2; // Shipped — no validation
+
+// Safe int-to-enum
+int incoming = 99;
+if (Enum.IsDefined(typeof(OrderStatus), incoming))
+{
+    OrderStatus safe = (OrderStatus)incoming;
+}
+
+// Enum to string (multiple options)
+OrderStatus st = OrderStatus.Delivered;
+Console.WriteLine(st.ToString());                     // "Delivered"
+Console.WriteLine(Enum.GetName(typeof(OrderStatus), st)); // "Delivered"
+Console.WriteLine(st.ToString("G"));                  // "Delivered" (General)
+Console.WriteLine(st.ToString("D"));                  // "3" (Decimal)
+Console.WriteLine(st.ToString("X"));                  // "00000003" (Hex)
+Console.WriteLine(st.ToString("F"));                  // "Delivered" (Flags format)
+
+// Enumerate all values
+foreach (OrderStatus val in Enum.GetValues<OrderStatus>())
+    Console.WriteLine($"{val} = {(int)val}");
+```
+
+---
+
+<Callout type="tip">
+**Use Enum.HasFlag Carefully — It Boxes**
+
+`HasFlag` is convenient but boxes the argument in some .NET versions:
+
+```csharp
+// HasFlag on a [Flags] enum
+Permissions p = Permissions.Read | Permissions.Write;
+
+// Convenient but may box (pre-.NET 6 on some paths):
+bool hasRead = p.HasFlag(Permissions.Read);
+
+// Zero-boxing alternative using bitwise AND:
+bool hasReadFast = (p & Permissions.Read) == Permissions.Read;
+// Or: (p & Permissions.Read) != 0 — checks any bit set
+
+// In .NET 6+, HasFlag is optimized by the JIT for enums — boxing eliminated.
+// In hot paths still prefer bitwise for clarity and portability.
+
+// Custom extension method for readable zero-boxing check:
+public static class FlagsExtensions
+{
+    public static bool Has(this Permissions source, Permissions flag)
+        => (source & flag) == flag;
+}
+
+bool clean = p.Has(Permissions.Write); // readable and efficient
+```
+</Callout>
+
+---
+
+## Smart Enum Pattern (for Richer Behavior)
+
+When enums need behavior (methods, properties, descriptions), the **Smart Enum** pattern using a class is more powerful:
+
+```csharp
+// Traditional enum — no behavior
+public enum OrderStatusEnum { Pending, Processing, Shipped }
+
+// Smart Enum — behavior attached to values
+public class OrderStatus
+{
+    public static readonly OrderStatus Pending     = new("Pending",     "Waiting for payment");
+    public static readonly OrderStatus Processing  = new("Processing",  "Being prepared");
+    public static readonly OrderStatus Shipped     = new("Shipped",     "On its way");
+
+    public string Name { get; }
+    public string Description { get; }
+    public virtual bool CanCancel => true;
+
+    private OrderStatus(string name, string description)
+    {
+        Name = name;
+        Description = description;
+    }
+
+    public override string ToString() => Name;
+}
+
+// Usage
+var status = OrderStatus.Shipped;
+Console.WriteLine(status.Description); // "On its way"
+Console.WriteLine(status.CanCancel);   // true
+```
+
+<Callout type="senior">
+**Senior Insight: Enum in Public APIs and Versioning**
+
+Adding a new value to an enum in a public library is a **breaking change** for consumers who use switch expressions or switch statements with an exhaustive match. If a consumer compiled their switch with all known values and you add a new one, their `_ => throw` branch fires unexpectedly.
+
+Strategies:
+1. **Always include a `_` default branch** in switch on enums you don't own (or enums from external libraries)
+2. **Use `[EnumMember]` and `JsonStringEnumConverter`** for stable JSON serialization — adding an enum member changes its JSON representation otherwise
+3. **Consider making enums internal** if they're implementation details; expose string or int at the API boundary
+4. **Document backward compatibility** — promise not to add values, or version the type
+
+```csharp
+// Resilient switch — handles unknown future enum values
+string Describe(OrderStatus s) => s switch
+{
+    OrderStatus.Pending    => "Waiting",
+    OrderStatus.Processing => "Working",
+    OrderStatus.Shipped    => "Sent",
+    OrderStatus.Delivered  => "Done",
+    _                      => $"Unknown status: {s}" // handles new values gracefully
+};
+```
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Enumeration types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/enum" },
+    { label: "System.Enum class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum" },
+    { label: "FlagsAttribute", url: "https://learn.microsoft.com/en-us/dotnet/api/system.flagsattribute" },
+    { label: "Enum design guidelines", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/enum" },
+  ]}
+/>

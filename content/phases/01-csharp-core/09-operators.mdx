@@ -1,0 +1,305 @@
+---
+title: "Operators & the Overloading Gotchas"
+slug: "operators"
+order: 9
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["operators", "operator overloading", "equality", "==", "Equals", "IEquatable", "comparison"]
+summary: "Operator overloading in C# is powerful but riddled with traps — == vs Equals is the iceberg most developers hit in production."
+docsLinks:
+  - label: "Operator overloading (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/operator-overloading"
+  - label: "Equality operators (== and !=)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/equality-operators"
+  - label: "IEquatable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.iequatable-1"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## Operator Overloading Basics
+
+C# allows you to define operator behavior for your custom types. The operator is defined as a `public static` method using the `operator` keyword:
+
+```csharp
+public readonly struct Money
+{
+    public decimal Amount { get; }
+    public string Currency { get; }
+
+    public Money(decimal amount, string currency)
+    {
+        Amount = amount;
+        Currency = currency;
+    }
+
+    // Arithmetic operators
+    public static Money operator +(Money a, Money b)
+    {
+        if (a.Currency != b.Currency)
+            throw new InvalidOperationException($"Cannot add {a.Currency} and {b.Currency}");
+        return new Money(a.Amount + b.Amount, a.Currency);
+    }
+
+    public static Money operator -(Money a, Money b)
+    {
+        if (a.Currency != b.Currency)
+            throw new InvalidOperationException($"Cannot subtract {a.Currency} from {b.Currency}");
+        return new Money(a.Amount - b.Amount, a.Currency);
+    }
+
+    public static Money operator *(Money m, decimal factor)
+        => new Money(m.Amount * factor, m.Currency);
+
+    public static Money operator *(decimal factor, Money m)
+        => new Money(m.Amount * factor, m.Currency); // both directions
+
+    // Comparison operators — must be defined in pairs
+    public static bool operator >(Money a, Money b) => a.Amount > b.Amount;
+    public static bool operator <(Money a, Money b) => a.Amount < b.Amount;
+    public static bool operator >=(Money a, Money b) => a.Amount >= b.Amount;
+    public static bool operator <=(Money a, Money b) => a.Amount <= b.Amount;
+
+    // Equality — MUST also override Equals and GetHashCode (see below)
+    public static bool operator ==(Money a, Money b)
+        => a.Amount == b.Amount && a.Currency == b.Currency;
+    public static bool operator !=(Money a, Money b) => !(a == b);
+
+    public override string ToString() => $"{Amount:F2} {Currency}";
+}
+
+var price = new Money(10.00m, "USD");
+var tax = new Money(0.85m, "USD");
+var total = price + tax;
+Console.WriteLine(total); // 10.85 USD
+
+var doubled = total * 2m;
+Console.WriteLine(doubled); // 21.70 USD
+```
+
+---
+
+## The == vs Equals Trap
+
+This is the most important — and most commonly misunderstood — aspect of C# operators.
+
+**`==`**: Operator — can be overloaded. For classes, defaults to reference equality (same object?) unless overloaded. For structs, compiler generates value equality.
+
+**`.Equals()`**: Virtual method on `System.Object`. Can be overridden. Always virtual dispatch. Designed for semantic equality.
+
+```csharp
+// Reference types — the painful example
+string a = new string(new char[] { 'h', 'i' });
+string b = new string(new char[] { 'h', 'i' });
+
+Console.WriteLine(a == b);        // true — string overloads == for value equality
+Console.WriteLine(a.Equals(b));   // true — string overrides Equals
+Console.WriteLine(object.ReferenceEquals(a, b)); // false — different objects
+
+// But with object variables (widening):
+object oa = a;
+object ob = b;
+Console.WriteLine(oa == ob);      // FALSE! object's == is reference equality
+Console.WriteLine(oa.Equals(ob)); // true — virtual dispatch calls string.Equals
+
+// This is the TRAP:
+object x = 1;
+object y = 1;
+Console.WriteLine(x == y);        // depends on runtime — for boxed ints: FALSE (different box objects)
+Console.WriteLine(x.Equals(y));   // TRUE — virtual Equals on Int32 checks value
+```
+
+---
+
+## Code Challenge: == vs Equals with Overloading
+
+<CodeChallenge
+  id="01-csharp-core/operators/challenge-1"
+  title="Class with Overloaded =="
+  description="What does this code output? MyPoint is a class (reference type) with == overloaded for value equality."
+  code={`public class MyPoint
+{
+    public int X, Y;
+    public MyPoint(int x, int y) { X = x; Y = y; }
+
+    public static bool operator ==(MyPoint a, MyPoint b)
+        => a?.X == b?.X && a?.Y == b?.Y;
+    public static bool operator !=(MyPoint a, MyPoint b) => !(a == b);
+}
+
+var p1 = new MyPoint(3, 4);
+var p2 = new MyPoint(3, 4);
+object o1 = p1;
+object o2 = p2;
+
+Console.WriteLine(p1 == p2);     // A
+Console.WriteLine(o1 == o2);     // B
+Console.WriteLine(p1.Equals(p2)); // C`}
+  options={[
+    "A=true, B=true, C=true",
+    "A=true, B=false, C=false",
+    "A=false, B=false, C=false",
+    "A=true, B=false, C=true"
+  ]}
+  correctAnswer={1}
+  explanation="A: p1 == p2 uses the overloaded operator== on MyPoint — compares X and Y values. 3==3 and 4==4 → true. B: o1 == o2 uses object's == (reference equality) — o1 and o2 are different objects → false. The overloaded == is NOT called because the compile-time type is 'object'. C: p1.Equals(p2) calls System.Object.Equals which is NOT overridden in MyPoint — uses reference equality → false. The == overload does NOT automatically override Equals! This is why you must always override Equals (and GetHashCode) when you overload ==."
+/>
+
+---
+
+<Callout type="trap">
+**Always Override Equals and GetHashCode When You Overload ==**
+
+The C# compiler will warn you (CS0660, CS0661) if you overload `==` without overriding `Equals` and `GetHashCode`. This matters because:
+
+1. `Dictionary<T,K>`, `HashSet<T>`, LINQ's `Distinct/GroupBy/Join` all use `GetHashCode` + `Equals`
+2. Two objects that are `==` equal MUST return the same `GetHashCode` — this is a contract
+3. If `Equals` returns true but `GetHashCode` returns different values, collections break silently
+
+```csharp
+public class MyPoint : IEquatable<MyPoint>
+{
+    public int X, Y;
+
+    // Overload ==
+    public static bool operator ==(MyPoint? a, MyPoint? b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (a is null || b is null) return false;
+        return a.X == b.X && a.Y == b.Y;
+    }
+    public static bool operator !=(MyPoint? a, MyPoint? b) => !(a == b);
+
+    // Override Equals — uses == internally (DRY)
+    public override bool Equals(object? obj) => obj is MyPoint p && this == p;
+
+    // Typed Equals via IEquatable<T> — avoids boxing, used by generic collections
+    public bool Equals(MyPoint? other) => other is not null && this == other;
+
+    // GetHashCode — MUST be consistent with Equals
+    public override int GetHashCode() => HashCode.Combine(X, Y);
+}
+
+// Now Dictionary and HashSet work correctly:
+var set = new HashSet<MyPoint> { new MyPoint { X = 1, Y = 2 } };
+Console.WriteLine(set.Contains(new MyPoint { X = 1, Y = 2 })); // true
+```
+</Callout>
+
+---
+
+## Operators That Cannot Be Overloaded
+
+Not all operators are overloadable:
+
+```csharp
+// CANNOT overload:
+// && || (but can overload & | and true/false to make && || work)
+// ?? ??=
+// = (assignment)
+// . (member access)
+// ?: (ternary)
+// is as typeof sizeof nameof
+// new delete
+
+// CAN overload:
+// + - * / % ^ & | ~ ! ++ -- << >> >>>
+// == != < > <= >=
+// true false (for user-defined boolean types)
+// implicit and explicit (conversion operators)
+
+// Conversion operators — extremely powerful
+public static implicit operator decimal(Money m) => m.Amount;
+public static explicit operator Money(decimal amount) => new Money(amount, "USD");
+
+Money price = new Money(9.99m, "USD");
+decimal d = price;          // implicit conversion — no cast needed
+Money m = (Money)19.99m;    // explicit conversion — cast required
+```
+
+---
+
+## Quiz: GetHashCode Contract
+
+<Quiz
+  id="01-csharp-core/operators/challenge-2"
+  question="You override Equals to return true when two objects have the same Name property, but you forget to override GetHashCode. What is the most likely consequence?"
+  options={[
+    "A compile-time error — you must always override both together",
+    "Objects that are Equals will appear as duplicates in a HashSet because GetHashCode returns different values",
+    "Everything works fine — GetHashCode is only used for display purposes",
+    "A NullReferenceException when the objects are used in a Dictionary"
+  ]}
+  correctAnswer={1}
+  explanation="HashSet<T> and Dictionary<TKey,TValue> use a two-step lookup: first GetHashCode to find the bucket, then Equals to confirm the match. If two equal objects return different hash codes, they land in different buckets and are never compared with Equals — so the set treats them as distinct. This means HashSet.Add(equalObject) adds a duplicate, Contains returns false, and Dictionary keys become unreachable. The contract is: if a.Equals(b) then a.GetHashCode() == b.GetHashCode(). Violating this silently corrupts collection behavior."
+/>
+
+---
+
+## Checked Operators (C# 11)
+
+C# 11 added checked operator overloading for `checked` context support:
+
+```csharp
+public readonly struct BigInt
+{
+    public int Value { get; }
+    public BigInt(int value) => Value = value;
+
+    // Normal operator — wraps on overflow (unchecked)
+    public static BigInt operator +(BigInt a, BigInt b)
+        => new BigInt(a.Value + b.Value);
+
+    // Checked operator — throws on overflow
+    public static BigInt operator checked +(BigInt a, BigInt b)
+        => new BigInt(checked(a.Value + b.Value));
+}
+
+var a = new BigInt(int.MaxValue);
+var b = new BigInt(1);
+var result = a + b;           // unchecked — wraps to int.MinValue
+var safe = checked(a + b);    // calls 'checked +' — throws OverflowException
+```
+
+<Callout type="senior">
+**Senior Insight: Generic Math and Operator Interfaces (.NET 7+)**
+
+.NET 7 introduced numeric interfaces that formalize operator semantics. This enables truly generic math algorithms:
+
+```csharp
+// IAdditionOperators<TSelf, TOther, TResult> defines + operator
+// IComparisonOperators<TSelf, TOther, TResult> defines <, >, etc.
+
+static T Sum<T>(IEnumerable<T> values) where T : IAdditionOperators<T, T, T>, IAdditiveIdentity<T, T>
+{
+    var total = T.AdditiveIdentity;
+    foreach (var v in values) total += v;
+    return total;
+}
+
+// Money can implement these interfaces for full generic math support
+public readonly struct Money : IAdditionOperators<Money, Money, Money>, IAdditiveIdentity<Money, Money>
+{
+    // ...
+    public static Money AdditiveIdentity => new Money(0m, "USD");
+}
+
+// Now Sum<Money>() works without any specific Money knowledge:
+var totals = new[] { new Money(10m, "USD"), new Money(5m, "USD") };
+var total = Sum(totals); // 15.00 USD — zero boxing, fully generic
+```
+
+This is how the BCL's `Vector<T>`, `Matrix<T>`, and numeric algorithms work in .NET 8. If you're building a numeric or financial library, implementing the `System.Numerics` operator interfaces makes your types work seamlessly with all BCL generic algorithms.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Operator overloading", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/operator-overloading" },
+    { label: "Equality operators", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/equality-operators" },
+    { label: "IEquatable<T>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.iequatable-1" },
+    { label: "Generic math interfaces (.NET 7+)", url: "https://learn.microsoft.com/en-us/dotnet/standard/generics/math" },
+  ]}
+/>

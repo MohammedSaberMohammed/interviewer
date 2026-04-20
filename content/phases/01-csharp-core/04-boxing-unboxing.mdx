@@ -1,0 +1,268 @@
+---
+title: "Boxing & Unboxing — The Silent Perf Killer"
+slug: "boxing-unboxing"
+order: 4
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["boxing", "unboxing", "performance", "generics", "value types", "heap allocation"]
+summary: "Boxing silently heap-allocates your value types — and generics exist largely to eliminate it."
+docsLinks:
+  - label: "Boxing and unboxing (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/types/boxing-and-unboxing"
+  - label: "Generics (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/"
+  - label: "Performance best practices — avoid boxing"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## What Is Boxing?
+
+**Boxing** is the implicit conversion of a value type to the type `object` (or to an interface type the value type implements). The CLR:
+
+1. Allocates a new object on the managed heap
+2. Copies the value type's data into that heap object
+3. Returns a reference to the heap object
+
+**Unboxing** is the explicit conversion back from `object` to the value type. It:
+1. Checks that the object is actually a boxed value of the target type (throws `InvalidCastException` if not)
+2. Copies the data from the heap object back to a value type variable
+
+```csharp
+int i = 42;           // Value type — lives on stack (local variable)
+
+object boxed = i;     // BOXING: heap allocation + copy
+                      // Equivalent to: object boxed = new System.Int32(42); (conceptually)
+
+int unboxed = (int)boxed; // UNBOXING: type check + copy back to stack
+```
+
+---
+
+## The Cost of Boxing
+
+Boxing is not free. Each box operation:
+- Allocates a new object on the Gen 0 heap (~24 bytes on 64-bit for a boxed int: 8 header + 8 method table ptr + 4 value + 4 padding)
+- Triggers a memory copy
+- Increases GC pressure (more objects to collect)
+
+Unboxing:
+- Performs a runtime type check (throws if wrong type)
+- Performs a memory copy back
+
+In a tight loop boxing millions of values, this can easily be the **dominant cost**.
+
+```csharp
+// SLOW: boxing happens on every iteration
+var list = new System.Collections.ArrayList(); // non-generic, pre-.NET 2.0 style
+
+for (int i = 0; i < 1_000_000; i++)
+{
+    list.Add(i); // int → object: 1 million heap allocations!
+}
+
+int sum = 0;
+foreach (object item in list)
+{
+    sum += (int)item; // unbox on every iteration
+}
+
+// FAST: no boxing — List<int> stores ints inline
+var genericList = new List<int>();
+
+for (int i = 0; i < 1_000_000; i++)
+{
+    genericList.Add(i); // No boxing! The list stores int values directly
+}
+```
+
+---
+
+## Code Challenge: Predict the Boxing Behavior
+
+<CodeChallenge
+  id="01-csharp-core/boxing-unboxing/challenge-1"
+  title="How Many Box Allocations?"
+  description="How many heap allocations does this code produce (ignoring the StringBuilder itself)?"
+  code={`int x = 10;
+double y = 3.14;
+bool flag = true;
+
+string result = string.Format("x={0}, y={1}, flag={2}", x, y, flag);`}
+  options={[
+    "0 — string.Format is optimized to avoid boxing",
+    "1 — only the string result is allocated",
+    "3 — x, y, and flag are each boxed to object for the params array",
+    "4 — x, y, flag boxed plus the params array itself"
+  ]}
+  correctAnswer={3}
+  explanation="string.Format takes a params object[] argument. Each value type argument (x as int, y as double, flag as bool) is boxed to object to fit in the params array. That's 3 boxing allocations. Additionally, the params object[] array itself is heap-allocated — so 4 heap allocations total (3 boxed values + 1 array). This is why string interpolation ($'x={x}') with modern .NET uses DefaultInterpolatedStringHandler which avoids boxing for common types."
+/>
+
+---
+
+## Where Boxing Silently Happens
+
+These are the common surprise sources of boxing in modern code:
+
+```csharp
+// 1. Non-generic collections (legacy code)
+System.Collections.ArrayList al = new();
+al.Add(42); // boxed
+
+// 2. string.Format with value type args (pre-C# 10 interpolation handler)
+string s = string.Format("{0}", 42); // 42 is boxed
+
+// 3. Calling interface methods on a struct (without generic constraint)
+interface IDescribable { string Describe(); }
+
+struct Temperature : IDescribable
+{
+    public double Value;
+    public string Describe() => $"{Value}°C";
+}
+
+IDescribable d = new Temperature { Value = 37.5 }; // BOXING!
+d.Describe(); // virtual dispatch on boxed copy
+
+// 4. Passing a struct to a method taking 'object'
+void Log(object value) { Console.WriteLine(value); }
+Log(42); // boxed
+
+// 5. LINQ with value types (varies by query shape)
+int[] nums = { 1, 2, 3 };
+IEnumerable<int> query = nums.Where(n => n > 1); // no boxing here (generic)
+object first = query.First(); // boxing HERE — assigning to object
+
+// 6. Struct implementing interface, used via interface (no generic constraint)
+void PrintDescribable(IDescribable item) // no 'where T : struct'
+{
+    Console.WriteLine(item.Describe()); // if called with a struct → boxed
+}
+```
+
+---
+
+<Callout type="trap">
+**Trap: Modifying a Boxed Struct**
+
+Because unboxing copies the value out of the box, modifying the unboxed copy does NOT affect the box:
+
+```csharp
+public struct Counter { public int Value; }
+
+Counter c = new Counter { Value = 0 };
+object boxed = c;          // box — heap copy with Value=0
+
+Counter unboxed = (Counter)boxed; // unbox — stack copy
+unboxed.Value = 99;                // modifies the STACK copy, NOT the box
+
+Console.WriteLine(((Counter)boxed).Value); // 0 — box is unchanged!
+```
+
+This also means: if you store a struct in `object` and want to mutate it, you must unbox, mutate, and re-box — there's no way to mutate the box in-place from managed code.
+
+Interfaces make this worse: calling a mutating method through an interface on a boxed struct mutates the boxed copy (which you can never get back), leading to invisible state loss.
+</Callout>
+
+---
+
+## Avoiding Boxing: The Generics Solution
+
+The primary reason C# generics exist is to enable type-safe collections and algorithms **without boxing**:
+
+```csharp
+// Generic method — no boxing. The JIT generates specialized code
+// for each value type T used (e.g., separate code for T=int, T=double)
+T Max<T>(T a, T b) where T : IComparable<T>
+    => a.CompareTo(b) >= 0 ? a : b;
+
+int maxInt = Max(3, 7);        // No boxing — T=int, direct comparison
+double maxDbl = Max(1.5, 2.3); // No boxing — T=double
+
+// Generic constraint with interface — NO boxing for value types!
+// The JIT creates a specialized version that calls the method directly (devirtualized)
+void PrintAll<T>(IEnumerable<T> items) where T : IFormattable
+{
+    foreach (var item in items)
+        Console.WriteLine(item.ToString("G", null)); // No boxing — direct call via constraint
+}
+```
+
+<Callout type="senior">
+**Senior Insight: Generic Constraints Eliminate Boxing AND Enable Devirtualization**
+
+When you have `where T : IComparable<T>`, the JIT generates a **separate method body for each concrete value type** used. This means:
+
+1. No boxing — the value type is passed and stored as its actual type
+2. **Devirtualization** — interface method calls can be inlined because the JIT knows the exact type
+
+In .NET 8, `static abstract interface members` take this further:
+
+```csharp
+// .NET 7+ generic math — completely boxing-free for all numeric types
+static T Sum<T>(IEnumerable<T> values) where T : IAdditionOperators<T, T, T>, IAdditiveIdentity<T, T>
+{
+    T total = T.AdditiveIdentity;
+    foreach (var v in values)
+        total += v; // No boxing, no virtual dispatch — JIT inlines operator+
+    return total;
+}
+
+// Works for int, double, decimal, float, custom types — all without boxing
+int intSum = Sum(new[] { 1, 2, 3, 4, 5 });
+decimal decSum = Sum(new[] { 1.1m, 2.2m, 3.3m });
+```
+
+This is why the BCL rewrote all math APIs in .NET 7 using `INumber<T>`. `Math.Max(3, 5)` is now `T.Max(3, 5)` in generic algorithms — zero boxing, maximum JIT optimization.
+
+Another pattern: avoid `where T : struct` unless you specifically need it. Often `where T : IComparable<T>` is enough and is more flexible.
+</Callout>
+
+---
+
+## Detecting Boxing in Your Code
+
+Use these tools to find unexpected boxing:
+
+```csharp
+// 1. Inspect IL with ILSpy or dotnet-ildasm
+// Boxing shows up as 'box' opcode in IL
+
+// 2. BenchmarkDotNet with MemoryDiagnoser
+[MemoryDiagnoser]
+public class BoxingBenchmark
+{
+    [Benchmark]
+    public void WithBoxing()
+    {
+        object o = 42; // box
+        int i = (int)o; // unbox
+    }
+
+    [Benchmark]
+    public void WithoutBoxing()
+    {
+        int i = 42;
+        int j = i;
+    }
+}
+// Run with: dotnet run -c Release
+// Output shows: Allocated bytes per operation
+
+// 3. ETW / dotnet-trace with GC allocation events
+// dotnet trace collect --process-id <PID> --profile gc-collect
+```
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Boxing and unboxing (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/types/boxing-and-unboxing" },
+    { label: "Generics (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/" },
+    { label: "Generic math in .NET 7+", url: "https://learn.microsoft.com/en-us/dotnet/standard/generics/math" },
+    { label: "Performance: avoid excessive allocations", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace" },
+  ]}
+/>

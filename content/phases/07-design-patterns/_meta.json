@@ -1,0 +1,19 @@
+{
+  "slug": "07-design-patterns",
+  "number": 7,
+  "title": "Design Patterns",
+  "subtitle": "GoF + modern patterns in C#",
+  "level": "senior",
+  "estimatedHours": 12,
+  "emoji": "🎨",
+  "color": "rose",
+  "description": "Patterns are a vocabulary for design decisions. Cover all 23 GoF patterns plus modern C# patterns like Result, Options, and Pipeline — with real-world implementation examples.",
+  "prerequisites": ["02-oop", "06-solid"],
+  "learningOutcomes": [
+    "Identify and implement all 23 GoF patterns",
+    "Explain when NOT to use a pattern",
+    "Implement Repository, Unit of Work, CQRS",
+    "Use the Result pattern instead of exceptions",
+    "Build pipeline/middleware from scratch"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "slug": "10-aspnet-core",
+  "number": 10,
+  "title": "ASP.NET Core",
+  "subtitle": "Middleware, DI, auth, and Kestrel",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "🌐",
+  "color": "blue",
+  "description": "The entire ASP.NET Core request pipeline from socket to action result. Master middleware order, DI lifetimes (and the captive dependency trap), auth/authz, and Minimal APIs vs Controllers.",
+  "prerequisites": ["01-csharp-core", "05-async-concurrency"],
+  "learningOutcomes": [
+    "Explain the middleware pipeline and order rules",
+    "Avoid the captive dependency problem",
+    "Implement JWT and cookie authentication",
+    "Write policy-based authorization",
+    "Choose between controllers and Minimal APIs"
+  ]
+}

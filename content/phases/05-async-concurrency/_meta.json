@@ -1,0 +1,19 @@
+{
+  "slug": "05-async-concurrency",
+  "number": 5,
+  "title": "Async/Await & Concurrency",
+  "subtitle": "TAP, state machines, and threading primitives",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "⚡",
+  "color": "amber",
+  "description": "Async/await is a state machine under the hood — knowing that changes everything. Learn the real cost of async, how to avoid deadlocks, and when to reach for Channels over locks.",
+  "prerequisites": ["01-csharp-core", "04-memory-gc"],
+  "learningOutcomes": [
+    "Explain how async/await compiles to a state machine",
+    "Avoid the classic ASP.NET deadlock",
+    "Know when ConfigureAwait(false) matters",
+    "Use CancellationToken patterns correctly",
+    "Choose between lock, Monitor, Semaphore, and Channel"
+  ]
+}

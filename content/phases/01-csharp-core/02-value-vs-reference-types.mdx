@@ -1,0 +1,323 @@
+---
+title: "Value Types vs Reference Types"
+slug: "value-vs-reference-types"
+order: 2
+difficulty: "foundation"
+readingTime: 15
+status: "published"
+tags: ["value types", "reference types", "struct", "class", "memory", "copy semantics"]
+summary: "The single most important distinction in C# — and the source of countless subtle bugs in production code."
+docsLinks:
+  - label: "Value types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-types"
+  - label: "Reference types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/reference-types"
+  - label: "Choosing between class and struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/choosing-between-class-and-struct"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Core Distinction
+
+Every type in C# is either a **value type** or a **reference type**. This is not a performance hint — it's a fundamental semantic contract about *how assignment and method passing work*.
+
+- **Value type**: the variable *contains* the data directly. Assigning copies the data.
+- **Reference type**: the variable *contains a reference* (pointer) to data on the heap. Assigning copies the reference, not the data.
+
+This distinction drives everything: memory layout, garbage collection pressure, equality semantics, and mutability patterns.
+
+---
+
+## Value Types in C#
+
+Value types derive from `System.ValueType` (which derives from `System.Object`). They include:
+
+- All numeric primitives: `int`, `long`, `double`, `decimal`, `float`, `byte`, etc.
+- `bool`, `char`
+- `struct` (user-defined)
+- `enum`
+- Tuples: `(int x, int y)` → `ValueTuple<int,int>`
+
+```csharp
+// Struct — a value type
+public struct Point
+{
+    public int X;
+    public int Y;
+
+    public Point(int x, int y) { X = x; Y = y; }
+    public override string ToString() => $"({X}, {Y})";
+}
+
+Point p1 = new Point(1, 2);
+Point p2 = p1;       // COPY — p2 is an independent copy of p1
+p2.X = 99;
+
+Console.WriteLine(p1.X); // 1 — p1 is unaffected
+Console.WriteLine(p2.X); // 99
+```
+
+---
+
+## Reference Types in C#
+
+Reference types derive from `System.Object` directly (no `ValueType` in the chain). They include:
+
+- `class` (user-defined)
+- `string` (immutable special case)
+- Arrays (even arrays of value types)
+- `interface`, `delegate`
+- `record` (reference by default; `record struct` is value)
+
+```csharp
+public class PointClass
+{
+    public int X;
+    public int Y;
+
+    public PointClass(int x, int y) { X = x; Y = y; }
+}
+
+PointClass r1 = new PointClass(1, 2);
+PointClass r2 = r1;   // REFERENCE COPY — r2 points to the same object
+r2.X = 99;
+
+Console.WriteLine(r1.X); // 99 — r1 sees the change because r1 and r2 share the same heap object
+```
+
+---
+
+## Side-by-Side: struct vs class Copy Semantics
+
+<ComparisonTable
+  headers={["Dimension", "Value Type (struct)", "Reference Type (class)"]}
+  rows={[
+    ["Assignment", "Deep copy — new independent instance", "Shallow copy — both variables point to same object"],
+    ["Default equality", "Field-by-field comparison (auto in .NET 5+ records)", "Reference equality (same object?) unless overridden"],
+    ["Null assignment", "Not possible without Nullable<T> wrapper", "Always possible — null means 'no object'"],
+    ["Inheritance", "Cannot inherit from structs (sealed by runtime)", "Full class hierarchy supported"],
+    ["Interface implementation", "Yes — but causes boxing when used via interface reference", "Yes — no boxing penalty"],
+    ["Memory location", "Inline wherever declared (stack, heap inside another class)", "Always heap-allocated (the reference may be on stack)"],
+    ["Thread safety", "Copies are inherently isolated", "Shared references require explicit synchronization"],
+    ["Recommended size", "Guidelines say ≤16 bytes; larger structs hurt perf due to copy cost", "No size concern — only the reference (8 bytes) is copied"],
+  ]}
+/>
+
+---
+
+## Memory Visualizer: Struct Copy vs Class Reference
+
+<MemoryVisualizer
+  stack={[
+    { name: "p1 (Point struct)", value: "X=1, Y=2" },
+    { name: "p2 (Point struct copy)", value: "X=99, Y=2" },
+    { name: "r1 (PointClass ref)", value: "0x4A2F", isReference: true },
+    { name: "r2 (PointClass ref)", value: "0x4A2F", isReference: true }
+  ]}
+  heap={[
+    { id: "obj1", label: "PointClass @ 0x4A2F", content: { "X": "99", "Y": "2" } }
+  ]}
+  references={[
+    { from: "r1 (PointClass ref)", to: "obj1" },
+    { from: "r2 (PointClass ref)", to: "obj1" }
+  ]}
+/>
+
+Both `r1` and `r2` point to the same heap object. `p1` and `p2` are entirely independent.
+
+---
+
+## Code Challenge: Predict the Output
+
+<CodeChallenge
+  id="01-csharp-core/value-vs-reference-types/challenge-1"
+  title="Who Changes What?"
+  description="Given this code, what does the console print for p1.X and r1.X?"
+  code={`public struct Point { public int X; }
+public class PointRef { public int X; }
+
+var p1 = new Point { X = 10 };
+var p2 = p1;
+p2.X = 999;
+
+var r1 = new PointRef { X = 10 };
+var r2 = r1;
+r2.X = 999;
+
+Console.WriteLine(p1.X); // ?
+Console.WriteLine(r1.X); // ?`}
+  options={[
+    "p1.X = 10, r1.X = 10",
+    "p1.X = 999, r1.X = 999",
+    "p1.X = 10, r1.X = 999",
+    "p1.X = 999, r1.X = 10"
+  ]}
+  correctAnswer={2}
+  explanation="p1 is a struct — assignment copies the data, so p2.X = 999 does NOT affect p1. p1.X stays 10. r1 is a class — assignment copies the reference, so r2 and r1 point to the same heap object. r2.X = 999 changes the shared object, so r1.X becomes 999."
+/>
+
+---
+
+## MythBuster: Value Types Always Live on the Stack
+
+<MythBuster
+  myth="Value types always live on the stack; reference types always live on the heap."
+  reality="Value types live inline — wherever the containing variable lives. A struct field inside a class lives on the heap (inside the class's heap allocation). A local struct variable lives on the stack only when it's a local variable in a method, not captured by a closure. Arrays of structs are on the heap. The rule is about *containment*, not the type itself."
+  example={`public class Container
+{
+    public Point Location; // Point is a value type, but it lives
+                           // on the HEAP inside this class object!
+}
+
+// This is stack-allocated (approximately):
+void Method()
+{
+    Point local = new Point(1, 2); // Stack frame
+}
+
+// This is heap-allocated:
+Point[] points = new Point[100]; // Array header + all 100 Points on heap
+Container c = new Container();   // c.Location is on heap inside Container`}
+/>
+
+---
+
+<Callout type="trap">
+**Mutable Structs Are a Trap**
+
+Mutable structs (structs with settable fields) cause confusion because LINQ, foreach, and properties all work on *copies*:
+
+```csharp
+public struct Counter
+{
+    public int Value;
+    public void Increment() => Value++; // modifies the copy!
+}
+
+var counters = new List<Counter> { new Counter { Value = 0 } };
+
+// This does NOT change the list element — foreach gives you a copy
+foreach (var c in counters)
+{
+    c.Increment(); // modifies the local copy 'c', not counters[0]
+}
+
+Console.WriteLine(counters[0].Value); // 0 — unchanged!
+
+// Correct approach: index directly (or use immutable structs)
+counters[0] = new Counter { Value = counters[0].Value + 1 };
+```
+
+The .NET design guidelines say: **make structs immutable**. If you need mutation, use a class. Immutable structs (`readonly struct`) communicate intent and prevent this footgun.
+</Callout>
+
+---
+
+## readonly struct: The Right Way
+
+```csharp
+// readonly struct — compiler enforces immutability
+public readonly struct ImmutablePoint
+{
+    public int X { get; }
+    public int Y { get; }
+
+    public ImmutablePoint(int x, int y)
+    {
+        X = x;
+        Y = y;
+    }
+
+    // With init (C# 9+) — works with object initializer syntax
+    // public int X { get; init; }
+}
+
+// record struct — C# 10+, immutable by default with value equality
+public record struct Vector2D(float X, float Y);
+
+var v1 = new Vector2D(1f, 2f);
+var v2 = new Vector2D(1f, 2f);
+Console.WriteLine(v1 == v2); // true — value equality built in
+```
+
+---
+
+## When to Choose struct vs class (Senior Decision Framework)
+
+Use a **struct** when ALL of these are true:
+- The type logically represents a single value (like a coordinate, color, or measurement)
+- The size is small (≤16 bytes is a common guideline)
+- The type is immutable or mutation semantics are intentional
+- The type will not need to be boxed frequently (avoid using it as an interface reference)
+
+Use a **class** when:
+- The type has identity (two objects with same data are still distinct)
+- The type is large or contains many fields
+- You need inheritance
+- The object's lifetime is managed independently of its container
+
+```csharp
+// Good struct candidates
+public readonly struct Money(decimal Amount, string Currency);
+public readonly struct Temperature(double Celsius);
+public readonly struct Rgb(byte R, byte G, byte B);
+
+// Good class candidates
+public class Customer { public Guid Id; public string Name; /* ... */ }
+public class OrderRepository { /* depends on DbContext */ }
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: ref struct and the Inline Value Type Revolution**
+
+In .NET 7+, `ref struct` types and the `allows ref struct` generic constraint open up new performance patterns that were previously impossible:
+
+```csharp
+// ref struct — can only live on the stack; contains ref fields
+// This is how Span<T> is implemented internally
+public ref struct StackBuffer<T>
+{
+    private Span<T> _data;
+    public StackBuffer(Span<T> data) => _data = data;
+    public ref T this[int i] => ref _data[i];
+}
+
+// .NET 8: allows ref struct constraint — generic methods that accept ref structs
+static void Process<T>(T buffer) where T : allows ref struct
+{
+    // T can now be a ref struct (like Span<T>)
+}
+
+// Inline arrays (C# 12 / .NET 8) — fixed-size arrays embedded in a struct
+[System.Runtime.CompilerServices.InlineArray(8)]
+public struct EightInts
+{
+    private int _element0;
+    // No other fields needed — InlineArray generates [0]..[7] access
+}
+
+// Inline arrays used for stack-allocated fixed buffers with modern syntax
+EightInts buffer = default;
+buffer[0] = 42;
+Span<int> span = buffer; // zero copy — the 8 ints are in the struct
+
+// Why this matters: ASP.NET Core's routing uses these patterns to achieve
+// near-zero allocation for request handling in hot paths
+```
+
+Understanding these advanced value type patterns separates senior engineers who can design performance-critical infrastructure from those who can only use it.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Value types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-types" },
+    { label: "Reference types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/reference-types" },
+    { label: "Choosing between class and struct", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/choosing-between-class-and-struct" },
+    { label: "readonly struct (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct#readonly-struct" },
+  ]}
+/>

@@ -1,0 +1,286 @@
+---
+title: "Stack vs Heap — The Real Rules"
+slug: "stack-vs-heap"
+order: 3
+difficulty: "foundation"
+readingTime: 14
+status: "published"
+tags: ["stack", "heap", "memory", "GC", "struct", "class", "allocation"]
+summary: "Most developers get stack vs heap wrong — here are the real allocation rules that senior engineers must internalize."
+docsLinks:
+  - label: "Memory management and garbage collection"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/automatic-memory-management"
+  - label: "Garbage collector fundamentals"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/fundamentals"
+  - label: "stackalloc expression"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Real Allocation Rules
+
+Before diving in, let's state the actual rules (not the simplified ones you may have heard):
+
+1. **The stack** stores local variables in method frames. It's fast, automatically managed (grows/shrinks with call stack), and limited (~1MB default on 64-bit Windows).
+2. **The heap** stores all objects allocated with `new` (for reference types), and also stores value types that are *embedded inside heap-allocated objects* or boxed.
+3. The runtime determines where something lives based on *what contains it*, not just whether it's a value type or reference type.
+
+---
+
+## How the Stack Works
+
+Every thread has its own stack. When a method is called, a **stack frame** is pushed. The frame contains:
+- Local variables (value types stored inline)
+- References to heap objects (8-byte pointers on 64-bit)
+- Return address
+- Saved registers
+
+```csharp
+void ProcessOrder(int orderId)     // orderId → stack (int, 4 bytes)
+{
+    bool isValid = Validate(orderId); // isValid → stack (bool, 1 byte, padded)
+    var order = new Order(orderId);   // order → stack (reference, 8 bytes)
+                                      // Order object → HEAP
+    double total = CalculateTotal(order); // total → stack (double, 8 bytes)
+} // Stack frame popped — orderId, isValid, order ref, total are gone
+  // The Order object on the heap lives until GC collects it (when no live refs)
+```
+
+The stack is incredibly fast — pushing/popping is just moving the stack pointer register. No GC involvement at all.
+
+---
+
+## How the Heap Works
+
+The managed heap is where `new` allocates reference type objects. The .NET GC divides the heap into **generations** for efficiency:
+
+- **Gen 0**: Short-lived objects (most allocations start here)
+- **Gen 1**: Survived one GC — medium-lived objects
+- **Gen 2**: Long-lived objects (singletons, caches)
+- **Large Object Heap (LOH)**: Objects ≥85,000 bytes (arrays, large strings)
+
+```csharp
+// Every 'new' for a class → heap allocation
+var list = new List<int>();        // List<T> object → Gen 0 heap
+var sb = new StringBuilder();     // StringBuilder → Gen 0 heap
+var customer = new Customer();    // Customer → Gen 0 heap
+
+// Value types in arrays → stored INLINE on the heap (no boxing!)
+int[] numbers = new int[1000];
+// The array header is on the heap, and the 1000 ints are stored
+// contiguously inline — no per-element heap allocation
+
+// Value type as class field → on the heap inside the class object
+public class Rectangle
+{
+    public Point TopLeft;   // Point is a struct — lives inline in Rectangle's heap block
+    public Point BottomRight;
+}
+```
+
+---
+
+## Memory Visualizer: Class Field Inside a Struct
+
+Here's the key scenario that breaks the simple mental model. A `Rectangle` class with two `Point` struct fields:
+
+<MemoryVisualizer
+  stack={[
+    { name: "rect (Rectangle ref)", value: "0x7F3A10", isReference: true },
+    { name: "localInt (int)", value: "42" }
+  ]}
+  heap={[
+    {
+      id: "rect-obj",
+      label: "Rectangle @ 0x7F3A10",
+      content: {
+        "TopLeft.X": "0",
+        "TopLeft.Y": "0",
+        "BottomRight.X": "100",
+        "BottomRight.Y": "50"
+      }
+    }
+  ]}
+  references={[
+    { from: "rect (Rectangle ref)", to: "rect-obj" }
+  ]}
+/>
+
+The `Point` structs (`TopLeft` and `BottomRight`) are embedded **inline** inside the `Rectangle` heap block. They are **not** separately heap-allocated. This is why struct fields in classes have zero extra allocation overhead.
+
+---
+
+## MythBuster: Value Types Are Always on the Stack
+
+<MythBuster
+  myth="Value types live on the stack; reference types live on the heap."
+  reality="Value types live *inline* — wherever the containing variable/object/array resides. Stack allocation only happens for local variables in methods that aren't captured by closures. A value type field in a class lives on the heap. A value type in an array lives on the heap. A value type captured by a lambda lives on the heap (in a compiler-generated closure class). Boxing also moves value types to the heap."
+  example={`// Stack: local struct variable in a method (not captured)
+void Method()
+{
+    Point p = new Point(1, 2); // Stack — method-local, not captured
+}
+
+// Heap: struct as class field
+class Canvas { public Point Origin; } // Origin is on the heap inside Canvas
+
+// Heap: struct in an array
+Point[] pts = new Point[10]; // All 10 Points inline on heap in the array
+
+// Heap: struct captured by lambda (closure)
+Point captured = new Point(3, 4);
+Action act = () => Console.WriteLine(captured.X); // closure → heap
+// The compiler generates a class with 'captured' as a field!
+
+// Heap: boxed struct
+object boxed = new Point(5, 6); // Point moves to heap`}
+/>
+
+---
+
+## Code Challenge: Where Does It Live?
+
+<CodeChallenge
+  id="01-csharp-core/stack-vs-heap/challenge-1"
+  title="Stack or Heap?"
+  description="Consider this code. Which statement correctly describes where 'score' lives?"
+  code={`public class Player
+{
+    public int Score; // 'score' is this field
+}
+
+void UpdateGame()
+{
+    Player player = new Player();
+    player.Score = 100;
+}`}
+  options={[
+    "Score lives on the stack because int is a value type",
+    "Score lives on the heap, inline inside the Player object",
+    "Score lives on the heap in its own separate allocation",
+    "Score lives on the stack inside the UpdateGame stack frame"
+  ]}
+  correctAnswer={1}
+  explanation="Score is an int (value type) but it is a FIELD of a class (Player). Class instances live on the heap. Value type fields are stored inline inside their containing object. So Score is on the heap, embedded directly in the Player object's memory block — not separately allocated, and not on the stack."
+/>
+
+---
+
+## Stack vs Heap Comparison
+
+<ComparisonTable
+  headers={["Dimension", "Stack", "Heap"]}
+  rows={[
+    ["Managed by", "CPU/OS automatically (stack pointer)", "Garbage Collector (.NET runtime)"],
+    ["Allocation speed", "Extremely fast — just decrement stack pointer", "Fast bump-pointer allocation (Gen 0); occasional GC pauses"],
+    ["Deallocation", "Automatic — method return pops frame", "GC — non-deterministic, but generational GC is efficient"],
+    ["Size limit", "~1MB per thread (configurable)", "Limited by process address space and available RAM"],
+    ["Thread safety", "Inherently thread-safe — each thread has its own stack", "Shared; requires GC synchronization for allocation"],
+    ["Fragmentation", "None — LIFO means no gaps", "Yes — LOH especially prone; Gen 0/1 compacted by GC"],
+    ["What lives here", "Local variables (value types), references to heap objects", "All class instances, arrays, boxed values, closures"],
+  ]}
+/>
+
+---
+
+## stackalloc: Explicit Stack Allocation
+
+In performance-critical paths, you can force allocation onto the stack with `stackalloc`:
+
+```csharp
+// stackalloc allocates a block directly on the stack
+// Safe with Span<T> (no pointer arithmetic needed)
+Span<int> buffer = stackalloc int[64];
+
+for (int i = 0; i < buffer.Length; i++)
+    buffer[i] = i * 2;
+
+// buffer is automatically freed when method returns
+// No GC allocation, no GC pressure
+// CRITICAL: do not return Span<T> from stackalloc — it points to the stack frame!
+
+// Practical use: parsing, cryptography, small temp buffers
+static bool TryParseHex(ReadOnlySpan<char> input, out int result)
+{
+    Span<byte> bytes = stackalloc byte[input.Length];
+    // ... process without heap allocation
+    return int.TryParse(input, System.Globalization.NumberStyles.HexNumber, null, out result);
+}
+```
+
+<Callout type="senior">
+**Senior Insight: Understanding GC Pressure and the Allocation Tax**
+
+Every heap allocation you make adds to GC pressure. Gen 0 collections are fast (microseconds), but they pause your thread. High-throughput services (APIs handling 10k+ req/s) can become GC-bound.
+
+Senior engineers apply these strategies to reduce heap pressure:
+
+1. **Object pooling** — `ArrayPool<T>.Shared`, `ObjectPool<T>` (Microsoft.Extensions.ObjectPool)
+2. **Span\<T\> and Memory\<T\>** — slice existing buffers without allocating
+3. **stackalloc** — for small, short-lived buffers
+4. **Value types for small DTOs** — `readonly struct` avoids heap allocation entirely
+5. **Avoid closure captures** — lambdas that capture variables generate hidden class allocations
+
+```csharp
+// HIGH pressure: allocates a new byte[] every call
+byte[] ProcessRequest(string data)
+{
+    byte[] buffer = new byte[1024]; // heap allocation every request!
+    // ...
+    return buffer;
+}
+
+// LOW pressure: rent from pool, return when done
+byte[] ProcessRequestPooled(string data)
+{
+    byte[] buffer = ArrayPool<byte>.Shared.Rent(1024);
+    try
+    {
+        // use buffer...
+        return buffer.ToArray(); // only allocate result
+    }
+    finally
+    {
+        ArrayPool<byte>.Shared.Return(buffer); // return to pool
+    }
+}
+```
+
+Use `dotnet-trace` or BenchmarkDotNet's memory diagnostics to measure your allocations. Guessing is not an acceptable strategy for production performance work.
+</Callout>
+
+---
+
+## Stack Overflow: When the Stack Runs Out
+
+```csharp
+// Classic stack overflow: unbounded recursion
+static int Factorial(int n) => n <= 1 ? 1 : n * Factorial(n - 1);
+
+// Factorial(100000) → StackOverflowException
+// Each recursive call adds a frame; stack exhausts at ~5,000-10,000 levels
+
+// Fix: use iteration or trampolining
+static long FactorialIterative(int n)
+{
+    long result = 1;
+    for (int i = 2; i <= n; i++) result *= i;
+    return result;
+}
+
+// Or: use explicit stack on the heap for very deep recursion
+```
+
+The CLR reserves a small amount of stack space ("stack probe") to detect overflow before the OS crashes the process. It throws `StackOverflowException` — which you **cannot catch** in managed code (the runtime terminates the process).
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Memory management and garbage collection", url: "https://learn.microsoft.com/en-us/dotnet/standard/automatic-memory-management" },
+    { label: "Garbage collector fundamentals", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/fundamentals" },
+    { label: "stackalloc expression", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc" },
+    { label: "ArrayPool<T>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1" },
+  ]}
+/>

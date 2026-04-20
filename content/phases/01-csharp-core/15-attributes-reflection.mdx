@@ -1,0 +1,356 @@
+---
+title: "Attributes & Reflection Basics"
+slug: "attributes-reflection"
+order: 15
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["attributes", "reflection", "custom attributes", "metadata", "source generators", "AOT", "Type"]
+summary: "Attributes are metadata; reflection reads it at runtime — but source generators are replacing reflection for most modern use cases."
+docsLinks:
+  - label: "Attributes (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/attributes"
+  - label: "Reflection in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/reflection/reflection"
+  - label: "Source generators"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/source-generators-overview"
+  - label: "DynamicallyAccessedMembers attribute"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.codeanalysis.dynamicallyaccessedmembersattribute"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## What Are Attributes?
+
+Attributes are **declarative annotations** that attach metadata to code elements (classes, methods, properties, parameters, assemblies). They don't execute code — they're data that tools, frameworks, and your own code can read via reflection.
+
+```csharp
+// Built-in attributes you use every day
+[Obsolete("Use NewMethod instead", error: false)]
+public void OldMethod() { }
+
+[Serializable]
+public class LegacyData { }
+
+[Required, MaxLength(100)]
+public string Name { get; set; } = "";
+
+[HttpGet("{id}")]
+[Authorize(Roles = "Admin")]
+public IActionResult GetById(int id) => Ok();
+
+// Custom attribute
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = true)]
+public class AuditFieldAttribute : Attribute
+{
+    public string Label { get; }
+    public bool LogChanges { get; init; } = true;
+
+    public AuditFieldAttribute(string label)
+    {
+        Label = label;
+    }
+}
+
+public class Customer
+{
+    [AuditField("Customer Email", LogChanges = true)]
+    public string Email { get; set; } = "";
+
+    [AuditField("Phone", LogChanges = false)]
+    public string? Phone { get; set; }
+}
+```
+
+---
+
+## Custom Attribute Design
+
+```csharp
+// AttributeUsage controls where your attribute can be applied
+[AttributeUsage(
+    AttributeTargets.Class | AttributeTargets.Method,  // where it can be placed
+    AllowMultiple = true,     // can be applied multiple times to same element
+    Inherited = false         // subclasses don't inherit this attribute
+)]
+public class ApiVersionAttribute : Attribute
+{
+    public int Version { get; }
+    public string? DeprecatedSince { get; init; }
+
+    public ApiVersionAttribute(int version)
+    {
+        Version = version;
+    }
+}
+
+[ApiVersion(1)]
+[ApiVersion(2, DeprecatedSince = "2024-01")]  // AllowMultiple = true
+public class ProductController
+{
+    [ApiVersion(3)]
+    public void GetProduct() { }
+}
+```
+
+---
+
+## Reflection: Reading Attributes at Runtime
+
+```csharp
+// Get all [AuditField] properties on a type
+static IEnumerable<(string PropertyName, AuditFieldAttribute Attr)> GetAuditFields(Type type)
+{
+    return type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+               .Select(p => (p.Name, Attr: p.GetCustomAttribute<AuditFieldAttribute>()))
+               .Where(x => x.Attr is not null)
+               .Select(x => (x.Name, x.Attr!));
+}
+
+// Usage
+foreach (var (prop, attr) in GetAuditFields(typeof(Customer)))
+{
+    Console.WriteLine($"Property: {prop}, Label: {attr.Label}, LogChanges: {attr.LogChanges}");
+}
+// Property: Email, Label: Customer Email, LogChanges: True
+// Property: Phone, Label: Phone, LogChanges: False
+```
+
+---
+
+## Reflection Fundamentals
+
+```csharp
+using System.Reflection;
+
+// Type discovery
+Type t = typeof(Customer);                 // compile-time — preferred
+Type t2 = customer.GetType();              // runtime — on an instance
+Type? t3 = Type.GetType("MyApp.Customer"); // by name — may be null
+
+// Assembly
+Assembly asm = Assembly.GetExecutingAssembly();
+Type[] types = asm.GetTypes(); // all types in assembly
+
+// Members
+PropertyInfo[] props = t.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+MethodInfo[] methods = t.GetMethods(BindingFlags.Public | BindingFlags.Instance);
+FieldInfo[] fields = t.GetFields(BindingFlags.NonPublic | BindingFlags.Instance);
+
+// Read/write property values
+var customer = new Customer { Email = "alice@example.com" };
+PropertyInfo emailProp = t.GetProperty("Email")!;
+
+string? currentEmail = (string?)emailProp.GetValue(customer);
+emailProp.SetValue(customer, "new@example.com");
+
+// Invoke methods
+MethodInfo method = t.GetMethod("ToString")!;
+object? result = method.Invoke(customer, null);
+
+// Create instances
+object? instance = Activator.CreateInstance(t);
+Customer customer2 = (Customer)Activator.CreateInstance(typeof(Customer))!;
+
+// With constructor arguments
+var constructors = t.GetConstructors();
+var ctor = constructors.First(c => c.GetParameters().Length == 0);
+object? created = ctor.Invoke(null);
+```
+
+---
+
+## Code Challenge: Custom Attribute Reflection
+
+<CodeChallenge
+  id="01-csharp-core/attributes-reflection/challenge-1"
+  title="Attribute Inheritance"
+  description="Given this code, what does GetCustomAttribute return when called on the derived class?"
+  code={`[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+public class TagAttribute : Attribute
+{
+    public string Value { get; }
+    public TagAttribute(string value) => Value = value;
+}
+
+[Tag("Base")]
+public class BaseClass { }
+
+public class DerivedClass : BaseClass { }
+
+// What does this return?
+var attr = typeof(DerivedClass).GetCustomAttribute<TagAttribute>(inherit: true);
+Console.WriteLine(attr?.Value ?? "null");`}
+  options={[
+    "Base — inherit: true overrides the Inherited = false on AttributeUsage",
+    "null — Inherited = false on the attribute means it is never inherited by subclasses",
+    "Base — GetCustomAttribute always searches base types when inherit is true",
+    "Throws InvalidOperationException — conflicting inheritance settings"
+  ]}
+  correctAnswer={1}
+  explanation="AttributeUsage(Inherited = false) controls whether the attribute is visible on derived types via reflection. When Inherited = false, even passing inherit: true to GetCustomAttribute does not return the attribute from the base class — the reflection system respects the Inherited setting. The result is null. If Inherited were true (the default), then GetCustomAttribute with inherit: true would return 'Base'. This catches many developers who assume inherit: true on GetCustomAttribute is sufficient."
+/>
+
+---
+
+## Quiz: Reflection Performance
+
+<Quiz
+  id="01-csharp-core/attributes-reflection/challenge-2"
+  question="You use reflection to read attributes on types in a hot path (called thousands of times per second). What is the best practice?"
+  options={[
+    "Reflection is fast enough — the JIT optimizes it after the first call",
+    "Cache the reflected metadata (PropertyInfo, MethodInfo, attributes) in a static dictionary on startup",
+    "Use dynamic instead of reflection — the DLR is faster",
+    "Mark the class with [Serializable] to enable faster reflection paths"
+  ]}
+  correctAnswer={1}
+  explanation="Reflection is expensive: GetProperties(), GetCustomAttribute(), and member access via MethodInfo.Invoke are all significantly slower than direct IL calls. The correct pattern is to reflect ONCE at startup (or on first type encounter), cache the results in a ConcurrentDictionary<Type, ...> or static field, then use the cached data in the hot path. The JIT does NOT optimize repeated reflection calls the same way it optimizes regular IL. dynamic uses the DLR which also caches — but it's still slower than static dispatch and the DLR has its own overhead."
+/>
+
+---
+
+## Reflection Performance: The Caching Pattern
+
+```csharp
+// SLOW: reflecting every request
+public static void LogAuditFields(object entity)
+{
+    foreach (var prop in entity.GetType().GetProperties()) // expensive every call!
+    {
+        var attr = prop.GetCustomAttribute<AuditFieldAttribute>(); // expensive!
+        if (attr != null)
+            Console.WriteLine($"{attr.Label}: {prop.GetValue(entity)}");
+    }
+}
+
+// FAST: cache reflected metadata
+private static readonly ConcurrentDictionary<Type, (PropertyInfo Prop, AuditFieldAttribute Attr)[]>
+    _auditCache = new();
+
+public static void LogAuditFieldsFast(object entity)
+{
+    var type = entity.GetType();
+    var auditProps = _auditCache.GetOrAdd(type, t =>
+        t.GetProperties()
+         .Select(p => (Prop: p, Attr: p.GetCustomAttribute<AuditFieldAttribute>()!))
+         .Where(x => x.Attr != null)
+         .ToArray());
+
+    foreach (var (prop, attr) in auditProps)
+        Console.WriteLine($"{attr.Label}: {prop.GetValue(entity)}");
+}
+
+// FASTEST: use compiled expressions or source generators (see below)
+// Compiled expression delegate — avoids reflection on every GetValue call
+var prop = typeof(Customer).GetProperty("Email")!;
+var param = Expression.Parameter(typeof(Customer));
+var getter = Expression.Lambda<Func<Customer, string>>(
+    Expression.Property(param, prop), param).Compile();
+
+Customer c = new Customer { Email = "alice@example.com" };
+string email = getter(c); // ~static speed — no reflection overhead after compile
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Source Generators vs Reflection in .NET 8**
+
+The biggest shift in modern .NET is the move from runtime reflection to **source generators** (compile-time code generation). Source generators:
+
+1. Run at **compile time** — no runtime overhead
+2. Are **AOT-compatible** — no reflection metadata required
+3. Produce **type-safe, IDE-navigable** code
+4. Eliminate the "magic strings" problem of reflection
+
+```csharp
+// OLD WAY: JsonSerializer using reflection (incompatible with Native AOT)
+var json = JsonSerializer.Serialize(customer); // uses reflection internally
+
+// NEW WAY: source-generated JSON serializer (zero reflection at runtime)
+[JsonSerializable(typeof(Customer))]
+[JsonSerializable(typeof(Order))]
+public partial class AppJsonContext : JsonSerializerContext { }
+// Source generator creates all serialization code at compile time
+
+var json = JsonSerializer.Serialize(customer, AppJsonContext.Default.Customer);
+// Zero reflection, AOT-safe, 3-5x faster startup
+
+// EF Core query translation uses expression trees (compile-time IL)
+// Dapper uses Emit (IL generation — one-time cost, cached)
+// AutoMapper has a source generator (AutoMapper.SourceGenerator package)
+
+// Key question in interviews: "When would you use reflection vs source generators?"
+// Answer: Source generators for performance-critical, AOT-required, or design-time tasks.
+//         Reflection for runtime discovery (plugin loading, extensibility, diagnostics tooling).
+
+// DynamicallyAccessedMembers — bridge for reflection in AOT context
+static void PrintMembers([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type type)
+{
+    foreach (var prop in type.GetProperties())
+        Console.WriteLine(prop.Name);
+    // Trimmer knows to preserve public properties of whatever Type is passed
+}
+```
+
+At senior level, when an interviewer asks about reflection, they want to hear:
+1. You know the performance cost and caching pattern
+2. You know about source generators as the modern alternative
+3. You know about `DynamicallyAccessedMembers` for AOT safety
+4. You can identify when runtime reflection is genuinely necessary (plugin systems, diagnostic tools) vs where a source generator is better
+</Callout>
+
+---
+
+## Real-World Attribute Patterns
+
+```csharp
+// Validation with attributes (Data Annotations style)
+public class OrderRequest
+{
+    [Required(ErrorMessage = "Customer ID is required")]
+    [StringLength(50, MinimumLength = 3)]
+    public string CustomerId { get; init; } = "";
+
+    [Range(0.01, 999999.99, ErrorMessage = "Total must be between $0.01 and $999,999.99")]
+    public decimal Total { get; init; }
+}
+
+// Serialize attribute — control JSON output
+public class UserDto
+{
+    [JsonPropertyName("user_id")]
+    public int Id { get; init; }
+
+    [JsonIgnore]
+    public string PasswordHash { get; init; } = "";
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public UserRole Role { get; init; }
+}
+
+// AspNet attributes
+[Route("api/[controller]")]
+[ApiController]
+[Authorize]
+public class OrdersController : ControllerBase
+{
+    [HttpPost]
+    [ProducesResponseType(typeof(OrderDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Create([FromBody] OrderRequest request) => Ok();
+}
+```
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Attributes (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/attributes" },
+    { label: "Reflection in .NET", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/reflection/reflection" },
+    { label: "Source generators overview", url: "https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/source-generators-overview" },
+    { label: "DynamicallyAccessedMembers for trimming", url: "https://learn.microsoft.com/en-us/dotnet/core/deploying/trimming/prepare-libraries-for-trimming" },
+    { label: "JSON source generation (System.Text.Json)", url: "https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/source-generation" },
+  ]}
+/>

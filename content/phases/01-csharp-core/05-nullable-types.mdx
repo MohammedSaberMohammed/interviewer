@@ -1,0 +1,286 @@
+---
+title: "Nullable Types — Value Nullables vs NRT"
+slug: "nullable-types"
+order: 5
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["nullable", "Nullable<T>", "NRT", "null reference", "C# 8", "nullability", "NullReferenceException"]
+summary: "C# has two completely different nullable systems — confusing them is a common interview mistake."
+docsLinks:
+  - label: "Nullable value types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/nullable-value-types"
+  - label: "Nullable reference types"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references"
+  - label: "Nullable warnings reference"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-messages/nullable-warnings"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## Two Completely Different Systems
+
+C# has two distinct nullable systems that often get conflated:
+
+1. **`Nullable<T>` (value nullables)** — introduced in C# 2.0. Wraps a value type so it can represent "no value". Written as `int?`, `DateTime?`, etc. This is a **runtime concept** — a real wrapper struct.
+
+2. **Nullable Reference Types (NRT)** — introduced in C# 8.0. Annotates reference types (`string?`, `Customer?`) to indicate nullability intent. This is a **compile-time concept** — it generates warnings but does NOT change runtime behavior.
+
+Understanding which is which — and why they differ — is essential.
+
+---
+
+## System 1: Nullable Value Types (`Nullable<T>`)
+
+`int?` is syntactic sugar for `Nullable<int>` — a real struct defined in the BCL:
+
+```csharp
+public struct Nullable<T> where T : struct
+{
+    private readonly bool hasValue;
+    private readonly T value;
+
+    public bool HasValue => hasValue;
+    public T Value => hasValue ? value : throw new InvalidOperationException("No value");
+    public T GetValueOrDefault() => value; // returns default(T) if HasValue is false
+    public T GetValueOrDefault(T defaultValue) => hasValue ? value : defaultValue;
+}
+```
+
+Usage patterns:
+
+```csharp
+int? age = null;
+int? score = 42;
+
+// Safe access
+if (age.HasValue)
+    Console.WriteLine(age.Value);
+
+// Null-coalescing
+int displayAge = age ?? 0;           // 0 if null
+int displayScore = score ?? -1;      // 42
+
+// Null-conditional (C# 6+)
+int? doubled = score * 2;            // Nullable arithmetic: 84
+int? nullDoubled = age * 2;          // null * 2 = null (lifted operators)
+
+// Pattern matching (C# 8+)
+if (age is int a)
+    Console.WriteLine($"Age: {a}");  // Only if non-null
+
+// GetValueOrDefault
+Console.WriteLine(age.GetValueOrDefault(-1)); // -1
+Console.WriteLine(score.GetValueOrDefault(-1)); // 42
+```
+
+### Boxing of Nullable Types
+
+Nullable types have special boxing behavior:
+
+```csharp
+int? hasValue = 42;
+int? noValue = null;
+
+object boxed1 = hasValue; // boxes to System.Int32 (not Nullable<int>!)
+object boxed2 = noValue;  // boxes to null — NOT a boxed Nullable<int>
+
+Console.WriteLine(boxed1?.GetType()); // System.Int32
+Console.WriteLine(boxed2 == null);    // True
+Console.WriteLine(boxed2?.GetType()); // (nothing — null ref)
+```
+
+This is a CLR-level special case: a boxed `Nullable<T>` with no value becomes a null reference. A boxed `Nullable<T>` with a value becomes a boxed `T` (not `Nullable<T>`).
+
+---
+
+## System 2: Nullable Reference Types (NRT)
+
+NRT was added in C# 8.0 to help eliminate `NullReferenceException` through static analysis. Enable it in your project file:
+
+```xml
+<Nullable>enable</Nullable>
+```
+
+With NRT enabled:
+- `string` means "this reference will never be null" (non-nullable)
+- `string?` means "this reference might be null" (nullable)
+- The compiler performs flow analysis and emits warnings when you might dereference null
+
+```csharp
+#nullable enable
+
+string nonNullable = "hello";
+nonNullable = null; // CS8600: warning — assigning null to non-nullable
+
+string? nullable = null; // OK
+Console.WriteLine(nullable.Length); // CS8602: warning — possible null dereference
+
+// Safe patterns — these silence the warnings (flow analysis understands them)
+if (nullable != null)
+    Console.WriteLine(nullable.Length); // OK — compiler knows non-null here
+
+Console.WriteLine(nullable?.Length);    // OK — null-conditional
+Console.WriteLine(nullable!.Length);    // Suppresses warning (! = "I know better")
+                                        // DANGEROUS if you're wrong — NullReferenceException at runtime
+
+// Null-coalescing with NRT
+string resolved = nullable ?? "default"; // 'resolved' is non-nullable string
+```
+
+### NRT Does NOT Change Runtime Behavior
+
+This is the most important thing to understand:
+
+```csharp
+#nullable enable
+
+string nonNullable = null!; // Force-assign null with ! operator
+// No warning. No runtime check. nonNullable IS null at runtime.
+
+Console.WriteLine(nonNullable.Length); // NullReferenceException at runtime!
+```
+
+NRT annotations are **metadata hints for the compiler's flow analysis**. They become `[NotNull]`, `[MaybeNull]` attributes in the IL, which tools and IDEs use. At runtime, a `string` and `string?` are identical — no runtime null checks are added.
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "Nullable<T> (int?)", "Nullable Reference Types (string?)"]}
+  rows={[
+    ["What it applies to", "Value types only (struct, enum, numeric)", "Reference types only (class, string, interface, delegate)"],
+    ["Runtime representation", "Real struct — Nullable<T> with HasValue and Value", "Identical to non-nullable — no runtime difference"],
+    ["When introduced", "C# 2.0 / .NET 2.0", "C# 8.0 / .NET Core 3.0"],
+    ["Enforcement", "Runtime — accessing Value when HasValue=false throws InvalidOperationException", "Compile-time warnings only — no runtime enforcement"],
+    ["Opt-in", "Always available — just use T?", "Requires <Nullable>enable</Nullable> in project or #nullable enable in file"],
+    ["Boxing behavior", "Special: null Nullable<T> boxes to null reference; non-null boxes to T", "No change — boxing of reference types is unchanged"],
+    ["Pattern matching", "'is T x' pattern works to extract value", "Works identically to non-nullable reference in patterns"],
+    ["Default value", "null (HasValue = false)", "null — but compiler warns if you treat it as non-null"],
+  ]}
+/>
+
+---
+
+## Code Challenge: NRT Flow Analysis
+
+<CodeChallenge
+  id="01-csharp-core/nullable-types/challenge-1"
+  title="What Does the Compiler Warn About?"
+  description="With #nullable enable, which line produces a compiler warning?"
+  code={`#nullable enable
+
+string? MaybeGetName() => null;
+
+void Process()
+{
+    string? name = MaybeGetName();
+
+    if (name == null) return;
+
+    // Line A:
+    Console.WriteLine(name.Length);
+
+    string? other = null;
+
+    // Line B:
+    Console.WriteLine(other.Length);
+}`}
+  options={[
+    "Both Line A and Line B produce CS8602 warnings",
+    "Only Line A produces a warning — name was checked before use",
+    "Only Line B produces a warning — other was not checked",
+    "Neither line produces a warning — using string? suppresses all null warnings"
+  ]}
+  correctAnswer={2}
+  explanation="The compiler's flow analysis understands the 'if (name == null) return' guard. After that check, 'name' is known to be non-null, so Line A is safe — no warning. 'other' was never checked and was explicitly set to null, so Line B (other.Length) produces CS8602: Dereference of a possibly null reference. This demonstrates how NRT uses control flow analysis, not just annotation presence."
+/>
+
+---
+
+## Quiz: The Boxing Special Case
+
+<Quiz
+  id="01-csharp-core/nullable-types/challenge-2"
+  question="You have int? x = null and you write object o = x. What is o at runtime?"
+  options={[
+    "A boxed Nullable<int> with HasValue = false",
+    "A boxed int with value 0 (the default)",
+    "A null reference",
+    "Throws NullReferenceException during the assignment"
+  ]}
+  correctAnswer={2}
+  explanation="The CLR has a special rule for boxing Nullable<T>: if HasValue is false, boxing produces a null reference — not a boxed Nullable<T>. This means (o == null) is true. If HasValue were true (e.g., int? x = 42), then o would be a boxed System.Int32 (not a boxed Nullable<int>). This is a CLR-level feature, not just syntactic sugar."
+/>
+
+---
+
+## Practical NRT Patterns
+
+```csharp
+#nullable enable
+
+// Null-forgiving operator (!) — use sparingly
+string? fromConfig = configuration["key"];
+string definitelySet = fromConfig!; // suppress warning — only if you're CERTAIN
+
+// NotNull postcondition — tell callers the output is never null
+[return: NotNull]
+string GetDisplayName(Customer? customer)
+    => customer?.Name ?? "Anonymous";
+
+// MemberNotNull — tell flow analysis that after this call, member is set
+public class Processor
+{
+    private string? _connectionString;
+
+    [MemberNotNull(nameof(_connectionString))]
+    private void Initialize()
+    {
+        _connectionString = "Server=.;Database=MyDb;";
+    }
+
+    public void Connect()
+    {
+        Initialize();
+        Console.WriteLine(_connectionString.Length); // No warning — Initialize guarantees non-null
+    }
+}
+
+// NotNullWhen — for Try-pattern methods
+bool TryGetCustomer(int id, [NotNullWhen(true)] out Customer? customer)
+{
+    customer = _db.Find(id);
+    return customer != null;
+}
+
+// Caller can use this safely:
+if (TryGetCustomer(1, out var c))
+    Console.WriteLine(c.Name); // No warning — NotNullWhen(true) guarantees non-null here
+```
+
+<Callout type="senior">
+**Senior Insight: NRT Migration Strategy**
+
+When enabling NRT in an existing codebase, the recommended approach is gradual:
+
+1. Set `<Nullable>warnings</Nullable>` first — shows warnings without requiring fixes immediately
+2. Use `#nullable enable` file-by-file, starting with new files and core domain types
+3. Use `!` suppression temporarily with a `// TODO: nullable` comment — don't let it become permanent
+4. Add nullability attributes to your API surface (`[NotNull]`, `[MaybeNull]`, `[AllowNull]`) before full adoption
+5. Set `<TreatWarningsAsErrors>CS8600;CS8601;CS8602;CS8603</TreatWarningsAsErrors>` for critical files only once they're clean
+
+The biggest ROI from NRT comes from annotating your public API surface and high-traffic code paths — where null bugs are most expensive. Full annotation is ideal but often impractical in large legacy codebases. Prioritize accordingly.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Nullable value types", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/nullable-value-types" },
+    { label: "Nullable reference types", url: "https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references" },
+    { label: "Nullable attributes (NotNull, MaybeNull, etc.)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/attributes/nullable-analysis" },
+    { label: "Updating existing codebases for NRT", url: "https://learn.microsoft.com/en-us/dotnet/csharp/nullable-migration-strategies" },
+  ]}
+/>

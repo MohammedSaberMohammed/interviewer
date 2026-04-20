@@ -1,0 +1,19 @@
+{
+  "slug": "09-ef-core",
+  "number": 9,
+  "title": "EF Core Deep Dive",
+  "subtitle": "Change tracker, N+1, migrations, and performance",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "🗄️",
+  "color": "green",
+  "description": "EF Core is a black box until you understand the change tracker. Learn N+1 detection, split queries, compiled queries, and the interceptor pattern for production-grade data access.",
+  "prerequisites": ["01-csharp-core", "03-intermediate-csharp"],
+  "learningOutcomes": [
+    "Explain the change tracker and its first-level cache",
+    "Detect and fix N+1 queries",
+    "Know when to use AsNoTracking",
+    "Write and run safe production migrations",
+    "Profile EF Core queries with interceptors"
+  ]
+}

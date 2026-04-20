@@ -1,0 +1,290 @@
+---
+title: "const vs readonly vs static readonly vs init"
+slug: "const-readonly-init"
+order: 8
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["const", "readonly", "static readonly", "init", "immutability", "compile time", "runtime"]
+summary: "Four ways to express immutability in C# — each with different scope, timing, and versioning implications that bite you in real APIs."
+docsLinks:
+  - label: "const (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/const"
+  - label: "readonly keyword"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/readonly"
+  - label: "init accessor"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Four Immutability Mechanisms
+
+```csharp
+const double Pi = 3.14159265358979;           // compile-time constant, static implicitly
+readonly int _instanceId;                      // instance field, set in constructor only
+static readonly HttpClient _client = new();    // type-level field, set at type initialization
+public int Value { get; init; }               // property, settable only in object initializer
+```
+
+These four serve different purposes and have meaningfully different behavior.
+
+---
+
+## const: Compile-Time Literal
+
+`const` embeds the value **directly into the compiled IL** at the usage site. It's burned into the consuming assembly at compile time.
+
+Rules:
+- Must be a compile-time constant (literal or expression of literals)
+- Only works with: numeric primitives, `bool`, `char`, `string`, `enum`, and `null`
+- **Implicitly static** — no instance required
+- Cannot be `readonly` (redundant)
+- Cannot be a reference type value other than `null` or `string`
+
+```csharp
+public class Config
+{
+    public const int MaxRetries = 3;
+    public const string AppName = "MyApp";
+    public const double Tolerance = 1e-9;
+    // public const DateTime Epoch = ...; // ILLEGAL — DateTime is not a constant type
+    // public const List<int> Items = ...; // ILLEGAL
+
+    // const computed from other consts — OK
+    public const int MaxRetryDelayMs = MaxRetries * 1000;
+}
+
+// Usage — MaxRetries is inlined to '3' at compile time in the CONSUMING assembly
+if (attempt > Config.MaxRetries) // compiles to: if (attempt > 3)
+    throw new RetryExceededException();
+```
+
+### The const Versioning Problem
+
+This is the critical production gotcha:
+
+```csharp
+// Library v1: Config.MaxRetries = 3
+// Your app compiles and inlines '3' everywhere
+
+// Library v2: Config.MaxRetries = 5
+// If you only update the library DLL without recompiling YOUR app,
+// your app still uses '3' — the old compiled-in value!
+// This is a BINARY BREAKING CHANGE with const.
+```
+
+Use `const` for values that are **truly universal constants** that will never change (`Math.PI`, physics constants, protocol magic numbers). For configurable values, use `static readonly`.
+
+---
+
+## readonly: Instance Field Set in Constructor
+
+`readonly` fields can only be assigned:
+- In the field declaration (initializer)
+- In a constructor of the same class
+
+After construction, the field is immutable — any attempt to assign throws a compile error.
+
+```csharp
+public class DatabaseConnection
+{
+    private readonly string _connectionString;
+    private readonly int _timeout;
+    private readonly Guid _id = Guid.NewGuid(); // declaration initializer also OK
+
+    public DatabaseConnection(string connectionString, int timeout = 30)
+    {
+        _connectionString = connectionString; // OK in constructor
+        _timeout = timeout;
+    }
+
+    public void ChangeTimeout()
+    {
+        _timeout = 60; // CS0191: Cannot assign to '_timeout' because it is readonly
+    }
+}
+```
+
+`readonly` is instance-level. Each instance gets its own readonly field set during construction. This is the correct tool for **dependency-injected services, configuration per-instance**, and similar.
+
+---
+
+## static readonly: Type-Level Constant
+
+`static readonly` combines static (type-level) with readonly (settable only in static constructors or field initializers):
+
+```csharp
+public class HttpClientFactory
+{
+    // Set once, shared by all instances — initialized when type is first used
+    public static readonly HttpClient SharedClient = new HttpClient
+    {
+        Timeout = TimeSpan.FromSeconds(30)
+    };
+
+    // static readonly with static constructor
+    public static readonly string ServiceUrl;
+
+    static HttpClientFactory()
+    {
+        ServiceUrl = Environment.GetEnvironmentVariable("SERVICE_URL")
+                     ?? "https://api.default.com";
+    }
+}
+
+// Common pattern for singleton-like values
+public static class RegexPatterns
+{
+    public static readonly Regex Email =
+        new Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.Compiled);
+
+    public static readonly Regex Phone =
+        new Regex(@"^\+?[\d\s\-\(\)]+$", RegexOptions.Compiled);
+}
+```
+
+`static readonly` does NOT suffer the versioning problem — the value is read from the field at runtime, not burned into the consumer's IL.
+
+---
+
+## init: Property Settable Only During Object Initialization
+
+`init` (C# 9+) is an accessor that allows a property to be set in an **object initializer or constructor** but becomes read-only after the object is constructed.
+
+```csharp
+public class Order
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+    public string CustomerId { get; init; } = string.Empty;
+    public decimal Total { get; init; }
+}
+
+// Object initializer — init setters are allowed here
+var order = new Order
+{
+    CustomerId = "CUST-001",
+    Total = 99.99m
+};
+
+// After construction — init setters are not allowed
+order.Total = 150m; // CS8852: Init-only property 'Total' can only be assigned in object initializer
+
+// With record types — init is the default for positional properties
+public record CustomerDto(string Name, string Email);
+// Equivalent to:
+// public string Name { get; init; }
+// public string Email { get; init; }
+```
+
+`init` is perfect for immutable DTOs and value objects where you want object initializer syntax but don't want post-construction mutation.
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "const", "readonly (instance)", "static readonly", "init"]}
+  rows={[
+    ["Scope", "Implicitly static (type-level)", "Per instance", "Type-level (one per type)", "Per instance"],
+    ["When set", "Compile time — embedded in IL", "Constructor or field initializer", "Static constructor or field initializer", "Object initializer or constructor"],
+    ["Allowed types", "Primitives, string, enum, null only", "Any type", "Any type", "Any type (property)"],
+    ["Runtime vs compile", "Compile-time inlining", "Runtime", "Runtime", "Runtime"],
+    ["Versioning risk", "Yes — consumer must recompile on change", "No", "No", "No"],
+    ["Thread safe", "Yes — immutable by definition", "Yes — immutable after construction", "Yes after initialization; static ctor is thread-safe", "Yes — immutable after construction"],
+    ["Use case", "Universal constants (Pi, max buffer size, protocol versions)", "Per-instance invariants (injected deps, IDs)", "Shared expensive objects (HttpClient, Regex, singletons)", "Immutable DTOs, records, value objects"],
+  ]}
+/>
+
+---
+
+## Code Challenge: The const Versioning Trap
+
+<CodeChallenge
+  id="01-csharp-core/const-readonly-init/challenge-1"
+  title="Library Update — What Value Do Consumers See?"
+  description="LibraryV1.dll defines 'public const int Version = 1'. You ship LibraryV2.dll with 'public const int Version = 2' and update the NuGet package in the app. The app is NOT recompiled — the new DLL is simply deployed. What does the app print when it accesses LibraryV1.Version?"
+  code={`// Consuming app (compiled against v1, NOT recompiled)
+Console.WriteLine(Config.Version); // What prints?`}
+  options={[
+    "2 — the app loads the new DLL and reads the updated value",
+    "1 — the old value was inlined into the app's IL at compile time",
+    "Throws MissingFieldException at runtime",
+    "0 — the field is uninitialized because the DLL changed"
+  ]}
+  correctAnswer={1}
+  explanation="const values are inlined into the consumer's IL at compile time. When the app compiled against v1, the literal '1' was burned into the app's IL. The app does not read the field from the DLL at runtime — it has '1' hardcoded in its own bytecode. Deploying v2.dll without recompiling the app leaves the app using '1'. This is why const is a binary breaking change for public APIs — always prefer static readonly for library values that might change."
+/>
+
+---
+
+## Quiz: readonly vs init
+
+<Quiz
+  id="01-csharp-core/const-readonly-init/challenge-2"
+  question="Which statement correctly describes the difference between a readonly field and an init property?"
+  options={[
+    "readonly fields can only hold primitive types; init properties can hold any type",
+    "readonly fields are set in constructors; init properties are set in object initializers or constructors — both prevent post-construction mutation",
+    "init properties are always static; readonly fields are always instance-level",
+    "readonly and init are functionally identical — they are just different syntaxes"
+  ]}
+  correctAnswer={1}
+  explanation="readonly applies to fields and restricts assignment to the constructor (or field initializer). init applies to property setters and allows assignment in object initializers OR constructors, but not after object construction completes. Both prevent post-construction mutation. They differ in syntax location (field vs property) and in that init also supports object initializer syntax which readonly fields do not. They are NOT functionally identical — readonly is for fields, init is for properties, and their scoping rules differ slightly."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: required modifier (C# 11) Completes the Picture**
+
+C# 11 added `required` to enforce that init properties are actually set during object construction — the compiler errors if you forget:
+
+```csharp
+public class OrderRequest
+{
+    public required string CustomerId { get; init; }  // must be set
+    public required decimal Total { get; init; }       // must be set
+    public string? Notes { get; init; }                // optional
+}
+
+// Compiler error if you skip required members:
+var bad = new OrderRequest(); // CS9035: Required member 'CustomerId' must be set
+
+// Correct:
+var good = new OrderRequest { CustomerId = "CUST-001", Total = 99.99m };
+
+// In constructors — SetsRequiredMembers suppresses the enforcement for the constructor
+public class OrderRequest
+{
+    [SetsRequiredMembers]
+    public OrderRequest(string customerId, decimal total)
+    {
+        CustomerId = customerId;
+        Total = total;
+    }
+    // ...
+}
+```
+
+The full modern immutability toolkit for .NET 8:
+- `const` → universal compile-time literals
+- `readonly` → instance field set-once
+- `static readonly` → type-level set-once
+- `init` → property settable in initializer only
+- `required init` → mandatory init-only property
+- `readonly struct` → entire struct is immutable
+- `record` / `record struct` → immutable by default with value equality
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "const keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/const" },
+    { label: "readonly keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/readonly" },
+    { label: "init accessor", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init" },
+    { label: "required modifier (C# 11)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/required" },
+  ]}
+/>

@@ -1,0 +1,272 @@
+---
+title: "Strings, Immutability & StringBuilder"
+slug: "strings"
+order: 10
+difficulty: "foundation"
+readingTime: 13
+status: "published"
+tags: ["string", "immutability", "StringBuilder", "string interning", "interpolation", "Span", "performance"]
+summary: "Strings are the most misused type in C# — immutability, interning, and concat-in-loops are the three failure modes that show up in every production codebase."
+docsLinks:
+  - label: "String class (System.String)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string"
+  - label: "StringBuilder class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder"
+  - label: "String interning"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern"
+  - label: "String interpolation"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/tokens/interpolated"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## Strings Are Immutable Reference Types
+
+`string` in C# is a **reference type** that lives on the heap. Unlike most reference types, it is **immutable** — no method on a `string` ever modifies it. Every operation that "changes" a string actually creates a **new string object**.
+
+```csharp
+string s = "hello";
+string upper = s.ToUpper();    // creates a NEW string "HELLO" — s is unchanged
+string trimmed = "  hi  ".Trim(); // creates a NEW string "hi"
+
+Console.WriteLine(s);      // "hello" — unchanged
+Console.WriteLine(upper);  // "HELLO" — new string
+Console.WriteLine(object.ReferenceEquals(s, upper)); // false — different objects
+
+// Even the += operator creates a new string
+string greeting = "Hello";
+greeting += ", World!";   // new string "Hello, World!" allocated; old "Hello" is eligible for GC
+```
+
+Immutability makes strings **thread-safe by default** — you can share string references across threads without synchronization because no one can mutate them.
+
+---
+
+## String Interning
+
+The CLR maintains an **intern pool** — a hash table of string literals. Identical string literals in code often share the same reference:
+
+```csharp
+// String literals are interned at compile time
+string a = "hello";
+string b = "hello";
+Console.WriteLine(object.ReferenceEquals(a, b)); // true — same interned reference
+
+// Dynamically created strings are NOT interned by default
+string c = new string(new char[] { 'h', 'e', 'l', 'l', 'o' });
+string d = "hello";
+Console.WriteLine(object.ReferenceEquals(c, d)); // false — c is not interned
+
+// Manual interning
+string interned = string.Intern(c);
+Console.WriteLine(object.ReferenceEquals(interned, d)); // true — now interned
+Console.WriteLine(object.IsInterned(c) != null);         // true
+
+// Concat of literals is interned at compile time
+string e = "hel" + "lo";
+Console.WriteLine(object.ReferenceEquals(e, d)); // true — compiler folds literal concat
+```
+
+---
+
+## Code Challenge: String Interning Gotcha
+
+<CodeChallenge
+  id="01-csharp-core/strings/challenge-1"
+  title="Reference Equality Surprise"
+  description="What does this code print?"
+  code={`string a = "hello";
+string b = "hel";
+string c = b + "lo"; // runtime concatenation
+
+Console.WriteLine(a == c);                        // Line 1
+Console.WriteLine(object.ReferenceEquals(a, c));  // Line 2`}
+  options={[
+    "Line 1: true, Line 2: true",
+    "Line 1: false, Line 2: false",
+    "Line 1: true, Line 2: false",
+    "Line 1: false, Line 2: true"
+  ]}
+  correctAnswer={2}
+  explanation="Line 1: a == c uses string's overloaded == operator which does value (character-by-character) equality. 'hello' == 'hello' → true. Line 2: c is created at RUNTIME via concatenation of b and 'lo' — it is NOT interned. 'a' is an interned literal. They are different objects → ReferenceEquals is false. This is why you should ALWAYS use == (not ReferenceEquals) for string content comparison, and only use ReferenceEquals when you specifically need to check if it's the exact same interned object."
+/>
+
+---
+
+## MythBuster: Strings on the Stack
+
+<MythBuster
+  myth="Strings might sometimes live on the stack because they're so small and commonly used."
+  reality="Strings are ALWAYS heap-allocated reference types. The string variable (reference/pointer) lives on the stack (if it's a local variable), but the actual string data — the header, length, and character array — is always on the managed heap. C# has no concept of stack-allocated strings. The 'small string optimization' that exists in C++ STL does not exist in .NET strings."
+  example={`void Method()
+{
+    string s = "hello"; // 's' (the reference/pointer) is on the stack
+                        // The string object itself is on the heap (intern pool in this case)
+
+    string dynamic = "hel" + input; // 'dynamic' reference on stack
+                                    // New string object on heap (Gen 0)
+}`}
+/>
+
+---
+
+<Callout type="trap">
+**String Concatenation in Loops: The O(n²) Trap**
+
+Each `+` on strings allocates a new string and copies all characters. In a loop with N iterations concatenating strings of average length L, you do N × L total character copies — O(n²) complexity:
+
+```csharp
+// DANGEROUS: O(n²) allocation pattern
+string result = "";
+foreach (var item in items) // 10,000 items, each ~20 chars
+{
+    result += item + ", "; // Each iteration: allocates new string, copies all previous chars
+}
+// Total allocations: 10,000 new strings
+// Total characters copied: 0 + 20 + 40 + 60 + ... + 200,000 = ~1 billion chars copied
+
+// CORRECT: StringBuilder
+var sb = new StringBuilder();
+foreach (var item in items)
+{
+    sb.Append(item);
+    sb.Append(", ");
+}
+string result2 = sb.ToString(); // One final allocation
+
+// CORRECT for known collections: string.Join
+string result3 = string.Join(", ", items); // Internally optimized
+
+// CORRECT for small fixed concatenations: use + or interpolation (compiler optimizes)
+string name = "Alice";
+string greeting = $"Hello, {name}!"; // Fine — single allocation via interpolation handler
+```
+</Callout>
+
+---
+
+## StringBuilder: The Right Tool for Dynamic Strings
+
+`StringBuilder` maintains an internal character buffer that grows as needed, avoiding repeated allocations:
+
+<CodePlayground
+  code={`using System.Text;
+
+// Basic usage
+var sb = new StringBuilder(capacity: 256); // pre-size to avoid growth reallocations
+sb.Append("Hello");
+sb.Append(", ");
+sb.AppendLine("World!");
+sb.AppendFormat("Value: {0:F2}", 3.14159);
+sb.Insert(0, ">>> "); // insert at position
+
+Console.WriteLine(sb.ToString());
+Console.WriteLine($"Length: {sb.Length}");
+
+// Chaining (fluent)
+string result = new StringBuilder()
+    .Append("First")
+    .Append(" | ")
+    .Append("Second")
+    .ToString();
+Console.WriteLine(result);
+
+// StringBuilder is NOT thread-safe — use lock or separate instances per thread`}
+/>
+
+---
+
+## String Comparison: Always Be Explicit
+
+```csharp
+string a = "Straße"; // German for "street"
+string b = "strasse";
+
+// Ordinal — byte-by-byte, fastest, culture-invariant
+Console.WriteLine(a.Equals(b, StringComparison.Ordinal)); // false — different chars
+Console.WriteLine(a.Equals(b, StringComparison.OrdinalIgnoreCase)); // false — still different
+
+// Linguistic (CurrentCulture) — may equate characters based on locale
+Console.WriteLine(string.Compare(a, b, StringComparison.CurrentCultureIgnoreCase));
+// Varies by OS locale settings — inconsistent across environments!
+
+// For UI display: CurrentCulture
+// For identifiers, keys, file paths: Ordinal
+// For case-insensitive identifiers: OrdinalIgnoreCase (fast, consistent)
+// NEVER use the default (no StringComparison arg) for security-sensitive comparison
+```
+
+---
+
+## Modern String Features
+
+```csharp
+// Raw string literals (C# 11) — no escaping needed
+string json = """
+    {
+        "name": "Alice",
+        "path": "C:\Users\Alice"
+    }
+    """;
+
+// UTF-8 string literals (C# 11) — ReadOnlySpan<byte> without allocation
+ReadOnlySpan<byte> utf8 = "hello"u8; // u8 suffix — zero allocation
+
+// String interpolation handler (C# 10+) — avoids boxing for common types
+int count = 42;
+string s = $"Count is {count}";
+// In .NET 6+, the compiler uses DefaultInterpolatedStringHandler internally
+// which avoids boxing for numeric types — smarter than string.Format
+
+// Span-based string operations — no allocation for substrings
+string text = "Hello, World!";
+ReadOnlySpan<char> span = text.AsSpan(7, 5); // "World" — no allocation
+Console.WriteLine(span.ToString()); // Allocates only when ToString() called
+
+// String.Create — allocate exactly what you need
+static string ToHexString(byte[] bytes)
+    => string.Create(bytes.Length * 2, bytes, (span, state) =>
+    {
+        for (int i = 0; i < state.Length; i++)
+            state[i].TryFormat(span[(i * 2)..], out _, "x2");
+    });
+```
+
+<Callout type="senior">
+**Senior Insight: String Interning and Memory Leaks**
+
+The intern pool is a permanent, GC-root table. Interned strings are never collected. If you call `string.Intern()` on dynamically generated strings (like database row values), you can cause a **memory leak** — the intern pool grows unboundedly:
+
+```csharp
+// DANGEROUS — memory leak: every unique customer ID is interned forever
+while (ReadingRows())
+{
+    string customerId = reader.GetString(0);
+    string interned = string.Intern(customerId); // NEVER do this for dynamic data!
+}
+
+// Use string interning ONLY for:
+// 1. Known-finite sets (enum-like string constants)
+// 2. Protocol field names that repeat millions of times (XML parsers, etc.)
+// 3. Explicit optimization with profiler evidence
+
+// Better alternative for deduplication: a ConcurrentDictionary as a string pool
+// that you can clear when needed
+var pool = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+string Deduplicate(string s) => pool.GetOrAdd(s, s);
+```
+
+Also know that in .NET, the JIT may or may not intern adjacent identical literals depending on optimization level. Never rely on `ReferenceEquals` for string equality — always use `==` or `string.Equals` with an explicit `StringComparison`.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "System.String class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string" },
+    { label: "StringBuilder", url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder" },
+    { label: "String interning", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern" },
+    { label: "Raw string literals (C# 11)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/tokens/raw-string" },
+    { label: "Best practices for string comparison", url: "https://learn.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings" },
+  ]}
+/>

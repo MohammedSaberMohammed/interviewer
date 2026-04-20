@@ -1,0 +1,300 @@
+---
+title: "IComparable vs IComparer"
+slug: "icomparable"
+order: 13
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["IComparable", "IComparer", "sorting", "comparison", "Comparer", "OrderBy", "LINQ"]
+summary: "IComparable is the type's natural order; IComparer is a pluggable strategy — confusing them leads to rigid, untestable sort logic."
+docsLinks:
+  - label: "IComparable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.icomparable-1"
+  - label: "IComparer<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1"
+  - label: "Comparer<T> class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.comparer-1"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Distinction in One Sentence
+
+- **`IComparable<T>`**: implemented by the type itself — defines its *natural, intrinsic ordering*
+- **`IComparer<T>`**: a separate class — defines an *external, pluggable ordering strategy*
+
+Both produce a sorting order, but where the logic lives — and who controls it — is fundamentally different.
+
+---
+
+## IComparable\<T\>: The Type's Own Order
+
+Implement `IComparable<T>` on a type when it has an obvious, universally agreed-upon ordering. `List<T>.Sort()`, `Array.Sort()`, and LINQ's `OrderBy` (without a key selector) rely on this interface.
+
+`CompareTo` returns:
+- **Negative** → this instance comes before `other`
+- **Zero** → this instance has the same order as `other`
+- **Positive** → this instance comes after `other`
+
+```csharp
+public class Product : IComparable<Product>
+{
+    public string Name { get; init; } = "";
+    public decimal Price { get; init; }
+    public int Stock { get; init; }
+
+    // Natural order: by price ascending
+    public int CompareTo(Product? other)
+    {
+        if (other is null) return 1; // null sorts before this
+        return Price.CompareTo(other.Price);
+    }
+
+    public override string ToString() => $"{Name} (${Price})";
+}
+
+var products = new List<Product>
+{
+    new() { Name = "Widget", Price = 9.99m, Stock = 100 },
+    new() { Name = "Gadget", Price = 4.99m, Stock = 50 },
+    new() { Name = "Doohickey", Price = 14.99m, Stock = 25 },
+};
+
+products.Sort(); // Uses IComparable<Product>.CompareTo
+foreach (var p in products)
+    Console.WriteLine(p);
+// Gadget ($4.99)
+// Widget ($9.99)
+// Doohickey ($14.99)
+
+// Also works with Array.Sort, SortedList, SortedSet
+var sorted = new SortedSet<Product>(products);
+```
+
+---
+
+## IComparer\<T\>: External Sorting Strategies
+
+`IComparer<T>` lets you define alternative orderings without modifying the type. This is the Strategy pattern applied to comparison:
+
+```csharp
+// Sort products by name (alphabetical)
+public class ProductByNameComparer : IComparer<Product>
+{
+    public int Compare(Product? x, Product? y)
+    {
+        if (ReferenceEquals(x, y)) return 0;
+        if (x is null) return -1;
+        if (y is null) return 1;
+        return string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+// Sort products by stock (descending)
+public class ProductByStockDescendingComparer : IComparer<Product>
+{
+    public int Compare(Product? x, Product? y)
+    {
+        if (ReferenceEquals(x, y)) return 0;
+        if (x is null) return -1;
+        if (y is null) return 1;
+        return y.Stock.CompareTo(x.Stock); // reversed for descending
+    }
+}
+
+// Use different comparers for different scenarios
+products.Sort(new ProductByNameComparer());
+products.Sort(new ProductByStockDescendingComparer());
+
+// SortedDictionary / SortedList use IComparer in their constructor
+var byName = new SortedDictionary<Product, int>(new ProductByNameComparer());
+```
+
+---
+
+## Comparer\<T\> Base Class: The Right Way to Implement IComparer
+
+Instead of implementing the interface directly, derive from `Comparer<T>`:
+
+```csharp
+// Comparer<T> provides:
+// 1. A default IComparer<T> via Comparer<T>.Default
+// 2. Non-generic IComparer implementation (for legacy APIs) for free
+// 3. Null safety handling if you implement the null checks
+
+public class ProductByPriceComparer : Comparer<Product>
+{
+    // Only need to implement this one method
+    public override int Compare(Product? x, Product? y)
+    {
+        if (ReferenceEquals(x, y)) return 0;
+        if (x is null) return -1;
+        if (y is null) return 1;
+        return x.Price.CompareTo(y.Price);
+    }
+}
+
+// Alternatively, use Comparer<T>.Create for one-liners
+IComparer<Product> byPriceDesc = Comparer<Product>.Create(
+    (x, y) => y.Price.CompareTo(x.Price));
+
+products.Sort(byPriceDesc);
+```
+
+---
+
+## Comparison Table
+
+<ComparisonTable
+  headers={["Dimension", "IComparable<T>", "IComparer<T>", "Comparer<T>.Create"]}
+  rows={[
+    ["Implemented by", "The type itself", "A separate class", "Inline lambda — anonymous implementation"],
+    ["Number of orderings", "One — the natural order", "Multiple — one per comparer class", "Multiple — one per lambda"],
+    ["LINQ OrderBy", "Used when no key selector is given", "Passed as IComparer<T> to OrderBy overload", "Same as IComparer<T>"],
+    ["Array.Sort / List.Sort", "Default overload uses this", "Overload accepting IComparer<T>", "Same as IComparer<T>"],
+    ["SortedSet / SortedDictionary", "Default constructor uses Comparer<T>.Default which needs IComparable<T>", "Constructor overload accepts IComparer<T>", "Same as IComparer<T>"],
+    ["Null handling", "Your responsibility in CompareTo", "Your responsibility in Compare", "Your responsibility in lambda"],
+    ["When to use", "Type has one obvious natural order", "Multiple sort strategies needed; sort is external to type", "Quick one-off sort, test code, scripts"],
+  ]}
+/>
+
+---
+
+## Code Challenge: Sorting Gotcha
+
+<CodeChallenge
+  id="01-csharp-core/icomparable/challenge-1"
+  title="Why Doesn't This Sort?"
+  description="This code compiles but produces incorrect sort results. What's wrong?"
+  code={`public class Employee
+{
+    public string Name { get; set; } = "";
+    public int Salary { get; set; }
+}
+
+var employees = new List<Employee>
+{
+    new() { Name = "Charlie", Salary = 80000 },
+    new() { Name = "Alice", Salary = 60000 },
+    new() { Name = "Bob", Salary = 70000 },
+};
+
+employees.Sort(); // Sorts in place`}
+  options={[
+    "Employee does not implement IComparable<Employee> — Sort() throws InvalidOperationException at runtime",
+    "Sort() without a comparer requires IComparable<Employee> — since Employee lacks it, Sort uses reference equality which produces random order",
+    "The code is correct — Sort() always works on reference types using HashCode order",
+    "Sort() fails silently because Employee has no GetHashCode override"
+  ]}
+  correctAnswer={0}
+  explanation="List<T>.Sort() (with no arguments) requires that T implements IComparable<T> or IComparable. If it doesn't, Sort() throws InvalidOperationException: 'Failed to compare two elements in the array.' This is a RUNTIME exception — the code compiles fine. To fix it: either implement IComparable<Employee> on Employee, or pass a comparer: employees.Sort((a, b) => a.Name.CompareTo(b.Name))."
+/>
+
+---
+
+## LINQ OrderBy and Comparison
+
+```csharp
+// LINQ OrderBy without key: uses IComparable<T>
+var sorted = products.OrderBy(x => x); // requires Product : IComparable<Product>
+
+// LINQ OrderBy with key selector: uses Comparer<TKey>.Default (no IComparable needed on Product)
+var byPrice = products.OrderBy(p => p.Price);      // Price is decimal — IComparable<decimal>
+var byName = products.OrderBy(p => p.Name);         // Name is string — IComparable<string>
+var byStock = products.OrderByDescending(p => p.Stock);
+
+// LINQ OrderBy with IComparer
+var byNameComparer = products.OrderBy(p => p, new ProductByNameComparer());
+
+// Multi-level sort
+var sorted2 = products
+    .OrderBy(p => p.Price)
+    .ThenByDescending(p => p.Stock)
+    .ThenBy(p => p.Name);
+```
+
+---
+
+<CodePlayground
+  code={`using System.Collections.Generic;
+
+public record Product(string Name, decimal Price, int Stock);
+
+// Natural order: by price
+public class ProductPriceComparer : Comparer<Product>
+{
+    public override int Compare(Product? x, Product? y)
+    {
+        if (ReferenceEquals(x, y)) return 0;
+        if (x is null) return -1;
+        if (y is null) return 1;
+        return x.Price.CompareTo(y.Price);
+    }
+}
+
+var products = new List<Product>
+{
+    new("Widget", 9.99m, 100),
+    new("Gadget", 4.99m, 50),
+    new("Doohickey", 14.99m, 200),
+    new("Thingy", 4.99m, 10),
+};
+
+// Sort by price, then by stock descending (multi-key)
+var comparer = Comparer<Product>.Create((x, y) =>
+{
+    int cmp = x.Price.CompareTo(y.Price);
+    return cmp != 0 ? cmp : y.Stock.CompareTo(x.Stock); // stock descending for ties
+});
+
+products.Sort(comparer);
+foreach (var p in products)
+    Console.WriteLine(\$"{p.Name,-15} \${p.Price:F2}  Stock:{p.Stock}");`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: StringComparer and Culture-Aware Sorting**
+
+When sorting strings, always specify the comparison type. The default `string.CompareTo()` uses `CurrentCulture` — which changes behavior based on the server's locale settings:
+
+```csharp
+// These produce different orderings depending on OS locale:
+var words = new[] { "apple", "Banana", "cherry", "Date" };
+
+words.OrderBy(w => w);
+// CurrentCulture: might sort by locale rules (Banana before apple in some cultures)
+
+// For consistent, culture-agnostic sorting (identifiers, keys, codes):
+var stable = words.OrderBy(w => w, StringComparer.OrdinalIgnoreCase);
+// apple, Banana, cherry, Date — consistent on any machine
+
+// For user-facing alphabetical display (UI lists):
+var display = words.OrderBy(w => w, StringComparer.CurrentCulture);
+
+// SortedDictionary with explicit comparer — prevents locale bugs
+var dict = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+dict["Apple"] = 1;
+dict["apple"] = 2; // updates the same key — case-insensitive
+
+// The StringComparer.Ordinal family:
+// StringComparer.Ordinal            — case-sensitive, byte-order
+// StringComparer.OrdinalIgnoreCase  — case-insensitive, byte-order (fast)
+// StringComparer.InvariantCulture   — linguistic, culture-independent
+// StringComparer.CurrentCulture     — matches user's OS locale (for UI)
+```
+
+A subtle production bug: using `List<string>.Sort()` (CurrentCulture) on a server with Turkish locale causes `i` and `I` to sort differently than expected — the infamous "Turkish I problem". Always specify `StringComparer.OrdinalIgnoreCase` for identifier sorting.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IComparable<T>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.icomparable-1" },
+    { label: "IComparer<T>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1" },
+    { label: "Comparer<T>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.comparer-1" },
+    { label: "StringComparer", url: "https://learn.microsoft.com/en-us/dotnet/api/system.stringcomparer" },
+  ]}
+/>

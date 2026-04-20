@@ -1,0 +1,19 @@
+{
+  "slug": "13-traps",
+  "number": 13,
+  "title": "Hidden & Misleading Traps",
+  "subtitle": "Interview traps across all topics",
+  "level": "senior",
+  "estimatedHours": 6,
+  "emoji": "🪤",
+  "color": "purple",
+  "description": "The questions designed to catch smart developers off guard. 20 traps covering closure capture, async void, decimal vs double, DbContext thread safety, and more — with detailed explanations of why they fool people.",
+  "prerequisites": ["01-csharp-core", "03-intermediate-csharp", "05-async-concurrency"],
+  "learningOutcomes": [
+    "Spot closure capture bugs before they ship",
+    "Know the only correct use of async void",
+    "Explain why Task.Wait() causes deadlocks",
+    "Identify EF Core thread-safety violations",
+    "Never confuse decimal and double in financial code"
+  ]
+}

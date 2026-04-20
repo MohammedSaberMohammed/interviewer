@@ -1,0 +1,19 @@
+{
+  "slug": "12-system-design",
+  "number": 12,
+  "title": "System Design",
+  "subtitle": "Distributed systems, CAP, and resilience",
+  "level": "senior",
+  "estimatedHours": 12,
+  "emoji": "🌍",
+  "color": "slate",
+  "description": "Senior interviews always include a system design round. Learn CAP theorem, caching strategies, message brokers, the Saga pattern, Outbox pattern, Polly resilience, and how to structure your answer under time pressure.",
+  "prerequisites": ["05-async-concurrency", "09-ef-core", "10-aspnet-core"],
+  "learningOutcomes": [
+    "Apply CAP theorem to design trade-offs",
+    "Design a caching strategy with Redis",
+    "Choose between RabbitMQ, Kafka, and Azure Service Bus",
+    "Implement the Outbox pattern for reliability",
+    "Build resilience with Polly (retry, circuit breaker)"
+  ]
+}

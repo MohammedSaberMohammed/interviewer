@@ -1,0 +1,19 @@
+{
+  "slug": "02-oop",
+  "number": 2,
+  "title": "OOP in C#",
+  "subtitle": "Classes, inheritance, and polymorphism",
+  "level": "junior",
+  "estimatedHours": 6,
+  "emoji": "🧱",
+  "color": "indigo",
+  "description": "Object-oriented programming is more than syntax — it's a way of reasoning about systems. Learn when to use classes vs structs vs records, and why the inheritance hierarchy matters.",
+  "prerequisites": ["01-csharp-core"],
+  "learningOutcomes": [
+    "Choose between class, struct, and record confidently",
+    "Understand virtual/override/new/sealed semantics",
+    "Explain the diamond problem and how C# avoids it",
+    "Design with composition over inheritance",
+    "Use access modifiers to enforce encapsulation"
+  ]
+}

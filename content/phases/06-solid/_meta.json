@@ -1,0 +1,19 @@
+{
+  "slug": "06-solid",
+  "number": 6,
+  "title": "SOLID & Design Principles",
+  "subtitle": "Principles with real code smells",
+  "level": "mid",
+  "estimatedHours": 5,
+  "emoji": "📐",
+  "color": "teal",
+  "description": "SOLID isn't just an acronym to recite — it's a way of spotting design problems before they become production incidents. Learn each principle with concrete C# before/after examples.",
+  "prerequisites": ["01-csharp-core", "02-oop"],
+  "learningOutcomes": [
+    "Identify SRP violations in real code",
+    "Design for extension without modification",
+    "Apply LSP to inheritance hierarchies",
+    "Use ISP to avoid fat interfaces",
+    "Apply DIP with constructor injection"
+  ]
+}

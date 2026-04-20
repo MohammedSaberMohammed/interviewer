@@ -1,0 +1,19 @@
+{
+  "slug": "11-clean-architecture",
+  "number": 11,
+  "title": "Clean Architecture & DDD",
+  "subtitle": "Layers, aggregates, CQRS, and MediatR",
+  "level": "senior",
+  "estimatedHours": 8,
+  "emoji": "🏗️",
+  "color": "orange",
+  "description": "Architecture decisions outlive features. Learn Clean Architecture, DDD tactical patterns (aggregates, value objects, domain events), and CQRS with MediatR in realistic C# examples.",
+  "prerequisites": ["06-solid", "07-design-patterns"],
+  "learningOutcomes": [
+    "Layer a solution using Clean Architecture",
+    "Model aggregates and enforce invariants",
+    "Implement domain events and integration events",
+    "Build CQRS with MediatR handlers",
+    "Distinguish rich from anemic domain models"
+  ]
+}

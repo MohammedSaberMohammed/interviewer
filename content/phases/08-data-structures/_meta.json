@@ -1,0 +1,19 @@
+{
+  "slug": "08-data-structures",
+  "number": 8,
+  "title": "Data Structures",
+  "subtitle": "BCL collections, Big-O, and internals",
+  "level": "mid",
+  "estimatedHours": 6,
+  "emoji": "🗃️",
+  "color": "cyan",
+  "description": "Know what's inside the BCL collections you use every day. Dictionary internals, why List<T> beats LinkedList<T> in most cases, and when to reach for ConcurrentDictionary.",
+  "prerequisites": ["01-csharp-core"],
+  "learningOutcomes": [
+    "Explain Dictionary<K,V> hash table internals",
+    "Know Big-O for all BCL collection operations",
+    "Choose between HashSet, SortedSet, and List",
+    "Use ConcurrentDictionary correctly",
+    "Understand FrozenDictionary (.NET 8)"
+  ]
+}
