@@ -13,11 +13,14 @@ import { QuestCompletionScreen } from './QuestCompletionScreen'
 import { useProgressStore } from '@/stores/progressStore'
 import { XP_AWARDS } from '@/lib/constants'
 import { analytics } from '@/lib/analytics'
+import { LessonContext, type LessonContextValue } from '@/components/lesson/LessonContext'
 
 interface QuestLayoutProps {
   phaseSlug: string
   lessonSlug: string
   lessonTitle: string
+  phaseTitle: string
+  phaseNumber: number
   stepIds: string[]         // ordered list of QuestStep IDs extracted from MDX frontmatter
   questMode: boolean
   children: ReactNode
@@ -28,6 +31,8 @@ export function QuestLayout({
   phaseSlug,
   lessonSlug,
   lessonTitle,
+  phaseTitle,
+  phaseNumber,
   stepIds,
   questMode,
   children,
@@ -145,6 +150,14 @@ export function QuestLayout({
     setActiveStep,
   }
 
+  const lessonContextValue: LessonContextValue = {
+    lessonSlug,
+    phaseSlug,
+    lessonTitle,
+    phaseTitle,
+    phaseNumber,
+  }
+
   if (completed) {
     const accuracy = totalAnswers > 0 ? Math.round((correctAnswers / totalAnswers) * 100) : 100
     return (
@@ -161,6 +174,7 @@ export function QuestLayout({
   }
 
   return (
+    <LessonContext.Provider value={lessonContextValue}>
     <QuestContext.Provider value={contextValue}>
       {isQuestActive && (
         <QuestHUD
@@ -190,5 +204,6 @@ export function QuestLayout({
         )}
       </div>
     </QuestContext.Provider>
+    </LessonContext.Provider>
   )
 }

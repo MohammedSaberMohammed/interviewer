@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Search, GraduationCap } from 'lucide-react'
+import { Search, GraduationCap, ShoppingBasket } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from './ThemeToggle'
 import { MobileDrawer } from './MobileDrawer'
@@ -80,6 +80,14 @@ export function Navbar() {
           <Link href="/progress">
             <Button variant="ghost" size="sm" className="hidden md:flex text-xs text-muted-foreground">
               Progress
+            </Button>
+          </Link>
+
+          {/* Baskets link */}
+          <Link href="/baskets">
+            <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ShoppingBasket className="h-3.5 w-3.5" />
+              Baskets
             </Button>
           </Link>
 
