@@ -87,7 +87,7 @@ export function CodeChallenge({
   }
 
   return (
-    <div className="my-6 rounded-xl border border-border overflow-hidden">
+    <div className="not-prose my-6 rounded-xl border border-border overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-3">
         <div className="flex items-center gap-2">
