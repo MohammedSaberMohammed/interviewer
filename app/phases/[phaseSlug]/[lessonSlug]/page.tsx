@@ -29,6 +29,7 @@ import { ComparisonTable } from '@/components/lesson/ComparisonTable'
 import { MythBuster } from '@/components/lesson/MythBuster'
 import { MemoryVisualizer } from '@/components/lesson/MemoryVisualizer'
 import { CodePlayground } from '@/components/lesson/CodePlayground'
+import { CodeBlock } from '@/components/lesson/CodeBlock'
 import {
   QuestStep,
   CharacterTeach,
@@ -52,6 +53,8 @@ const mdxComponents = {
   CodePlayground,
   DocsLink,
   DocsLinks,
+  // Override <pre> to add language label + copy button around Shiki output
+  pre: CodeBlock,
   // Quest components — available for re-authored lessons
   QuestStep,
   CharacterTeach,

@@ -1,75 +1,70 @@
-import { codeToHtml } from 'shiki'
+'use client'
+
+import { useRef, useState } from 'react'
+import { Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface CodeBlockProps {
-  children?: React.ReactNode
-  className?: string
-  [key: string]: unknown
+const LANGUAGE_LABELS: Record<string, string> = {
+  csharp:     'C#',
+  typescript: 'TypeScript',
+  tsx:        'TSX',
+  javascript: 'JavaScript',
+  jsx:        'JSX',
+  json:       'JSON',
+  bash:       'Bash',
+  xml:        'XML',
+  sql:        'SQL',
 }
 
-interface PreProps {
-  children?: React.ReactElement<CodeBlockProps> | React.ReactNode
-  className?: string
-  [key: string]: unknown
+interface CodeBlockProps extends React.HTMLAttributes<HTMLPreElement> {
+  'data-language'?: string
 }
 
-// Extracts raw text from React children
-function extractText(children: React.ReactNode): string {
-  if (typeof children === 'string') return children
-  if (typeof children === 'number') return String(children)
-  if (Array.isArray(children)) return children.map(extractText).join('')
-  if (children !== null && typeof children === 'object' && 'props' in children) {
-    const el = children as { props: { children?: React.ReactNode } }
-    return extractText(el.props.children)
-  }
-  return ''
-}
+/**
+ * Custom <pre> MDX component — wraps Shiki-highlighted code blocks with:
+ * - a language label header
+ * - a copy-to-clipboard button
+ */
+export function CodeBlock({ children, 'data-language': language, style, className }: CodeBlockProps) {
+  const [copied, setCopied] = useState(false)
+  const preRef = useRef<HTMLPreElement>(null)
 
-// MDX renders fenced code blocks as <pre><code className="language-X">...</code></pre>
-// This async server component intercepts <pre> and applies Shiki highlighting.
-export async function MdxPre({ children, ...props }: PreProps) {
-  // Check if the child is a <code> element with a language class
-  const codeEl = children as React.ReactElement<CodeBlockProps> | undefined
-  const codeClassName = codeEl?.props?.className ?? ''
-  const lang = typeof codeClassName === 'string'
-    ? codeClassName.replace('language-', '') || 'csharp'
-    : 'csharp'
-
-  const code = extractText(codeEl?.props?.children ?? children)
-
-  const supportedLangs = ['csharp', 'typescript', 'tsx', 'json', 'bash', 'xml', 'sql', 'yaml']
-  const safeLang = supportedLangs.includes(lang) ? lang : 'csharp'
-
-  try {
-    const html = await codeToHtml(code, {
-      lang: safeLang,
-      themes: {
-        light: 'github-light',
-        dark: 'github-dark',
-      },
+  function copy() {
+    const text = preRef.current?.textContent ?? ''
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
     })
+  }
 
-    return (
-      <div
-        className={cn(
-          'my-4 overflow-x-auto rounded-lg border border-border text-sm',
-          '[&_.shiki]:p-4 [&_.shiki]:m-0 [&_.shiki]:bg-transparent',
-          // Dual-theme: show light in light mode, dark in dark mode
-          '[&_.shiki.github-dark]:hidden dark:[&_.shiki.github-dark]:block',
-          '[&_.shiki.github-light]:block dark:[&_.shiki.github-light]:hidden',
-        )}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    )
-  } catch {
-    // Fallback to plain pre if Shiki fails
-    return (
+  const langLabel = language ? (LANGUAGE_LABELS[language] ?? language) : 'code'
+
+  return (
+    <div className="not-prose my-6 overflow-hidden rounded-xl border border-border">
+      {/* Header: language label + copy button */}
+      <div className="flex items-center justify-between border-b border-border bg-muted/50 px-4 py-2">
+        <span className="text-xs font-mono font-medium text-muted-foreground">{langLabel}</span>
+        <button
+          type="button"
+          onClick={copy}
+          aria-label={copied ? 'Copied!' : 'Copy code'}
+          className="rounded p-1 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+        >
+          {copied
+            ? <Check className="h-3.5 w-3.5 text-emerald-500" aria-hidden="true" />
+            : <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+          }
+        </button>
+      </div>
+
+      {/* Shiki-rendered code — preserve inline style for dual-theme colours */}
       <pre
-        {...props}
-        className="my-4 overflow-x-auto rounded-lg border border-border bg-muted/50 p-4 text-sm font-mono"
+        ref={preRef}
+        style={style}
+        className={cn(className, 'overflow-x-auto p-4 text-sm !m-0 !rounded-none')}
       >
         {children}
       </pre>
-    )
-  }
+    </div>
+  )
 }
