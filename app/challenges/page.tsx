@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Code2, HelpCircle } from 'lucide-react'
+import { Code2, HelpCircle, ChevronRight } from 'lucide-react'
 import { getAllChallenges } from '@/lib/content'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
@@ -12,29 +12,29 @@ export const metadata: Metadata = {
   description: 'Code challenges and quizzes across all .NET interview prep phases.',
 }
 
-function ChallengeRow({ c }: { c: ExtractedChallenge }) {
+function ChallengeRow({ c, index }: { c: ExtractedChallenge; index: number }) {
   const href = `/challenges/${c.id}`
   const label = c.title ?? (c.type === 'quiz' ? 'Quiz' : 'Code Challenge')
+  const typeLabel = c.type === 'quiz' ? 'Quiz' : 'Code Challenge'
   const Icon = c.type === 'quiz' ? HelpCircle : Code2
 
   return (
-    <Link
-      href={href}
-      className="group flex items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3 hover:border-primary/50 hover:bg-accent/30 transition-colors"
-    >
-      <div className="flex items-center gap-2.5 min-w-0">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
-        <span className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-          {label}
-        </span>
-        {c.prompt && (
-          <span className="hidden sm:block text-xs text-muted-foreground truncate max-w-xs">
-            {c.prompt}
-          </span>
-        )}
-      </div>
-      <DifficultyBadge level={c.difficulty as Difficulty} className="shrink-0" />
-    </Link>
+    <div className="flex items-center rounded-xl border border-border bg-card hover:border-primary/30 hover:bg-accent transition-all group">
+      <Link href={href} className="flex flex-1 items-center gap-3 px-4 py-3 min-w-0">
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-xs text-muted-foreground tabular-nums">{String(index).padStart(2, '0')}</span>
+            <span className="font-medium text-sm group-hover:text-primary transition-colors truncate">{label}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <DifficultyBadge level={c.difficulty as Difficulty} />
+            <span className="text-xs text-muted-foreground">{typeLabel}</span>
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
+      </Link>
+    </div>
   )
 }
 
@@ -99,9 +99,9 @@ export default function ChallengesPage() {
                         {lesson.challenges.length} item{lesson.challenges.length !== 1 ? 's' : ''}
                       </span>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {lesson.challenges.map((c) => (
-                        <ChallengeRow key={c.id} c={c} />
+                    <div className="space-y-2">
+                      {lesson.challenges.map((c, i) => (
+                        <ChallengeRow key={c.id} c={c} index={i + 1} />
                       ))}
                     </div>
                   </div>

@@ -8,6 +8,7 @@ import { Footer } from '@/components/layout/Footer'
 import { CodeChallenge } from '@/components/lesson/CodeChallenge'
 import { Quiz } from '@/components/lesson/Quiz'
 import { LessonContextProvider } from '@/components/lesson/LessonContext'
+import { NavPrevNext } from '@/components/layout/NavPrevNext'
 import type { Difficulty } from '@/types'
 
 interface Props {
@@ -36,6 +37,14 @@ export default async function ChallengePage({ params }: Props) {
   const challengeId = path.join('/')
   const challenge = getChallengeById(challengeId)
   if (!challenge) notFound()
+
+  const all = getAllChallenges()
+  const idx = all.findIndex((c) => c.id === challengeId)
+  const prev = idx > 0 ? all[idx - 1] : null
+  const next = idx < all.length - 1 ? all[idx + 1] : null
+
+  const challengeLabel = (c: typeof challenge) =>
+    c.title ?? (c.type === 'quiz' ? 'Quiz' : 'Code Challenge')
 
   const lessonHref = `/phases/${challenge.phaseSlug}/${challenge.lessonSlug}`
 
@@ -93,6 +102,12 @@ export default async function ChallengePage({ params }: Props) {
             />
           )}
         </LessonContextProvider>
+
+        {/* Prev / Next navigation */}
+        <NavPrevNext
+          prev={prev ? { title: challengeLabel(prev), href: `/challenges/${prev.id}` } : undefined}
+          next={next ? { title: challengeLabel(next), href: `/challenges/${next.id}` } : undefined}
+        />
       </main>
       <Footer />
     </>
