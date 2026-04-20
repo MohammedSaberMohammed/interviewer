@@ -1,24 +1,250 @@
 ---
-title: "Concurrency Control"
+title: "Optimistic Concurrency: rowversion, ConcurrencyToken, DbUpdateConcurrencyException"
 slug: "concurrency-control"
 order: 10
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["concurrency", "optimistic concurrency", "rowversion", "concurrencytoken", "dbUpdateConcurrencyException", "ef core"]
+summary: "Optimistic concurrency detects conflicting writes without locking rows. EF Core wraps this in ConcurrencyToken and rowversion — and throws DbUpdateConcurrencyException when a conflict occurs."
+docsLinks:
+  - label: "Handling Concurrency Conflicts"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/concurrency"
+  - label: "Optimistic Concurrency"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/concurrency#optimistic-concurrency"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Optimistic vs Pessimistic Concurrency
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+**Pessimistic concurrency** locks rows for exclusive access. Prevents conflicts but kills throughput.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+**Optimistic concurrency** assumes conflicts are rare. It does not lock anything — instead it detects conflicts at save time by checking that the row has not changed since it was read.
+
+EF Core supports optimistic concurrency natively. It does not support pessimistic locking directly (you would use raw SQL `WITH (UPDLOCK, ROWLOCK)` for that).
+
+---
+
+## rowversion: The Recommended Approach
+
+`rowversion` (SQL Server) / `xmin` (PostgreSQL) is a database-managed, automatically-incrementing byte array that changes whenever a row is updated:
+
+```csharp
+// Entity
+public class Product
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+
+    [Timestamp] // maps to SQL Server rowversion / timestamp column
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
+}
+
+// Fluent API alternative
+modelBuilder.Entity<Product>()
+    .Property(p => p.RowVersion)
+    .IsRowVersion(); // handles the correct DB type per provider
+```
+
+**How it works in practice:**
+
+```csharp
+// User A loads product
+var product = await db.Products.FindAsync(1);
+// product.RowVersion = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]
+
+// User B also loads the same product and updates it first
+// product.RowVersion is now [0x00, ..., 0x00, 0x02] in the DB
+
+// User A tries to save
+product.Price = 29.99m;
+await db.SaveChangesAsync();
+// EF generates:
+// UPDATE Products SET Price = 29.99
+// WHERE Id = 1 AND RowVersion = 0x0000000000000001  ← checks original version
+// 0 rows affected! (row is now version 0x02)
+// EF throws DbUpdateConcurrencyException
+```
+
+---
+
+## Handling DbUpdateConcurrencyException
+
+```csharp
+public async Task<IActionResult> UpdatePrice(int id, decimal newPrice)
+{
+    var product = await db.Products.FindAsync(id);
+    if (product is null) return NotFound();
+
+    product.Price = newPrice;
+
+    try
+    {
+        await db.SaveChangesAsync();
+        return Ok();
+    }
+    catch (DbUpdateConcurrencyException ex)
+    {
+        // ex.Entries contains the conflicting entities
+        var entry = ex.Entries.Single();
+        var databaseValues = await entry.GetDatabaseValuesAsync();
+
+        if (databaseValues is null)
+        {
+            // Row was deleted by another user
+            return Conflict(new { error = "Record was deleted by another user" });
+        }
+
+        // Option 1: Client wins — override with user's values
+        entry.OriginalValues.SetValues(databaseValues);
+        await db.SaveChangesAsync(); // retry with updated rowversion
+
+        // Option 2: Store wins — discard user's changes
+        entry.CurrentValues.SetValues(databaseValues);
+        // return the current DB values to the user
+
+        // Option 3: Merge — application-specific logic
+        var dbProduct = (Product)databaseValues.ToObject();
+        // merge product and dbProduct based on business rules
+
+        return Conflict(new
+        {
+            error = "Record was modified by another user",
+            currentValues = databaseValues.ToObject()
+        });
+    }
+}
+```
+
+---
+
+## ConcurrencyToken: Property-Level Control
+
+For databases without rowversion, mark any property as a concurrency token — EF includes it in the WHERE clause of UPDATE/DELETE:
+
+```csharp
+public class Reservation
+{
+    public int Id { get; set; }
+    public int SeatNumber { get; set; }
+    public string? GuestName { get; set; }
+
+    [ConcurrencyCheck]  // included in WHERE clause during UPDATE/DELETE
+    public string Status { get; set; } = "Available";
+}
+
+// Fluent API
+modelBuilder.Entity<Reservation>()
+    .Property(r => r.Status)
+    .IsConcurrencyToken();
+```
+
+```csharp
+// Generated UPDATE uses Status in the WHERE clause
+// UPDATE Reservations SET GuestName = 'Alice', Status = 'Reserved'
+// WHERE Id = 5 AND Status = 'Available'   ← checks the token
+
+// If Status changed to 'Reserved' by another request → 0 rows affected → exception
+```
+
+---
+
+## Retry with Polly
+
+For fully automated retry on concurrency conflicts:
+
+```csharp
+// NuGet: Polly
+using Polly;
+using Polly.Retry;
+
+var retryPolicy = Policy
+    .Handle<DbUpdateConcurrencyException>()
+    .RetryAsync(3, async (exception, retryCount) =>
+    {
+        var entry = ((DbUpdateConcurrencyException)exception).Entries.Single();
+        var dbValues = await entry.GetDatabaseValuesAsync();
+
+        if (dbValues is null)
+            throw new InvalidOperationException("Record was deleted.");
+
+        // Refresh original values so next save attempt uses updated rowversion
+        entry.OriginalValues.SetValues(dbValues);
+    });
+
+await retryPolicy.ExecuteAsync(async () =>
+{
+    product.Price = newPrice;
+    await db.SaveChangesAsync();
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Concurrency in Disconnected Scenarios**
+
+In API-based architectures, the client holds the entity across multiple requests. When they send an update, you must pass the `rowversion` back in the request payload and round-trip it to EF:
+
+```csharp
+public record UpdateProductRequest(decimal Price, byte[] RowVersion);
+
+[HttpPut("{id}")]
+public async Task<IActionResult> UpdateProduct(int id, UpdateProductRequest request)
+{
+    var product = await db.Products.FindAsync(id);
+    if (product is null) return NotFound();
+
+    product.Price = request.Price;
+
+    // Restore the client's original rowversion so EF checks it
+    db.Entry(product).Property(p => p.RowVersion).OriginalValue = request.RowVersion;
+
+    try
+    {
+        await db.SaveChangesAsync();
+        return Ok(new { RowVersion = product.RowVersion }); // return new version
+    }
+    catch (DbUpdateConcurrencyException)
+    {
+        return Conflict(new { error = "Stale data — please refresh and retry" });
+    }
+}
+```
+
+This pattern ensures your API has proper optimistic concurrency across HTTP boundaries. The `RowVersion` is typically serialized as a base64 string in the JSON response/request.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Optimistic concurrency protects against all concurrent modification problems"
+  truth="Optimistic concurrency detects lost updates (last-write-wins overwrite) but does not prevent phantom reads, non-repeatable reads, or race conditions in business logic that spans multiple database operations. For example, if two requests both check 'is seat available?' and both see Available before either saves, both will succeed and double-book the seat. For these scenarios, you need pessimistic locking (SELECT ... WITH (UPDLOCK)) or application-level serialization."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/concurrency-control/challenge-1"
+  question="User A loads an entity with RowVersion = [0x01]. User B updates the same entity, advancing RowVersion to [0x02]. User A then tries to save — what happens?"
+  options={[
+    "User A's save succeeds — last writer wins by default",
+    "User A's save throws DbUpdateConcurrencyException because the WHERE clause finds no matching row",
+    "EF Core detects the conflict at load time and refreshes the entity automatically",
+    "User A's save is queued and retried automatically"
+  ]}
+  correctAnswer={1}
+  explanation="EF Core appends the original RowVersion to the UPDATE's WHERE clause: UPDATE ... WHERE Id = X AND RowVersion = 0x01. Since User B already changed RowVersion to 0x02, no rows match this WHERE clause — 0 rows are affected. EF Core treats 0 affected rows as a concurrency conflict and throws DbUpdateConcurrencyException. It does not retry automatically — the calling code must catch the exception and decide how to resolve it (client wins, store wins, or merge)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Handling Concurrency Conflicts", url: "https://learn.microsoft.com/en-us/ef/core/saving/concurrency" },
+    { label: "DbUpdateConcurrencyException", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.dbupdateconcurrencyexception" },
+    { label: "Disconnected Entities", url: "https://learn.microsoft.com/en-us/ef/core/saving/disconnected-entities" },
+  ]}
+/>

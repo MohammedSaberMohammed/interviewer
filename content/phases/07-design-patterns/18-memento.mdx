@@ -1,24 +1,298 @@
 ---
-title: "Memento"
+title: "Memento — Undo History and State Snapshots"
 slug: "memento"
 order: 18
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["memento", "behavioral", "undo", "snapshot", "state", "history"]
+summary: "Memento captures and externalizes an object's internal state so it can be restored later — without violating encapsulation. The foundation of undo/redo systems."
+docsLinks:
+  - label: "Serialization for state capture"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/overview"
+  - label: "EF Core change tracking (internal memento)"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Saving and Restoring State
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You're building a text editor with undo. You need to save snapshots of the document's state — but you don't want the undo history manager to access or manipulate the document's internal fields directly (breaking encapsulation).
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Memento solves this: the document (Originator) creates a Memento containing a snapshot of its state. The CareTaker (history manager) stores the Memento without knowing what's inside it.
+
+---
+
+## Structure
+
+```csharp
+// Memento — stores a snapshot of Originator's state
+// Its fields are opaque to the CareTaker
+public sealed class DocumentMemento
+{
+    internal string Content  { get; }
+    internal int    CursorPosition { get; }
+    internal string FontName { get; }
+
+    // Internal constructor — only DocumentEditor can create mementos
+    internal DocumentMemento(string content, int cursor, string font)
+    {
+        Content        = content;
+        CursorPosition = cursor;
+        FontName       = font;
+    }
+}
+
+// Originator — the object whose state we want to capture
+public class DocumentEditor
+{
+    private string _content  = "";
+    private int    _cursor   = 0;
+    private string _fontName = "Arial";
+
+    public void InsertText(string text)
+    {
+        _content = _content.Insert(_cursor, text);
+        _cursor += text.Length;
+    }
+
+    public void SetFont(string font) => _fontName = font;
+
+    // Save current state — creates a Memento
+    public DocumentMemento Save()
+        => new DocumentMemento(_content, _cursor, _fontName);
+
+    // Restore from a Memento
+    public void Restore(DocumentMemento memento)
+    {
+        _content  = memento.Content;
+        _cursor   = memento.CursorPosition;
+        _fontName = memento.FontName;
+    }
+
+    public void Print() =>
+        Console.WriteLine($"Content: '{_content}' | Cursor: {_cursor} | Font: {_fontName}");
+}
+
+// CareTaker — stores mementos, knows nothing about their internals
+public class UndoHistory
+{
+    private readonly Stack<DocumentMemento> _history = new();
+    private readonly Stack<DocumentMemento> _redoStack = new();
+
+    public void Push(DocumentMemento memento)
+    {
+        _history.Push(memento);
+        _redoStack.Clear();
+    }
+
+    public DocumentMemento? Undo() => _history.TryPop(out var m) ? m : null;
+
+    public void PushRedo(DocumentMemento m) => _redoStack.Push(m);
+    public DocumentMemento? Redo() => _redoStack.TryPop(out var m) ? m : null;
+}
+
+// Usage
+var editor  = new DocumentEditor();
+var history = new UndoHistory();
+
+editor.InsertText("Hello");
+history.Push(editor.Save()); // snapshot after "Hello"
+
+editor.InsertText(" World");
+history.Push(editor.Save()); // snapshot after "Hello World"
+
+editor.SetFont("Times New Roman");
+editor.Print(); // Content: 'Hello World' | Font: Times New Roman
+
+// Undo font change
+history.Push(editor.Save()); // save current before undo
+var memento = history.Undo();
+if (memento != null) editor.Restore(memento);
+editor.Print(); // Content: 'Hello World' | Font: Arial
+```
+
+---
+
+## Simplified with `record` — Immutable Snapshots
+
+C# records make Memento trivial for value-like state:
+
+```csharp
+// The record IS the memento — immutable snapshot
+public record EditorState(string Content, int CursorPosition, string FontName);
+
+public class DocumentEditor
+{
+    public string Content        { get; private set; } = "";
+    public int    CursorPosition { get; private set; } = 0;
+    public string FontName       { get; private set; } = "Arial";
+
+    // Create a snapshot (memento)
+    public EditorState Snapshot()
+        => new EditorState(Content, CursorPosition, FontName);
+
+    // Restore from snapshot
+    public void Restore(EditorState state)
+    {
+        Content        = state.Content;
+        CursorPosition = state.CursorPosition;
+        FontName       = state.FontName;
+    }
+
+    public void InsertText(string text)
+    {
+        Content        = Content.Insert(CursorPosition, text);
+        CursorPosition += text.Length;
+    }
+}
+
+// Undo manager with record snapshots
+public class UndoManager
+{
+    private readonly Stack<EditorState> _undoStack = new();
+
+    public void ExecuteWithUndo(DocumentEditor editor, Action<DocumentEditor> action)
+    {
+        _undoStack.Push(editor.Snapshot()); // save before action
+        action(editor);
+    }
+
+    public void Undo(DocumentEditor editor)
+    {
+        if (_undoStack.TryPop(out var state))
+            editor.Restore(state);
+    }
+}
+```
+
+---
+
+## Real .NET Example: EF Core Change Tracking
+
+EF Core's change tracker is an internal Memento system. When you load an entity, EF Core saves a snapshot of its original values:
+
+```csharp
+var order = await dbContext.Orders.FindAsync(orderId);
+// EF Core internally saved: OriginalValues { Status: "Pending", Total: 100.00 }
+
+order.Status = "Shipped";
+order.Total  = 95.00m; // discount applied
+
+// EF Core compares current values to original snapshot
+var entry = dbContext.Entry(order);
+Console.WriteLine(entry.OriginalValues["Status"]); // "Pending"
+Console.WriteLine(entry.CurrentValues["Status"]);  // "Shipped"
+
+// SaveChanges uses the diff to generate: UPDATE Orders SET Status='Shipped', Total=95 WHERE Id=...
+await dbContext.SaveChangesAsync();
+
+// You can even roll back to the snapshot
+entry.CurrentValues.SetValues(entry.OriginalValues); // restore to "Pending", 100.00
+```
+
+---
+
+<ComparisonTable
+  title="Memento vs Command (Undo) vs Event Sourcing"
+  headers={["Approach", "What's Stored", "Restore Method", "Use When"]}
+  rows={[
+    ["Memento", "Full state snapshot", "Replace current state", "Simple undo — state is small"],
+    ["Command with Undo()", "The inverse operation", "Execute Undo() operation", "State is large; only the delta matters"],
+    ["Event Sourcing", "All domain events", "Replay all events from beginning", "Full audit trail required, complex domain"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/memento/challenge-1"
+  title="Why the Internal Constructor?"
+  description="In the classic Memento, why is DocumentMemento's constructor marked internal (not public)?"
+  code={`public sealed class DocumentMemento
+{
+    internal string Content         { get; }
+    internal int    CursorPosition  { get; }
+
+    // Why internal, not public?
+    internal DocumentMemento(string content, int cursor)
+    {
+        Content        = content;
+        CursorPosition = cursor;
+    }
+}`}
+  options={[
+    "Performance — internal constructors are faster than public ones",
+    "To enforce encapsulation — only DocumentEditor (same assembly) can create Mementos; the CareTaker stores them without accessing their contents",
+    "Because sealed classes cannot have public constructors",
+    "To prevent serialization of sensitive data"
+  ]}
+  correctAnswer={1}
+  explanation="The internal constructor enforces the Memento pattern's encapsulation contract: only the Originator (DocumentEditor, in the same assembly) can CREATE mementos. The CareTaker (UndoHistory, possibly in a different assembly) can STORE and RETURN mementos but cannot read their contents or create fake mementos. This prevents the CareTaker from accessing or manipulating the Originator's private state indirectly through the Memento."
+/>
+
+---
+
+<Callout type="senior">
+**Serialization as Memento for Distributed Systems**
+
+In distributed systems, snapshots are serialized to durable storage. This pattern underlies:
+- **Saga checkpoints** — save saga state so it can resume after failure
+- **Actor model persistence** — Akka.NET / Microsoft Orleans serialize actor state
+- **Game save files** — serialize entire game state to disk
+
+```csharp
+// Serialization-based memento — persists across process restarts
+public class OrderSaga
+{
+    public int    OrderId    { get; set; }
+    public string State      { get; set; } = "Started";
+    public bool   Paid       { get; set; }
+    public bool   Shipped    { get; set; }
+
+    // Serialize current state to a checkpoint
+    public string CreateCheckpoint()
+        => JsonSerializer.Serialize(this);
+
+    // Restore from checkpoint
+    public static OrderSaga RestoreFromCheckpoint(string json)
+        => JsonSerializer.Deserialize<OrderSaga>(json)!;
+}
+
+// Store checkpoint after each step
+await checkpointStore.SaveAsync(saga.OrderId, saga.CreateCheckpoint());
+
+// On restart — resume from last checkpoint
+string? checkpoint = await checkpointStore.GetAsync(orderId);
+if (checkpoint != null)
+    saga = OrderSaga.RestoreFromCheckpoint(checkpoint);
+```
+
+The key distinction from basic Memento: serialization-based snapshots survive process crashes, enabling exactly-once processing and durable workflow orchestration.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/memento/quiz-1"
+  question="What is the main encapsulation problem that Memento solves?"
+  options={[
+    "Preventing multiple threads from modifying state simultaneously",
+    "Allowing state to be saved and restored without exposing the Originator's private internals to the CareTaker",
+    "Hiding the serialization format of state snapshots from consumers",
+    "Preventing the Originator from creating more than one snapshot"
+  ]}
+  correctAnswer={1}
+  explanation="The core encapsulation problem: to implement undo, you need to save an object's state — but you don't want to expose its private fields to the undo manager (CareTaker). Without Memento, the CareTaker would need direct access to internal fields. With Memento, the Originator creates an opaque Memento object; the CareTaker stores and returns it but can't read or modify its contents. The Originator's encapsulation is preserved."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "EF Core change tracking", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/" },
+    { label: "System.Text.Json serialization", url: "https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/overview" },
+    { label: "Records in C# (immutable snapshots)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+  ]}
+/>

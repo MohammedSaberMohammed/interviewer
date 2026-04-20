@@ -3,22 +3,203 @@ title: "Closure Loop Variable Capture"
 slug: "closure-loop-capture"
 order: 1
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["closures", "lambdas", "loops", "delegates", "captured variables", "gotcha"]
+summary: "The classic C# trap: all lambdas in a loop capture the same variable, not the value at the time of creation."
+docsLinks:
+  - label: "Captured outer variables (C# specification)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/expressions#12193-captured-outer-variables"
+  - label: "Lambda expressions (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You want to create a list of actions that each print their index. This looks completely reasonable:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// THE BUG — looks right, isn't
+var actions = new List<Action>();
+
+for (int i = 0; i < 5; i++)
+{
+    actions.Add(() => Console.WriteLine(i));
+}
+
+foreach (var action in actions)
+{
+    action(); // What prints?
+}
+```
+
+**You expect:** `0 1 2 3 4`
+
+**You get:** `5 5 5 5 5`
+
+<Callout type="trap">
+Every lambda in the loop captures the **variable `i`**, not the **value of `i`** at the time the lambda was created. By the time any lambda runs, the loop has already finished and `i` is `5`.
 </Callout>
+
+---
+
+## Why It Happens
+
+The C# compiler translates each lambda into a method on a compiler-generated class. Crucially, the variable `i` is **lifted** into that class — all five lambdas share a reference to the exact same `i` field.
+
+```csharp
+// What the compiler actually generates (simplified):
+class DisplayClass
+{
+    public int i; // ONE shared field — all lambdas reference this
+}
+
+var closure = new DisplayClass();
+var actions = new List<Action>();
+
+for (closure.i = 0; closure.i < 5; closure.i++)
+{
+    // Every lambda points to closure.i — the same field!
+    actions.Add(() => Console.WriteLine(closure.i));
+}
+
+// By now, closure.i == 5
+// All five actions print 5
+```
+
+The variable is captured **by reference**, not by value. The loop increments the same variable that the lambdas will later read.
+
+---
+
+## The Fix
+
+**Option 1: Local copy inside the loop (classic fix)**
+
+```csharp
+var actions = new List<Action>();
+
+for (int i = 0; i < 5; i++)
+{
+    int captured = i; // NEW variable each iteration — gets its own closure slot
+    actions.Add(() => Console.WriteLine(captured));
+}
+
+foreach (var action in actions)
+{
+    action(); // 0 1 2 3 4 — correct!
+}
+```
+
+Each iteration creates a **new** `captured` variable, so each lambda closes over a different object. The compiler generates a separate closure instance per iteration.
+
+**Option 2: Use LINQ with index (modern, declarative)**
+
+```csharp
+var actions = Enumerable.Range(0, 5)
+    .Select(i => (Action)(() => Console.WriteLine(i)))
+    .ToList();
+// i is the parameter — each lambda gets its own copy
+```
+
+**Option 3: foreach is safe in C# 5+**
+
+```csharp
+var items = new[] { "a", "b", "c" };
+
+// Safe since C# 5 — each iteration has its own scope variable
+var actions = items.Select(item => (Action)(() => Console.WriteLine(item))).ToList();
+```
+
+> **Note:** `foreach` was fixed in C# 5 (2012). Before that, `foreach` had the same bug as `for`. In modern C#, `foreach` iteration variables are scoped per iteration, but `for` loop variables are not.
+
+---
+
+<MythBuster
+  myth="The lambda captures the value of the variable at the time it's created"
+  truth="Lambdas capture the variable itself (a reference to its storage location), not a snapshot of its value. The value is read when the lambda executes, not when it's defined."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/closure-loop-capture/challenge-1"
+  title="What Does This Print?"
+  description="All four actions are invoked after the loop. What is the output?"
+  code={`var actions = new List<Action>();
+
+for (int i = 0; i < 4; i++)
+{
+    actions.Add(() => Console.Write(i + " "));
+}
+
+actions.ForEach(a => a());`}
+  options={[
+    "0 1 2 3",
+    "4 4 4 4",
+    "3 3 3 3",
+    "Compiler error — cannot use i inside lambda"
+  ]}
+  correctAnswer={1}
+  explanation="All four lambdas capture the same variable i. After the loop completes, i == 4. When the lambdas execute, they all read the same i which is now 4. Output: '4 4 4 4'. The fix is to add 'int captured = i;' inside the loop and close over captured instead."
+/>
+
+---
+
+## The foreach Subtlety
+
+```csharp
+// foreach iteration variable — safe in C# 5+
+var numbers = new[] { 10, 20, 30 };
+var actions = new List<Action>();
+
+foreach (var n in numbers)
+{
+    actions.Add(() => Console.WriteLine(n)); // Each n is a separate variable
+}
+
+actions.ForEach(a => a()); // 10, 20, 30 — correct
+
+// BUT: if you capture a variable declared OUTSIDE the loop, same trap applies
+int counter = 0;
+foreach (var n in numbers)
+{
+    actions.Add(() => Console.WriteLine(counter)); // captures the ONE counter
+    counter++;
+}
+// All lambdas see counter == 3
+```
+
+---
+
+<Callout type="senior">
+**Production story: the async event handler bug**
+
+A team built a UI form with dynamically created buttons in a loop. Each button's `Click` handler was supposed to open a detail view for a specific record ID:
+
+```csharp
+for (int i = 0; i < records.Count; i++)
+{
+    var btn = new Button { Text = records[i].Name };
+    btn.Click += (s, e) => OpenDetail(records[i]); // BUG!
+    panel.Controls.Add(btn);
+}
+```
+
+Every button opened the same record — `records[records.Count]` — which threw an `IndexOutOfRangeException`. The fix was a one-liner inside the loop: `int idx = i;` and using `idx` in the lambda.
+
+This pattern appears everywhere: thread-pool work items, Task factories, event subscriptions, LINQ projections. The rule is always the same: if a lambda will run after the current scope changes the variable, make a local copy.
+
+ReSharper and Rider both flag this as "Access to modified closure" — a warning you should never suppress without understanding why.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Captured outer variables (C# specification)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/expressions#12193-captured-outer-variables" },
+    { label: "Lambda expressions (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions" },
+    { label: "Closures in C# — Eric Lippert's blog (canonical explanation)", url: "https://learn.microsoft.com/en-us/archive/blogs/ericlippert/closing-over-the-loop-variable-considered-harmful" },
+  ]}
+/>

@@ -3,22 +3,307 @@ title: "Properties: Auto, Computed, Init, Required"
 slug: "properties"
 order: 8
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["properties", "auto-properties", "init-only", "required members", "computed properties", "get", "set", "C# 11", "C# 9"]
+summary: "Properties evolved from simple get/set wrappers into a powerful API boundary — init-only setters and required members in C# 9–11 fundamentally change how you design immutable types."
+docsLinks:
+  - label: "Properties (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/properties"
+  - label: "Required members (C# 11)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-11#required-members"
+  - label: "Init-only setters (C# 9)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-9#init-only-setters"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Properties Are Methods in Disguise
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+At the IL level, a property is compiled into one or two methods: `get_PropertyName()` and `set_PropertyName()`. This matters because:
+- Properties can be `virtual` and `override`
+- Properties can be part of interfaces
+- Properties can be abstract
+- Properties cannot be passed by `ref` (unlike fields)
+- Data-binding, serialization, and reflection frameworks all work with properties
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class Circle
+{
+    private double _radius;
+
+    // Full property — explicit backing field, validation in setter
+    public double Radius
+    {
+        get => _radius;
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException(nameof(value), "Radius cannot be negative");
+            _radius = value;
+        }
+    }
+
+    // Computed property — derived from other state, no backing field
+    public double Area => Math.PI * _radius * _radius;
+    public double Circumference => 2 * Math.PI * _radius;
+
+    // Expression-body property (same as above, just syntax sugar)
+    public double Diameter => _radius * 2;
+}
+```
+
+---
+
+## Auto-Properties
+
+Auto-properties let the compiler generate the backing field, eliminating boilerplate:
+
+```csharp
+public class Person
+{
+    // Auto-property: compiler creates a private backing field
+    public string FirstName { get; set; } = "";
+    public string LastName  { get; set; } = "";
+
+    // Read-only auto-property: can only be set in constructor or field initializer
+    public DateTime CreatedAt { get; } = DateTime.UtcNow;
+
+    // Private setter: publicly readable, only writable from within the class
+    public int LoginCount { get; private set; }
+
+    // Protected setter: readable everywhere, settable by derived classes
+    public string Status { get; protected set; } = "Active";
+
+    public void RecordLogin() => LoginCount++; // uses private setter
+}
+```
+
+<Callout type="info">
+**Auto-property default values** (the `= value` initializers) run as part of field initialization, before the constructor body. They're shorthand for initializing the backing field. For reference types, always initialize auto-properties to avoid null reference warnings in .NET 6+ nullable-enabled projects.
 </Callout>
+
+---
+
+## Init-Only Setters (C# 9)
+
+The `init` accessor lets a property be set during object initialization but not afterward. This enables immutability without requiring constructor parameters for every field:
+
+```csharp
+public class OrderDto
+{
+    public int Id       { get; init; }
+    public string Item  { get; init; } = "";
+    public decimal Amount { get; init; }
+    public DateTime PlacedAt { get; init; } = DateTime.UtcNow;
+}
+
+// Set during object initializer
+var order = new OrderDto
+{
+    Id = 42,
+    Item = "Widget",
+    Amount = 9.99m
+};
+
+// Try to set after initialization — COMPILE ERROR
+// order.Id = 100; // ERROR: Init-only property 'Id' can only be assigned in an object initializer
+
+// 'with' expression creates a new object with some values changed
+var modified = order with { Amount = 12.99m };
+Console.WriteLine(order.Amount);   // 9.99 — original unchanged
+Console.WriteLine(modified.Amount); // 12.99
+
+// Records use init automatically — but you can use init on plain classes too:
+public class ImmutablePoint
+{
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Z { get; init; }
+}
+```
+
+<Callout type="tip">
+**`init` vs `readonly` field:** A `readonly` field can only be set in the constructor. An `init` property can be set in the constructor OR in an object initializer. This makes `init` much more flexible for builder-style APIs and JSON deserialization (which `System.Text.Json` supports fully — it can set `init` properties during deserialization).
+</Callout>
+
+---
+
+## Required Members (C# 11)
+
+`required` forces consumers to provide a value during object initialization. Without it, forgetting to set a property goes unnoticed until runtime:
+
+```csharp
+public class DatabaseOptions
+{
+    // required: object initializer MUST provide these — compile error if missing
+    public required string ConnectionString { get; init; }
+    public required string DatabaseName     { get; init; }
+
+    // Optional with default
+    public int CommandTimeoutSeconds { get; init; } = 30;
+    public bool EnableRetry          { get; init; } = true;
+}
+
+// COMPILE ERROR if you miss required members:
+// var opts = new DatabaseOptions(); // ERROR: Required member 'ConnectionString' not set
+// var opts = new DatabaseOptions { ConnectionString = "..." }; // ERROR: DatabaseName missing
+
+// CORRECT:
+var opts = new DatabaseOptions
+{
+    ConnectionString = "Server=localhost;Database=MyDb",
+    DatabaseName     = "MyDb"
+    // CommandTimeoutSeconds not provided — uses default of 30
+};
+
+// To suppress required for a specific constructor (e.g., for deserialization):
+public class DatabaseOptions
+{
+    public required string ConnectionString { get; init; }
+    public required string DatabaseName     { get; init; }
+
+    [SetsRequiredMembers] // Tells compiler this constructor sets all required members
+    public DatabaseOptions(string connectionString, string databaseName)
+    {
+        ConnectionString = connectionString;
+        DatabaseName = databaseName;
+    }
+
+    public DatabaseOptions() { } // Parameterless — for deserializers
+}
+```
+
+---
+
+<CodeChallenge
+  id="02-oop/properties/challenge-1"
+  title="Choose the Right Property Shape"
+  description="You're designing a User class for an ASP.NET Core app. The user's email must be set when created and never changed. The user's display name can be updated at any time. The account creation date is set automatically and never changes. The full name is derived by combining first and last name. Which property shapes are correct?"
+  code={`public class User
+{
+    // Email — set at creation, never changed
+    public string Email { get; set; }            // Option A
+    public string Email { get; init; }           // Option B
+    public required string Email { get; init; }  // Option C
+
+    // Display name — updatable
+    public string DisplayName { get; set; }      // Option D
+    public string DisplayName { get; init; }     // Option E
+
+    // Created date — auto, never changed
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow; // Option F
+    public DateTime CreatedAt { get; } = DateTime.UtcNow;      // Option G
+
+    // Full name — derived
+    public string FullName => \$"{FirstName} {LastName}";  // Option H (computed)
+    public string FullName { get; set; }                   // Option I (stored)
+}`}
+  options={[
+    "A, D, F, I — all regular setters, simplest approach",
+    "B, D, G, H — init for email, set for display, readonly for date, computed for full name",
+    "C, D, G, H — required init for email, set for display, readonly for date, computed for full name",
+    "C, E, F, I — required init for everything except computed"
+  ]}
+  correctAnswer={2}
+  explanation="Option C (required init) for Email ensures it must be provided at creation and cannot be changed after — compile-time enforcement of both constraints. Option D (set) for DisplayName allows updates at any time. Option G (get-only with initializer) for CreatedAt sets it once at construction and makes it truly read-only — the { get; set; } version would allow callers to reset the date. Option H (computed property) for FullName derives from other properties — storing it separately (Option I) creates synchronization bugs when FirstName or LastName changes."
+/>
+
+---
+
+## Asymmetric Visibility
+
+Properties can have different access levels for getter and setter:
+
+```csharp
+public class Account
+{
+    // Publicly readable, only settable within the class
+    public decimal Balance { get; private set; }
+
+    // Publicly readable, settable by derived classes
+    public string Status { get; protected set; } = "Active";
+
+    // Publicly readable, settable within the assembly
+    public int TransactionCount { get; internal set; }
+
+    // Publicly readable, init-only (set only via object initializer or constructor)
+    public string AccountNumber { get; init; } = "";
+
+    public void Deposit(decimal amount)
+    {
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
+        Balance += amount;         // private set — only accessible here
+        TransactionCount++;        // internal set — accessible within assembly
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Property Changed Notification and Lazy Initialization**
+
+Two patterns worth knowing for production code:
+
+```csharp
+// Pattern 1: INotifyPropertyChanged for MVVM/data binding
+public class ViewModel : INotifyPropertyChanged
+{
+    private string _name = "";
+
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            if (_name == value) return; // Avoid unnecessary notifications
+            _name = value;
+            OnPropertyChanged();        // Notify binding subscribers
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    protected virtual void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+}
+
+// Pattern 2: Lazy initialization in a property
+public class ExpensiveService
+{
+    // Lazy<T> is thread-safe by default (LazyThreadSafetyMode.ExecutionAndPublication)
+    private readonly Lazy<DatabaseConnection> _connection
+        = new(() => new DatabaseConnection(/* expensive init */));
+
+    public DatabaseConnection Connection => _connection.Value;
+
+    // Without Lazy<T> — thread-unsafe double-checked locking (get it wrong and it's a bug):
+    private DatabaseConnection? _conn;
+    private readonly object _lock = new();
+
+    public DatabaseConnection ConnectionManual
+    {
+        get
+        {
+            if (_conn is null)
+                lock (_lock)
+                    _conn ??= new DatabaseConnection();
+            return _conn;
+        }
+    }
+}
+```
+
+`Lazy<T>` with no arguments uses `LazyThreadSafetyMode.ExecutionAndPublication` — only one thread executes the factory, others wait. Pass `isThreadSafe: false` if you know the property will only be accessed from one thread (saves a lock acquisition on every read).
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Properties (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/properties" },
+    { label: "Init-only setters (C# 9)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-9#init-only-setters" },
+    { label: "Required members (C# 11)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-11#required-members" },
+    { label: "Auto-implemented properties", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/auto-implemented-properties" },
+  ]}
+/>

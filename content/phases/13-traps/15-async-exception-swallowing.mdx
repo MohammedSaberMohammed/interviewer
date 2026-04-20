@@ -1,24 +1,229 @@
 ---
-title: "Async Exception Swallowing"
+title: "Exception Swallowing in Async Code"
 slug: "async-exception-swallowing"
 order: 15
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["async", "exceptions", "fire-and-forget", "Task", "unobserved", "TaskScheduler"]
+summary: "Unobserved Task exceptions, fire-and-forget patterns, and swallowed async exceptions are invisible bugs that leave your application in an unknown state."
+docsLinks:
+  - label: "Exception handling in async code"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios#handling-exceptions"
+  - label: "TaskScheduler.UnobservedTaskException"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.taskscheduler.unobservedtaskexception"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — fire-and-forget with no exception handling
+public class NotificationService
+{
+    public void SendWelcomeEmail(User user)
+    {
+        // "Fire and forget" — we don't await this
+        Task.Run(() => SendEmailAsync(user)); // Exception will be SWALLOWED!
+    }
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    private async Task SendEmailAsync(User user)
+    {
+        await _smtpClient.ConnectAsync(host, port); // Throws if SMTP is down
+        await _smtpClient.SendAsync(BuildEmail(user));
+        // If this throws, nobody knows. No log. No retry. No alert.
+    }
+}
+```
+
+**Second form: ignoring the returned Task**
+
+```csharp
+public async Task ProcessOrderAsync(Order order)
+{
+    await SaveOrderAsync(order);
+
+    _ = NotifyInventoryAsync(order); // Discarded Task — exception silently disappears
+
+    await SendConfirmationEmailAsync(order);
+}
+
+private async Task NotifyInventoryAsync(Order order)
+{
+    // This exception will never surface:
+    throw new InvalidOperationException("Inventory service unreachable");
+}
+```
+
+<Callout type="trap">
+When you discard a Task (fire-and-forget without observing the result), any exception thrown inside becomes an **unobserved task exception**. In .NET 4.5+, unobserved exceptions no longer crash the process by default — they are silently swallowed. Your background work silently fails with zero indication.
 </Callout>
+
+---
+
+## Why It Happens
+
+```csharp
+// In .NET 4.0, unobserved task exceptions crashed the process on GC finalization
+// In .NET 4.5+, they are silently ignored by default
+
+// The exception IS stored in the Task:
+var task = Task.Run(() => throw new Exception("boom"));
+// task.IsFaulted == true, task.Exception == AggregateException { "boom" }
+// But if nobody observes task.Exception or awaits task, the exception is lost
+
+// GC finalizer scenario (pre-.NET 4.5 behavior):
+~Task()
+{
+    if (IsFaulted && !exceptionObserved)
+        TaskScheduler.UnobservedTaskException?.Invoke(this, ...); // Fires, but doesn't crash by default
+}
+```
+
+---
+
+## The Fix
+
+**Option 1: Await it (simplest — if you can make the caller async)**
+
+```csharp
+// CORRECT — await the task to observe exceptions
+public async Task ProcessOrderAsync(Order order)
+{
+    await SaveOrderAsync(order);
+    await NotifyInventoryAsync(order); // Exception surfaces here
+    await SendConfirmationEmailAsync(order);
+}
+```
+
+**Option 2: Structured fire-and-forget with logging**
+
+```csharp
+// When you genuinely need fire-and-forget, observe the exception:
+public static class TaskExtensions
+{
+    public static void FireAndForget(
+        this Task task,
+        ILogger logger,
+        string operationName)
+    {
+        task.ContinueWith(
+            t => logger.LogError(t.Exception, "Fire-and-forget failed: {Operation}", operationName),
+            TaskContinuationOptions.OnlyOnFaulted
+        );
+    }
+}
+
+// Usage:
+NotifyInventoryAsync(order)
+    .FireAndForget(_logger, nameof(NotifyInventoryAsync));
+```
+
+**Option 3: Catch inside the async method**
+
+```csharp
+private async Task SendEmailAsync(User user)
+{
+    try
+    {
+        await _smtpClient.ConnectAsync(host, port);
+        await _smtpClient.SendAsync(BuildEmail(user));
+    }
+    catch (Exception ex)
+    {
+        // At minimum, log it — never swallow silently
+        _logger.LogError(ex, "Failed to send welcome email to {UserId}", user.Id);
+        // Optionally: queue for retry, raise an alert, etc.
+    }
+}
+```
+
+**Option 4: Subscribe to UnobservedTaskException for a safety net**
+
+```csharp
+// In Program.cs — catches any that slip through
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    _logger.LogCritical(e.Exception, "Unobserved task exception");
+    e.SetObserved(); // Prevents potential process crash (platform-dependent)
+};
+```
+
+---
+
+<MythBuster
+  myth="If my app doesn't crash, the async operations completed successfully"
+  truth="Since .NET 4.5, unobserved task exceptions do NOT crash the process. Silent failure is the default. You must explicitly observe every Task you care about."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/async-exception-swallowing/challenge-1"
+  title="What happens to the exception?"
+  description="What is the observable effect of this code running?"
+  code={`static async Task Main()
+{
+    var t = Task.Run(async () =>
+    {
+        await Task.Delay(50);
+        throw new Exception("Background failure!");
+    });
+
+    // t is never awaited or observed
+    await Task.Delay(2000);
+    Console.WriteLine("Program completed normally.");
+}`}
+  options={[
+    "The program prints 'Program completed normally.' — exception is silently lost",
+    "The exception crashes the program after Task.Delay(50)",
+    "The exception is printed to the console automatically",
+    "The program hangs waiting for the background task"
+  ]}
+  correctAnswer={0}
+  explanation="The program prints 'Program completed normally.' The exception is stored in the Task 't' but never observed because t is never awaited, and t.Exception is never read. When the GC collects 't', UnobservedTaskException fires, but since nobody handles it, the exception is silently discarded. The program completes normally with no indication that the background work failed."
+/>
+
+---
+
+## The `_ =` Discard Pattern (Dangerous When Misused)
+
+```csharp
+// This pattern explicitly says "I know this is a Task and I'm discarding it"
+_ = SomeAsync();
+
+// It is a code smell unless you have verified:
+// 1. The method internally handles all exceptions
+// 2. You have a global UnobservedTaskException handler
+// 3. The operation is truly non-critical (e.g., cache warming)
+
+// Better pattern for truly non-critical background work:
+_ = Task.Run(async () =>
+{
+    try { await SomeAsync(); }
+    catch (Exception ex) { _logger.LogWarning(ex, "Non-critical operation failed"); }
+});
+```
+
+---
+
+<Callout type="senior">
+**The silent inventory desync**
+
+A warehouse management system had a fire-and-forget pattern for updating inventory counts after orders were placed. The inventory update service occasionally threw `TimeoutException` when the inventory API was slow. Because the Task was discarded, these exceptions were silently lost.
+
+Over three months, inventory counts drifted — the system showed stock that had been sold. The discrepancy was discovered during a physical audit. Tracing back, the team found 8,000 failed inventory updates that had been silently swallowed over the preceding months.
+
+The fix: replace the fire-and-forget with an outbox pattern — write the inventory update to a database table synchronously as part of the order transaction, then have a background service process the outbox with retry logic. This is the correct pattern for "fire-and-forget" in systems where the work actually matters.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Exception handling in async programs", url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios#handling-exceptions" },
+    { label: "TaskScheduler.UnobservedTaskException", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.taskscheduler.unobservedtaskexception" },
+    { label: "Task.ContinueWith", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.continuewith" },
+  ]}
+/>

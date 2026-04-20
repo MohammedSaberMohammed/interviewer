@@ -1,24 +1,324 @@
 ---
-title: "Filters: Action, Exception, Resource"
+title: "Action Filters, Exception Filters, Resource Filters"
 slug: "filters"
 order: 8
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["filters", "action filters", "exception filters", "resource filters", "IActionFilter", "filter pipeline", "asp.net core", "MVC"]
+summary: "MVC filters are aspect-oriented hooks into the controller action pipeline. Understanding the filter pipeline order and choosing the right filter type is essential for clean cross-cutting concerns."
+docsLinks:
+  - label: "Filters in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/filters"
+  - label: "Filter order of execution"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/filters#filter-order-of-execution"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Filter Pipeline
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Filters run inside the MVC middleware layer — after routing, authentication, and authorization have already run. They give you hooks around controller actions without touching the action itself.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+Request enters MVC middleware
+  │
+  ├─ Authorization filters (IAuthorizationFilter)
+  │    — Short-circuits if not authorized
+  │
+  ├─ Resource filters (IResourceFilter) ← Before model binding
+  │    — Can short-circuit, useful for caching
+  │
+  ├─ Model binding
+  │
+  ├─ Action filters (IActionFilter) ← Before and after action
+  │    — OnActionExecuting: can modify args or short-circuit
+  │    — [action executes]
+  │    — OnActionExecuted: can modify result
+  │
+  ├─ Exception filters (IExceptionFilter)
+  │    — Only if an unhandled exception occurs
+  │
+  ├─ Result filters (IResultFilter)
+  │    — Before and after result execution (IActionResult.ExecuteResultAsync)
+  │
+  └─ Response written
+```
+
+---
+
+## Action Filters
+
+The most commonly used filter type — wraps action execution:
+
+```csharp
+// Attribute-based action filter
+public class ValidateModelAttribute : ActionFilterAttribute
+{
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        if (!context.ModelState.IsValid)
+        {
+            // Short-circuit — action never runs
+            context.Result = new BadRequestObjectResult(
+                new ValidationProblemDetails(context.ModelState));
+        }
+    }
+}
+
+// DI-aware action filter (preferred for complex logic)
+public class AuditLogFilter : IAsyncActionFilter
+{
+    private readonly IAuditService _audit;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+
+    public AuditLogFilter(IAuditService audit, IHttpContextAccessor httpContextAccessor)
+    {
+        _audit = audit;
+        _httpContextAccessor = httpContextAccessor;
+    }
+
+    public async Task OnActionExecutionAsync(ActionExecutingContext context,
+        ActionExecutionDelegate next)
+    {
+        var actionName = context.ActionDescriptor.DisplayName;
+        var userId = context.HttpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        // Before action
+        await _audit.LogStartAsync(actionName, userId);
+
+        var executedContext = await next(); // Execute the action
+
+        // After action
+        var statusCode = (executedContext.Result as ObjectResult)?.StatusCode ?? 200;
+        await _audit.LogEndAsync(actionName, userId, statusCode);
+    }
+}
+```
+
+**Registration options:**
+```csharp
+// 1. Attribute on action or controller (requires parameterless constructor)
+[ValidateModel]
+[HttpPost]
+public IActionResult Create(CreateProductRequest req) { /* ... */ return Ok(); }
+
+// 2. ServiceFilter — resolves from DI each request (preferred for injected filters)
+[ServiceFilter<AuditLogFilter>]
+public class OrdersController : ControllerBase { }
+
+// 3. Global registration — applies to ALL actions
+builder.Services.AddControllers(options =>
+    options.Filters.Add<AuditLogFilter>());
+
+// 4. TypeFilter — creates via DI with additional args
+[TypeFilter(typeof(AuditLogFilter))]
+public IActionResult Delete(int id) { /* ... */ return Ok(); }
+```
+
+---
+
+## Exception Filters
+
+Exception filters catch unhandled exceptions thrown from actions — but NOT from other middleware:
+
+```csharp
+public class ApiExceptionFilter : IAsyncExceptionFilter
+{
+    private readonly ILogger<ApiExceptionFilter> _logger;
+
+    public ApiExceptionFilter(ILogger<ApiExceptionFilter> logger)
+        => _logger = logger;
+
+    public async Task OnExceptionAsync(ExceptionContext context)
+    {
+        _logger.LogError(context.Exception, "Unhandled exception in action");
+
+        context.Result = context.Exception switch
+        {
+            NotFoundException ex => new NotFoundObjectResult(
+                new ProblemDetails { Title = "Not found", Detail = ex.Message }),
+
+            ValidationException ex => new BadRequestObjectResult(
+                new ProblemDetails { Title = "Validation failed", Detail = ex.Message }),
+
+            UnauthorizedException => new UnauthorizedResult(),
+
+            _ => new ObjectResult(new ProblemDetails
+            {
+                Title = "An error occurred",
+                Status = StatusCodes.Status500InternalServerError
+            })
+            { StatusCode = StatusCodes.Status500InternalServerError }
+        };
+
+        // Mark exception as handled — stops bubbling up
+        context.ExceptionHandled = true;
+
+        await Task.CompletedTask;
+    }
+}
+
+// Register globally
+builder.Services.AddControllers(options =>
+    options.Filters.Add<ApiExceptionFilter>());
+builder.Services.AddScoped<ApiExceptionFilter>();
+```
+
+<Callout type="trap">
+**Trap: IExceptionFilter Does NOT Catch Middleware Exceptions**
+
+`IExceptionFilter` only catches exceptions thrown inside the MVC action pipeline — from model binding, action filters, and the action itself. Exceptions from:
+- Other middleware (before MVC runs)
+- Result execution
+- Background services
+
+...are NOT caught by exception filters. `UseExceptionHandler` middleware is the correct way to catch all exceptions in all layers.
 </Callout>
+
+---
+
+## Resource Filters
+
+Resource filters run after authorization but before model binding. They're ideal for short-circuiting with cached results:
+
+```csharp
+public class CacheFilter : IResourceFilter
+{
+    private readonly IMemoryCache _cache;
+
+    public CacheFilter(IMemoryCache cache) => _cache = cache;
+
+    public void OnResourceExecuting(ResourceExecutingContext context)
+    {
+        var cacheKey = context.HttpContext.Request.Path;
+
+        if (_cache.TryGetValue(cacheKey, out IActionResult? cachedResult))
+        {
+            // Short-circuit — skip model binding and action entirely
+            context.Result = cachedResult;
+        }
+    }
+
+    public void OnResourceExecuted(ResourceExecutedContext context)
+    {
+        // Cache the result for future requests
+        if (context.Result is OkObjectResult okResult)
+        {
+            var cacheKey = context.HttpContext.Request.Path;
+            _cache.Set(cacheKey, context.Result, TimeSpan.FromMinutes(5));
+        }
+    }
+}
+```
+
+---
+
+## Result Filters
+
+Result filters run around `IActionResult.ExecuteResultAsync` — after the action, around response writing:
+
+```csharp
+public class EnvelopeResultFilter : IResultFilter
+{
+    public void OnResultExecuting(ResultExecutingContext context)
+    {
+        // Wrap successful responses in a standard envelope
+        if (context.Result is ObjectResult { StatusCode: null or 200 } objectResult)
+        {
+            context.Result = new OkObjectResult(new
+            {
+                success = true,
+                data = objectResult.Value,
+                timestamp = DateTimeOffset.UtcNow
+            });
+        }
+    }
+
+    public void OnResultExecuted(ResultExecutedContext context) { }
+}
+```
+
+---
+
+## Filter Order and Scoping
+
+```csharp
+// Filter execution order (innermost = closest to action):
+// Global → Controller → Action
+// Within same level: Order property (lower = outer)
+
+public class OuterFilter : IActionFilter
+{
+    public void OnActionExecuting(ActionExecutingContext c)
+        => Console.WriteLine("Outer: Before"); // First
+
+    public void OnActionExecuted(ActionExecutedContext c)
+        => Console.WriteLine("Outer: After");  // Last
+}
+
+public class InnerFilter : IActionFilter
+{
+    public void OnActionExecuting(ActionExecutingContext c)
+        => Console.WriteLine("Inner: Before"); // Second
+
+    public void OnActionExecuted(ActionExecutedContext c)
+        => Console.WriteLine("Inner: After");  // Third
+}
+
+// Output: Outer: Before → Inner: Before → [action] → Inner: After → Outer: After
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Filters vs Middleware — The Right Tool**
+
+Choose based on where you need the hook and what context you need:
+
+| Concern | Use Filter or Middleware? |
+|---|---|
+| All requests (static files, health) | Middleware |
+| Only MVC actions | Filter |
+| Needs `ActionContext` or `ModelState` | Filter |
+| Needs raw `HttpContext` only | Either |
+| Catches ALL exceptions everywhere | Middleware (`UseExceptionHandler`) |
+| Catches MVC action exceptions only | `IExceptionFilter` |
+| Per-action OpenAPI metadata | Filter (can contribute to ApiDescription) |
+
+Also note: `IAsyncActionFilter` is preferred over `IActionFilter` when your filter does async work (logging, DB, etc.). Avoid wrapping `async` work in sync filter methods with `.Result` or `.GetAwaiter().GetResult()`.
+
+For Minimal APIs, use **endpoint filters** (`IEndpointFilter`) — they provide similar before/after action hooks but without the full MVC filter pipeline.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/filters/quiz-1"
+  question="You register a global IExceptionFilter to handle all unhandled exceptions. A middleware throws an exception before the request reaches MVC. Is it caught?"
+  options={[
+    "Yes — IExceptionFilter catches all exceptions in the app",
+    "No — IExceptionFilter only catches exceptions from within the MVC action pipeline",
+    "Yes, but only if UseExceptionHandler is also configured",
+    "No — filters only run for controller actions, not middleware exceptions"
+  ]}
+  correctAnswer={1}
+  explanation="IExceptionFilter runs inside the MVC pipeline layer, which only activates after routing, auth, and all middleware before it have completed. An exception thrown by middleware that runs before MVC never reaches the filter pipeline. UseExceptionHandler middleware is the correct mechanism to catch all exceptions from all layers."
+/>
+
+---
+
+<MythBuster
+  myth="ServiceFilter and TypeFilter are interchangeable — just pick whichever you prefer"
+  truth="ServiceFilter resolves the filter from the DI container per request, respecting the registered lifetime (Scoped or Singleton). TypeFilter creates a new instance for every request via ActivatorUtilities, ignoring DI lifetime registration. If your filter has Scoped dependencies, use ServiceFilter — TypeFilter will create a new filter instance each time but may not respect the dependency's intended lifetime."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Filters in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/filters" },
+    { label: "Filter order of execution", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/filters#filter-order-of-execution" },
+    { label: "Endpoint filters in Minimal APIs", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters" },
+  ]}
+/>

@@ -1,24 +1,230 @@
 ---
-title: "Owned Types"
+title: "Owned Entity Types: Value Objects in EF Core"
 slug: "owned-types"
 order: 15
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["owned types", "value objects", "ddd", "totable", "tojson", "complex types", "ef core"]
+summary: "Owned entity types let you map rich value objects — Address, Money, DateRange — to database columns without a separate table and PK. EF Core 8 adds ToJson() for storing them as JSON columns."
+docsLinks:
+  - label: "Owned Entity Types"
+    url: "https://learn.microsoft.com/en-us/ef/core/modeling/owned-entities"
+  - label: "JSON Columns"
+    url: "https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#json-columns"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Owned Types?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An owned entity type is a type that belongs exclusively to another entity (the "owner"). It:
+- Has no primary key of its own
+- Cannot exist without its owner
+- Is always loaded with its owner (part of the same query)
+- Maps to columns in the owner's table by default (or a separate table, or a JSON column)
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+They are the EF Core mechanism for modeling **value objects** in Domain-Driven Design.
+
+---
+
+## Defining Owned Types
+
+```csharp
+// Value object — models a concept, not an identity
+public class Address
+{
+    public string Street { get; set; } = "";
+    public string City { get; set; } = "";
+    public string PostalCode { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+}
+
+// Owner entity
+public class Customer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public Address ShippingAddress { get; set; } = new();
+    public Address BillingAddress { get; set; } = new();
+}
+```
+
+```csharp
+// Configuration — fluent API
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Customer>(entity =>
+    {
+        entity.OwnsOne(c => c.ShippingAddress, address =>
+        {
+            // Columns: ShippingAddress_Street, ShippingAddress_City, etc.
+            address.Property(a => a.Street).HasMaxLength(200);
+            address.Property(a => a.City).HasMaxLength(100);
+            address.Property(a => a.PostalCode).HasMaxLength(20);
+            address.Property(a => a.CountryCode).HasMaxLength(2).IsFixedLength();
+        });
+
+        entity.OwnsOne(c => c.BillingAddress, address =>
+        {
+            address.Property(a => a.Street).HasMaxLength(200);
+            // etc.
+        });
+    });
+}
+```
+
+Generated schema (inline in the Customers table):
+```sql
+CREATE TABLE Customers (
+    Id INT PRIMARY KEY,
+    Name NVARCHAR(200),
+    ShippingAddress_Street NVARCHAR(200),
+    ShippingAddress_City NVARCHAR(100),
+    ShippingAddress_PostalCode NVARCHAR(20),
+    ShippingAddress_CountryCode NCHAR(2),
+    BillingAddress_Street NVARCHAR(200),
+    -- ...
+)
+```
+
+---
+
+## ToTable: Owned Types in Separate Tables
+
+When the owned type is optional or too wide to inline, put it in a separate table:
+
+```csharp
+modelBuilder.Entity<Customer>().OwnsOne(c => c.ShippingAddress, address =>
+{
+    address.ToTable("CustomerShippingAddresses");
+    // EF adds a shadow FK "CustomerId" to the owned table
+});
+```
+
+---
+
+## ToJson: Storing Owned Types as JSON Columns (EF Core 7+)
+
+EF Core 7 added `ToJson()` support — store the entire owned type as a JSON document in a single column:
+
+```csharp
+// JSON column configuration
+modelBuilder.Entity<Order>().OwnsOne(o => o.ShippingAddress, address =>
+{
+    address.ToJson("ShippingAddressJson");
+});
+
+// EF Core 8 — complex collections as JSON
+public class Order
+{
+    public int Id { get; set; }
+    public List<OrderLineItem> LineItems { get; set; } = new();
+}
+
+public class OrderLineItem
+{
+    public int ProductId { get; set; }
+    public string ProductName { get; set; } = "";
+    public int Quantity { get; set; }
+    public decimal UnitPrice { get; set; }
+}
+
+modelBuilder.Entity<Order>().OwnsMany(o => o.LineItems, lineItem =>
+{
+    lineItem.ToJson("LineItemsJson");
+    // Stored as: [{"ProductId":1,"ProductName":"Widget","Quantity":2,"UnitPrice":9.99}]
+});
+```
+
+**JSON columns support LINQ queries** — EF translates to JSON path expressions:
+
+```csharp
+// SQL Server JSON queries
+var ordersInCity = await db.Orders
+    .Where(o => o.ShippingAddress.City == "London")
+    .ToListAsync();
+// SQL: SELECT * FROM Orders WHERE JSON_VALUE(ShippingAddressJson, '$.City') = 'London'
+
+var expensiveLineItems = await db.Orders
+    .Where(o => o.LineItems.Any(li => li.UnitPrice > 100))
+    .ToListAsync();
+// Translated to JSON_QUERY / OPENJSON in SQL Server
+```
+
+---
+
+## Owned Collections (EF Core 6+)
+
+```csharp
+public class Blog
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<Tag> Tags { get; set; } = new();
+}
+
+public class Tag
+{
+    public string Name { get; set; } = "";
+    public string Color { get; set; } = "";
+}
+
+// Configuration
+modelBuilder.Entity<Blog>().OwnsMany(b => b.Tags, tag =>
+{
+    tag.WithOwner().HasForeignKey("BlogId");
+    tag.Property(t => t.Name).HasMaxLength(50);
+    tag.HasKey("BlogId", "Name"); // composite key for owned collection
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Owned Types vs. Regular Entities**
+
+Use owned types when all of these are true:
+1. The type has no identity independent of the owner (no one queries "all addresses" standalone)
+2. The type is always loaded with its owner (no lazy loading needed)
+3. The type has no navigations to other non-owned entities
+
+Use regular entities when:
+- Multiple owners can share the same instance (e.g., a Category shared by many Products — not owned)
+- You need independent CRUD on the type
+- The type has its own lifecycle (created independently of the owner)
+
+**JSON columns vs. inline columns**: use inline columns when you need efficient column-level indexing and filtering. Use `ToJson()` when the structure is complex/variable, rarely queried by individual fields, or when the schema should be flexible. JSON columns with SQL Server path expressions are less performant than indexed regular columns for frequent WHERE clause filtering.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Owned entity types require a primary key — they are just regular entities with a foreign key"
+  truth="Owned entity types explicitly have no primary key. They use their owner's PK (plus an index when in a separate table or collection). This is the core difference: owned types model value semantics (identity is irrelevant — two addresses with the same fields are equivalent), while regular entities model identity semantics (a Customer with ID 42 is a specific individual, not interchangeable with another customer)."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/owned-types/challenge-1"
+  question="You have a Product entity with a Money value object (Amount decimal + Currency string). You want both stored as columns in the Products table. Which is correct?"
+  options={[
+    "Make Money a regular entity with its own table and FK to Products",
+    "Use OwnsOne() in OnModelCreating to configure Money as an owned type on Product",
+    "Use shadow properties for Amount and Currency on the Product entity",
+    "Store Money as a JSON column with ToJson() for simplicity"
+  ]}
+  correctAnswer={1}
+  explanation="OwnsOne() is exactly the right choice for a Money value object. It maps Amount and Currency as columns in the Products table (e.g., Price_Amount, Price_Currency) with no separate table or PK required. Option A (regular entity) is overcomplicated and wrong conceptually — Money has no identity. Shadow properties (Option C) would work but lose the rich C# type. ToJson() (Option D) adds JSON serialization overhead and prevents efficient column-level indexing on Amount when querying by price range."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Owned Entity Types", url: "https://learn.microsoft.com/en-us/ef/core/modeling/owned-entities" },
+    { label: "JSON Columns in EF Core 7", url: "https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-7.0/whatsnew#json-columns" },
+    { label: "Complex Types (EF Core 8)", url: "https://learn.microsoft.com/en-us/ef/core/what-is-new/ef-core-8.0/whatsnew#value-objects-using-complex-types" },
+  ]}
+/>

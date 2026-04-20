@@ -1,24 +1,287 @@
 ---
-title: "Polymorphism: virtual, override, new, sealed"
+title: "Polymorphism: virtual dispatch, compile-time vs runtime"
 slug: "polymorphism"
 order: 3
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["polymorphism", "virtual dispatch", "runtime polymorphism", "method overloading", "vtable", "override", "compile-time"]
+summary: "Polymorphism in C# has two distinct forms — compile-time (overloading) and runtime (virtual dispatch) — and understanding the vtable mechanism is what separates guessing from knowing."
+docsLinks:
+  - label: "Polymorphism (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism"
+  - label: "virtual keyword"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/virtual"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Two Kinds of Polymorphism
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Polymorphism means "many forms" — the same operation behaves differently depending on context. C# has two distinct mechanisms:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+| | Compile-time | Runtime |
+|-|---|---|
+| Also called | Static polymorphism | Dynamic polymorphism |
+| Mechanism | Method overloading | Virtual dispatch (vtable) |
+| Resolved by | Compiler | CLR at runtime |
+| Based on | Argument types at call site | Actual runtime type of the object |
+
+---
+
+## Compile-Time Polymorphism (Overloading)
+
+The compiler picks the best matching overload at the call site based on the static type of the arguments:
+
+```csharp
+public class Printer
+{
+    public void Print(int value)    => Console.WriteLine($"int: {value}");
+    public void Print(double value) => Console.WriteLine($"double: {value}");
+    public void Print(string value) => Console.WriteLine($"string: {value}");
+    public void Print(object value) => Console.WriteLine($"object: {value}");
+}
+
+var p = new Printer();
+p.Print(42);       // Compiler picks Print(int)
+p.Print(3.14);     // Compiler picks Print(double)
+p.Print("hello");  // Compiler picks Print(string)
+
+// Watch out: the compiler uses STATIC type, not runtime type
+object o = 42;
+p.Print(o);        // Compiler picks Print(object) — NOT Print(int)!
+                   // Because o is typed as 'object' at the call site
+```
+
+<Callout type="trap">
+**Overload resolution uses the static (compile-time) type.** If you pass an `int` stored in an `object` variable, the compiler picks `Print(object)`, not `Print(int)`. This surprises many developers. To get runtime-type-based dispatch on overloads, you need `dynamic` or an explicit type check — or better yet, redesign so polymorphism lives in the object itself.
 </Callout>
+
+---
+
+## Runtime Polymorphism (Virtual Dispatch)
+
+Virtual dispatch is the core mechanism of OOP. When a method is `virtual`, the CLR uses a **virtual method table (vtable)** to dispatch the call to the correct implementation based on the object's actual runtime type:
+
+```csharp
+public abstract class Shape
+{
+    public abstract double Area();        // Must be overridden
+    public virtual  string Describe()    // CAN be overridden
+        => $"I am a {GetType().Name} with area {Area():F2}";
+}
+
+public class Circle : Shape
+{
+    public double Radius { get; }
+    public Circle(double radius) => Radius = radius;
+    public override double Area() => Math.PI * Radius * Radius;
+}
+
+public class Rectangle : Shape
+{
+    public double Width { get; }
+    public double Height { get; }
+    public Rectangle(double w, double h) { Width = w; Height = h; }
+    public override double Area() => Width * Height;
+}
+
+// The KEY: we use a base-type reference, but runtime dispatch goes to the actual type
+Shape[] shapes = { new Circle(5), new Rectangle(3, 4), new Circle(1) };
+
+double totalArea = 0;
+foreach (Shape s in shapes)
+{
+    // s.Area() — compiler sees Shape.Area(), but CLR dispatches to Circle.Area() or Rectangle.Area()
+    totalArea += s.Area();
+}
+
+Console.WriteLine($"Total area: {totalArea:F2}"); // Uses the correct formula for each shape
+```
+
+---
+
+## How the vtable Works
+
+Every class with virtual members has a **vtable** (virtual dispatch table) — a compile-time-constructed array of function pointers. Each object on the heap contains a pointer to its class's vtable.
+
+```
+Object layout in memory (simplified):
+
+Circle object:
+┌──────────────────┐
+│ vtable pointer ──┼──► Circle vtable
+│ Radius = 5.0     │    ┌──────────────────────────────┐
+└──────────────────┘    │ [0] Circle.Area()            │
+                        │ [1] Shape.Describe()         │  ← inherited, not overridden
+                        │ [2] object.GetHashCode()     │
+                        │ [3] object.Equals()          │
+                        │ [4] object.ToString()        │
+                        └──────────────────────────────┘
+```
+
+When you call `s.Area()` where `s` is of static type `Shape`:
+1. Load `s`'s object reference
+2. Follow the vtable pointer
+3. Look up `Area` at its fixed slot in the vtable
+4. Call the function pointer at that slot
+
+This is O(1) — a single indirection. It's very fast, but it prevents inlining (the JIT doesn't know which function pointer it will get until runtime).
+
+---
+
+```csharp
+// Demonstrating that virtual dispatch is based on RUNTIME type
+Shape s = new Circle(5);
+
+// Compile-time type: Shape
+// Runtime type:      Circle
+
+Console.WriteLine(s.GetType().Name); // "Circle"
+Console.WriteLine(s.Area());         // 78.54 — Circle's implementation
+
+// Even after casting back, the vtable pointer in the object doesn't change
+object o = s;
+Console.WriteLine(((Shape)o).Area()); // Still 78.54 — still Circle's implementation
+```
+
+---
+
+## Abstract vs Virtual
+
+```csharp
+public abstract class Document
+{
+    // abstract: no default implementation, subclasses MUST override
+    public abstract void Render();
+
+    // virtual: has a default, subclasses MAY override
+    public virtual string GetTitle() => "Untitled";
+
+    // non-virtual: fixed behavior, no override possible
+    public string GetId() => Guid.NewGuid().ToString();
+}
+
+public class PdfDocument : Document
+{
+    // MUST implement — compile error if missing
+    public override void Render() => Console.WriteLine("Rendering PDF...");
+
+    // MAY override — here we do
+    public override string GetTitle() => "PDF Document";
+}
+
+public class HtmlDocument : Document
+{
+    public override void Render() => Console.WriteLine("Rendering HTML...");
+    // GetTitle() not overridden — uses base "Untitled"
+}
+```
+
+---
+
+<CodeChallenge
+  id="02-oop/polymorphism/challenge-1"
+  title="Predict the Output"
+  description="What does this code print? Think carefully about both compile-time resolution and runtime dispatch."
+  code={`public class A
+{
+    public virtual void Go() => Console.Write("A ");
+}
+
+public class B : A
+{
+    public override void Go() => Console.Write("B ");
+}
+
+public class C : B
+{
+    public new void Go() => Console.Write("C ");
+}
+
+A a = new C();
+B b = new C();
+C c = new C();
+
+a.Go();
+b.Go();
+c.Go();`}
+  options={[
+    "C B C",
+    "A A C",
+    "B B C",
+    "C C C"
+  ]}
+  correctAnswer={2}
+  explanation="This is a classic trap. A.Go() is virtual, B.Go() overrides it — so any object whose runtime type is B or a B-derived class will use B.Go() when called through an A or B reference. C.Go() uses 'new', which HIDES B.Go() for C references only — it does NOT participate in virtual dispatch. So: a.Go() — static type A, runtime type C. Virtual dispatch starts at A's vtable. C doesn't override (it hides with new), so the virtual chain is A→B→B. Prints 'B'. b.Go() — static type B, runtime type C. Same reasoning. Prints 'B'. c.Go() — static type C. C.Go() shadows with 'new', so it's called directly. Prints 'C'. Result: B B C."
+/>
+
+---
+
+<ComparisonTable
+  headers={["Feature", "override", "new (hiding)"]}
+  rows={[
+    ["Participates in virtual dispatch", "Yes", "No"],
+    ["Affects calls through base reference", "Yes — derived method runs", "No — base method runs"],
+    ["Affects calls through derived reference", "Yes", "Yes"],
+    ["Compiler warning if omitted", "Error (must say override or new)", "Warning (warning to add 'new')"],
+    ["Typical use case", "Polymorphic behavior", "Deliberate API isolation (rare)"],
+    ["Breaks Liskov Substitution", "Only if logic is wrong", "Always (by definition)"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="Interfaces provide polymorphism differently from virtual methods — they're faster."
+  reality="Interface dispatch and virtual dispatch are mechanically similar. Both use a form of vtable lookup. Interface dispatch adds a small extra step (locating the interface's section of the vtable) so it can actually be marginally slower in micro-benchmarks. The JIT can devirtualize and inline virtual calls when the runtime type is known — which is more likely with class hierarchies than interfaces. In .NET 8, the JIT's 'guarded devirtualization' handles both cases well. Choose interfaces for design reasons (abstraction, testability), not performance reasons."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Covariant Return Types and Polymorphism**
+
+Since C# 9, override methods can return a more derived type than the base method — this is called covariant return types:
+
+```csharp
+public class Animal
+{
+    public virtual Animal Clone() => new Animal();
+}
+
+public class Dog : Animal
+{
+    // Covariant: returns Dog instead of Animal — still a valid override
+    public override Dog Clone() => new Dog();
+}
+
+Animal a = new Dog();
+Animal clone = a.Clone(); // Virtual dispatch — gets Dog instance
+Dog d = new Dog();
+Dog dClone = d.Clone(); // Compile-time type is Dog — no cast needed!
+```
+
+This eliminates awkward casts in fluent APIs and builder patterns. Before C# 9 you had to either cast or use generics with `CRTP` (Curiously Recurring Template Pattern):
+
+```csharp
+// Old pattern (pre-C# 9)
+public abstract class Builder<TSelf> where TSelf : Builder<TSelf>
+{
+    public TSelf WithName(string name) { /* ... */ return (TSelf)this; }
+}
+```
+
+Covariant returns are cleaner. Use them in factory methods and clone patterns in any .NET 5+ project.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Polymorphism (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism" },
+    { label: "virtual keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/virtual" },
+    { label: "abstract keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/abstract" },
+    { label: "Covariant return types", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-9.0/covariant-returns" },
+  ]}
+/>

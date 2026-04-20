@@ -1,24 +1,318 @@
 ---
-title: "Big-O Analysis of BCL Operations"
+title: "Big-O for BCL Collections: The Interview Cheat Sheet"
 slug: "big-o-bcl"
 order: 10
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["Big-O", "time complexity", "space complexity", "BCL collections", "interview", "cheat sheet", "performance"]
+summary: "Every BCL collection has a characteristic time and space complexity. Memorizing this table and knowing why each number is what it is — not just the number itself — is what separates junior answers from senior answers in technical interviews."
+docsLinks:
+  - label: "List<T> — Collections and Data Structures"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/"
+  - label: "Dictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2"
+  - label: "Array Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.array"
+  - label: "Choosing a Collection Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/selecting-a-collection-class"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why "Amortized" Matters
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before diving into the table: **amortized O(1)** means the average cost per operation over a long sequence of operations is O(1), even if occasional operations are expensive.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+`List<T>.Add` is amortized O(1): most adds write to a pre-allocated slot (O(1)), but when capacity is exhausted the backing array doubles — an O(n) copy. Over n adds: total work = n + n/2 + n/4 + … = 2n. Average = 2n/n = O(1) per add.
+
+```csharp
+// These costs all amortize:
+list.Add(item);            // amortized O(1) — occasional O(n) resize
+hashset.Add(item);         // amortized O(1)
+dict.Add(key, value);      // amortized O(1)
+stack.Push(item);          // amortized O(1)
+queue.Enqueue(item);       // amortized O(1) circular buffer
+```
+
+Worst-case is always O(n) for these. Amortized is what you state in interviews unless the interviewer specifically asks about worst-case.
+
+---
+
+## The Master Table
+
+<ComparisonTable
+  headers={["Collection", "Access by Index", "Search (unsorted)", "Search (sorted/key)", "Insert (end)", "Insert (middle)", "Remove (end)", "Remove (middle)", "Space"]}
+  rows={[
+    ["T[]", "O(1)", "O(n)", "O(log n) BinarySearch", "N/A fixed", "N/A fixed", "N/A fixed", "N/A fixed", "O(n)"],
+    ["List\<T\>", "O(1)", "O(n)", "O(log n) BinarySearch", "O(1) amortized", "O(n) shift", "O(1)", "O(n) shift", "O(n)"],
+    ["LinkedList\<T\>", "O(n)", "O(n)", "N/A", "O(1) with node ref", "O(1) with node ref", "O(1) with node ref", "O(1) with node ref", "O(n) + pointer overhead"],
+    ["Dictionary\<K,V\>", "N/A", "N/A", "O(1) avg by key", "O(1) amortized", "N/A", "O(1) avg", "O(1) avg", "O(n)"],
+    ["SortedDictionary\<K,V\>", "N/A", "N/A", "O(log n) by key", "O(log n)", "N/A", "O(log n)", "O(log n)", "O(n)"],
+    ["SortedList\<K,V\>", "O(log n) by key", "N/A", "O(log n) by key", "O(n) shift", "O(n) shift", "O(n) shift", "O(n) shift", "O(n)"],
+    ["HashSet\<T\>", "N/A", "O(1) Contains avg", "O(1) avg", "O(1) amortized", "N/A", "O(1) avg", "O(1) avg", "O(n)"],
+    ["SortedSet\<T\>", "N/A", "O(log n) Contains", "O(log n)", "O(log n)", "N/A", "O(log n)", "O(log n)", "O(n)"],
+    ["Stack\<T\>", "Top O(1)", "O(n)", "N/A", "O(1) Push amortized", "N/A", "O(1) Pop", "N/A", "O(n)"],
+    ["Queue\<T\>", "Front O(1)", "O(n)", "N/A", "O(1) Enqueue amortized", "N/A", "O(1) Dequeue", "N/A", "O(n)"],
+    ["PriorityQueue\<T,P\>", "Min O(1)", "O(n)", "N/A", "O(log n) Enqueue", "N/A", "O(log n) Dequeue", "N/A", "O(n)"],
+    ["ImmutableList\<T\>", "O(log n)", "O(n)", "N/A", "O(log n) new instance", "O(log n) new instance", "O(log n)", "O(log n)", "O(n)"],
+    ["ImmutableArray\<T\>", "O(1)", "O(n)", "O(log n) BinarySearch", "O(n) copy", "O(n) copy", "O(n) copy", "O(n) copy", "O(n)"],
+    ["FrozenDictionary\<K,V\>", "N/A", "N/A", "O(1) optimized", "N/A (frozen)", "N/A", "N/A", "N/A", "O(n)"],
+  ]}
+/>
+
+---
+
+## The "Why" Behind Key Numbers
+
+Interviewers want you to explain, not just recite. Here are the key reasons:
+
+```csharp
+// WHY List<T> middle insert is O(n):
+// Inserting at index i requires shifting elements [i..Count-1] right by one
+list.Insert(0, item);
+// Shifts every element — n shifts → O(n)
+
+// WHY Dictionary lookup is O(1) average:
+// hash = key.GetHashCode()
+// bucket = hash % buckets.Length  → one array read
+// Walk the chain for that bucket   → O(1) if chains are short (good hash)
+// One equality check → done
+
+// WHY SortedDictionary lookup is O(log n):
+// Red-black tree, height ≈ log₂(n)
+// Each comparison traverses one level → log₂(n) comparisons
+
+// WHY LinkedList access is O(n):
+// Nodes are not contiguous — must walk from head/tail
+// To get element at index 500: walk 500 Next pointers → 500 potential cache misses
+
+// WHY PriorityQueue.Enqueue is O(log n):
+// Inserts at end of the heap array, then "sifts up" by swapping with parent
+// Sift-up repeats at most log₂(n) times (tree height)
+```
+
+---
+
+## LINQ Operations and Their Hidden Complexity
+
+LINQ looks elegant but hides cost. Know what's happening underneath:
+
+```csharp
+int[] data = Enumerable.Range(0, 1_000_000).ToArray();
+
+// O(n) — iterates once
+int sum = data.Sum();
+int first = data.First();
+int count = data.Count();
+
+// O(n) — iterates and builds a new collection
+var list = data.ToList();
+var filtered = data.Where(x => x % 2 == 0).ToArray();
+
+// O(n log n) — uses Array.Sort internally
+var sorted = data.OrderBy(x => x).ToArray();
+
+// O(n) per call — NOT O(1)!
+int last = data.Last(); // scans to end! Use data[^1] for arrays
+
+// O(n) — no optimization for indexed collections
+bool any = data.Any(x => x > 999_000); // scans until found
+int idx = data.Select((x, i) => (x, i)).First(t => t.x > 999_000).i;
+
+// O(n²) pitfall — SelectMany on a nested structure
+// Inner select runs n times, each O(m) → O(n*m) total
+var nested = data.SelectMany(x => new[] { x, x * 2 }).ToArray(); // O(n) — fine here
+// But: outer.SelectMany(x => inner.Where(y => y.Id == x.Id)) → O(n*m)!
+
+// Use GroupJoin or pre-index with a Dictionary for O(n+m):
+var innerLookup = inner.ToDictionary(x => x.Id);
+var joined = outer.Select(x => (x, innerLookup.GetValueOrDefault(x.Id)));
+```
+
+---
+
+## Choosing by Operation Profile
+
+```
+PRIMARY OPERATION        → BEST CHOICE
+─────────────────────────────────────────────────────
+Random access by index   → T[] or List<T>
+Key-based lookup         → Dictionary<K,V>
+Sorted key lookup        → SortedDictionary or SortedList
+Membership test          → HashSet<T>
+Unique sorted membership → SortedSet<T>
+FIFO processing          → Queue<T>
+LIFO / undo stack        → Stack<T>
+Priority scheduling      → PriorityQueue<T,P>
+Immutable snapshot       → ImmutableArray<T> (small) / ImmutableList<T> (mutable ops)
+Static read-heavy lookup → FrozenDictionary<K,V>
+Thread-safe updates      → ConcurrentDictionary<K,V>
+Async producer-consumer  → Channel<T>
+```
+
+---
+
+## Interview War-Story Patterns
+
+These are the patterns interviewers test most often:
+
+```csharp
+// Pattern 1: Two-pointer with sorted array — O(n) vs O(n²) naive
+// Find pair summing to target
+bool TwoSum(int[] sorted, int target)
+{
+    int l = 0, r = sorted.Length - 1;
+    while (l < r)
+    {
+        int sum = sorted[l] + sorted[r];
+        if (sum == target) return true;
+        if (sum < target) l++;
+        else r--;
+    }
+    return false;
+}
+
+// Pattern 2: Sliding window — O(n) for substring/subarray problems
+int LongestUniqueSubstring(string s)
+{
+    var seen = new Dictionary<char, int>(); // char → last index
+    int max = 0, start = 0;
+    for (int i = 0; i < s.Length; i++)
+    {
+        if (seen.TryGetValue(s[i], out int prev) && prev >= start)
+            start = prev + 1;
+        seen[s[i]] = i;
+        max = Math.Max(max, i - start + 1);
+    }
+    return max;
+}
+
+// Pattern 3: Monotonic stack — O(n) for next-greater-element problems
+int[] NextGreater(int[] nums)
+{
+    int n = nums.Length;
+    int[] result = new int[n];
+    Array.Fill(result, -1);
+    var stack = new Stack<int>(); // stores indices
+
+    for (int i = 0; i < n; i++)
+    {
+        while (stack.Count > 0 && nums[stack.Peek()] < nums[i])
+            result[stack.Pop()] = nums[i];
+        stack.Push(i);
+    }
+    return result;
+}
+
+// Pattern 4: Hash map for O(1) lookup instead of O(n) search
+// Count character frequencies
+int[] FrequencyTable(string s)
+{
+    int[] freq = new int[128]; // ASCII
+    foreach (char c in s) freq[c]++;
+    return freq;
+}
+```
+
+---
+
+<CodeChallenge
+  id="08-data-structures/big-o-bcl/challenge-1"
+  title="Interview Gauntlet: Collection Choice"
+  description="For each of these requirements, which is the optimal collection? Assume all operations mentioned are hot-path (called thousands of times per second)."
+  code={`// Requirement A:
+// - Store 50 HTTP route patterns
+// - Check if an incoming path matches a known route (exact match)
+// - Routes are loaded at startup and never change
+// → Use: ???
+
+// Requirement B:
+// - Maintain a live set of connected WebSocket client IDs (integers)
+// - Clients connect and disconnect constantly
+// - Need to broadcast: iterate all connected clients
+// - No order required
+// → Use: ???
+
+// Requirement C:
+// - Process incoming log entries ordered by severity (1=critical, 10=low)
+// - New entries arrive on background threads
+// - Single consumer thread processes most-critical first
+// → Use: ???
+
+// Requirement D:
+// - Cache computed results keyed by (userId, reportDate)
+// - Multiple threads read and update the cache concurrently
+// - Old entries can coexist with new ones (no strict consistency needed)
+// → Use: ???`}
+  options={[
+    "A=FrozenSet, B=HashSet, C=ConcurrentQueue, D=ConcurrentDictionary",
+    "A=FrozenSet<string>, B=ConcurrentDictionary<int,bool>, C=Channel<T> with PriorityQueue consumer, D=ConcurrentDictionary<(int,DateTime),Result>",
+    "A=HashSet, B=List<int> with lock, C=PriorityQueue (thread-safe), D=Dictionary with ReaderWriterLockSlim",
+    "A=Dictionary, B=ConcurrentBag, C=BlockingCollection, D=ImmutableDictionary"
+  ]}
+  correctAnswer={1}
+  explanation="A: FrozenSet<string> — loaded at startup, never changes, maximally optimized for membership testing. B: ConcurrentDictionary<int, bool> (or ConcurrentDictionary<int, byte>) — thread-safe adds/removes, O(1) per operation, safe iteration for broadcast. A plain HashSet<int> would need manual locking. C: PriorityQueue<T,P> is not thread-safe; the correct pattern is a Channel<LogEntry> for thread-safe multi-producer enqueue, with a single consumer that places items into a PriorityQueue for ordered processing. D: ConcurrentDictionary — built for concurrent reads and writes with fine-grained segment locking."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Big-O Is the Floor, Not the Ceiling — Cache Effects Dominate**
+
+Big-O notation ignores constant factors. In practice, cache behavior often determines the real winner:
+
+```csharp
+// Both O(n) — but very different real-world performance
+void SumArray(int[] arr)      // sequential memory → cache-friendly → fast
+void SumLinkedList(LinkedList<int> ll) // pointer chasing → cache miss per node → slow
+
+// O(log n) but often slower than O(n) for small n due to branch misprediction
+SortedDictionary<K,V> // tree traversal: branch at each node
+Dictionary<K,V>        // single hash + short linear chain: O(1) but cache-local
+
+// Rule of thumb from benchmarks:
+// For n < ~100:   linear scan on array often beats binary search (no branch misprediction)
+// For n < ~1000:  HashSet beats SortedSet despite "same" O(1) vs O(log n) claim
+// For n > 100,000: memory layout dominates — prefer array-of-structs over array-of-classes
+```
+
+In interviews, after giving the Big-O answer, say: "In practice, I'd benchmark this — cache locality often makes the O(n) solution faster than the O(log n) solution for the sizes we'd see in production."
+
+This shows you understand the gap between theory and practice — which is what senior-level conversations are actually about.
 </Callout>
+
+---
+
+## Space Complexity Summary
+
+```
+T[]                  → O(n) — n elements × sizeof(T), no overhead
+List<T>              → O(n) — same as T[], plus capacity slack (up to 2×)
+Dictionary<K,V>      → O(n) — entry array + bucket array (~3× element memory)
+HashSet<T>           → O(n) — same structure as Dictionary without values
+LinkedList<T>        → O(n) — n nodes × (2 pointers + data) — significant overhead
+SortedDictionary     → O(n) — n red-black tree nodes (reference type, GC objects)
+ImmutableList<T>     → O(n) — but multiple versions share nodes (structural sharing)
+FrozenDictionary     → O(n) — more compact than Dictionary (no slack, no chain ptrs)
+ConcurrentDictionary → O(n) — higher than Dictionary (segment lock objects overhead)
+```
+
+---
+
+<MythBuster
+  myth="Dictionary<K,V> lookup is always O(1) regardless of load"
+  reality="Dictionary lookup is O(1) average — this assumes a good hash function distributing keys across buckets. With a bad GetHashCode (constant return, or highly skewed distribution), lookup degrades to O(n). The 'average' also hides that after many deletions, dead entries in chains are still walked. After heavy churn, rebuilding the dictionary can restore O(1) character. Always use GetHashCode implementations that distribute well — HashCode.Combine is the BCL standard."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Selecting a Collection Class", url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/selecting-a-collection-class" },
+    { label: "Collections and Data Structures", url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/" },
+    { label: "Array.BinarySearch", url: "https://learn.microsoft.com/en-us/dotnet/api/system.array.binarysearch" },
+    { label: "List\<T\>.BinarySearch", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1.binarysearch" },
+    { label: "Performance best practices in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/high-performance-logging" },
+  ]}
+/>

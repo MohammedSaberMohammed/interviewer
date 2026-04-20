@@ -3,22 +3,387 @@ title: "Composition Over Inheritance"
 slug: "composition-inheritance"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["composition", "inheritance", "design principles", "interfaces", "C#", "flexibility"]
+summary: "Favor object composition over class inheritance for reusing behavior — learn why deep inheritance hierarchies become fragile, and how composition with interfaces produces more flexible, testable C# code."
+docsLinks:
+  - label: "Inheritance (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance"
+  - label: "Interfaces (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces"
+  - label: "Decorator design pattern"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Inheritance Becomes Problematic
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Inheritance is C#'s most powerful reuse mechanism — and one of the most overused. The Gang of Four's advice from Design Patterns (1994) still applies: **favor object composition over class inheritance.**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The problem with deep inheritance hierarchies:
+
+1. **Tight coupling** — subclasses depend on every implementation detail of every ancestor
+2. **Fragile base class problem** — changing a base class can silently break all descendants
+3. **Forced coupling** — you inherit *everything*, not just what you need
+4. **The "is-a" trap** — many relationships that feel like "is-a" are actually "behaves-like-a" or "can-do"
+
+---
+
+## The Inheritance Trap
+
+```csharp
+// BAD: A notification hierarchy that grows out of control
+
+public class Notification
+{
+    public string Message { get; set; } = "";
+    public string Recipient { get; set; } = "";
+
+    public virtual void Send()
+    {
+        Console.WriteLine($"Sending: {Message} to {Recipient}");
+    }
+}
+
+public class EmailNotification : Notification
+{
+    public string Subject { get; set; } = "";
+
+    public override void Send()
+    {
+        // Email-specific sending logic
+        Console.WriteLine($"Email to {Recipient}: {Subject} — {Message}");
+    }
+}
+
+public class SmsNotification : Notification
+{
+    public override void Send()
+    {
+        Console.WriteLine($"SMS to {Recipient}: {Message}");
+    }
+}
+
+// Now: what if we need an email that ALSO sends an SMS backup?
+// Option 1: Copy-paste logic (DRY violation)
+// Option 2: Multiple inheritance — C# doesn't support it
+// Option 3: Create a new class with a confusing hierarchy:
+public class EmailWithSmsFallbackNotification : EmailNotification
+{
+    // Must reach up to SmsNotification somehow — impossible in single inheritance
+    // So we copy the SMS logic here — now it's duplicated
+    public override void Send()
+    {
+        base.Send();
+        Console.WriteLine($"SMS fallback to {Recipient}: {Message}");
+    }
+}
+
+// And then: LoggedEmailNotification, RetryableEmailNotification,
+// LoggedRetryableEmailWithSmsFallbackNotification...
+// The hierarchy explodes combinatorially.
+```
+
+---
+
+## The Composition Solution
+
+```csharp
+// GOOD: Compose behaviors from small, focused pieces
+
+// Each "behavior" is a self-contained interface + implementation
+public interface INotificationChannel
+{
+    void Send(string recipient, string message);
+}
+
+public class EmailChannel : INotificationChannel
+{
+    private readonly string _subject;
+
+    public EmailChannel(string subject) => _subject = subject;
+
+    public void Send(string recipient, string message)
+    {
+        Console.WriteLine($"Email to {recipient} | Subject: {_subject} | {message}");
+    }
+}
+
+public class SmsChannel : INotificationChannel
+{
+    public void Send(string recipient, string message)
+    {
+        Console.WriteLine($"SMS to {recipient}: {message}");
+    }
+}
+
+public class PushChannel : INotificationChannel
+{
+    public void Send(string recipient, string message)
+    {
+        Console.WriteLine($"Push notification to {recipient}: {message}");
+    }
+}
+
+// NotificationService composes behaviors — no inheritance needed
+public class NotificationService
+{
+    private readonly IEnumerable<INotificationChannel> _channels;
+
+    public NotificationService(IEnumerable<INotificationChannel> channels)
+        => _channels = channels;
+
+    public void Notify(string recipient, string message)
+    {
+        foreach (var channel in _channels)
+            channel.Send(recipient, message);
+    }
+}
+
+// Assembling behaviors at the composition root (e.g., Program.cs)
+// Email only:
+var emailOnly = new NotificationService(new[]
+{
+    new EmailChannel("Order Confirmed")
+});
+
+// Email + SMS:
+var emailAndSms = new NotificationService(new INotificationChannel[]
+{
+    new EmailChannel("Order Confirmed"),
+    new SmsChannel()
+});
+
+// All three — no new class required:
+var allChannels = new NotificationService(new INotificationChannel[]
+{
+    new EmailChannel("Order Confirmed"),
+    new SmsChannel(),
+    new PushChannel()
+});
+```
+
+Adding a fourth channel (e.g., Slack) requires **zero changes** to existing classes — create `SlackChannel : INotificationChannel` and inject it.
+
+---
+
+## The Decorator Pattern: Composition for Cross-Cutting Concerns
+
+Composition is also the mechanism behind the Decorator pattern — adding behavior to an existing object without inheritance:
+
+```csharp
+// Base implementation
+public interface IOrderRepository
+{
+    Order? GetById(int id);
+    void Save(Order order);
+}
+
+public class SqlOrderRepository : IOrderRepository
+{
+    public Order? GetById(int id) { /* SQL */ return null; }
+    public void Save(Order order) { /* SQL */ }
+}
+
+// Decorator: adds logging WITHOUT inheriting from SqlOrderRepository
+public class LoggingOrderRepository : IOrderRepository
+{
+    private readonly IOrderRepository _inner;
+    private readonly ILogger<LoggingOrderRepository> _logger;
+
+    public LoggingOrderRepository(IOrderRepository inner, ILogger<LoggingOrderRepository> logger)
+    {
+        _inner = inner;
+        _logger = logger;
+    }
+
+    public Order? GetById(int id)
+    {
+        _logger.LogInformation("Fetching order {OrderId}", id);
+        var order = _inner.GetById(id);
+        _logger.LogInformation("Order {OrderId} {Found}", id, order is null ? "not found" : "found");
+        return order;
+    }
+
+    public void Save(Order order)
+    {
+        _logger.LogInformation("Saving order {OrderId}", order.Id);
+        _inner.Save(order);
+        _logger.LogInformation("Order {OrderId} saved", order.Id);
+    }
+}
+
+// Wire it up in Program.cs:
+builder.Services.AddScoped<IOrderRepository>(sp =>
+{
+    var sql = new SqlOrderRepository(connectionString);
+    var logger = sp.GetRequiredService<ILogger<LoggingOrderRepository>>();
+    return new LoggingOrderRepository(sql, logger);
+});
+// SqlOrderRepository and LoggingOrderRepository are completely independent.
+```
+
+---
+
+<ComparisonTable
+  title="When to Use Inheritance vs. Composition"
+  headers={["Use Inheritance When", "Use Composition When"]}
+  rows={[
+    ["True 'is-a' relationship with behavioral substitutability (LSP holds)", "The relationship is 'has-a' or 'can-do'"],
+    ["The base class is designed for extension (abstract class, template method)", "You need to mix and match behaviors independently"],
+    ["You control both base and derived class", "You need to reuse behavior from a class you do not control"],
+    ["The hierarchy has 2 levels maximum in practice", "The hierarchy would need 3+ levels to express requirements"],
+    ["Sealed or abstract base prevents fragile base class issues", "The behavior changes at runtime or per configuration"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Composition in ASP.NET Core Middleware**
+
+The ASP.NET Core middleware pipeline is a textbook composition example. Each middleware is an independent component. Behaviors (authentication, routing, CORS, rate limiting, compression) are composed by registration order, not inheritance:
+
+```csharp
+app.UseHttpsRedirection();    // behavior 1
+app.UseAuthentication();      // behavior 2
+app.UseAuthorization();       // behavior 3
+app.UseRateLimiter();         // behavior 4
+app.MapControllers();         // behavior 5
+```
+
+No class inherits from another. Each is an independent unit that wraps the next in the pipeline — the Decorator pattern applied at framework scale.
+
+When you design your own extension points, model after this: define a clean interface, let implementations be independent, compose at the root. The alternative — a base middleware class with virtual methods — would force every middleware author to understand and extend your base class, creating the fragile base class problem at framework scale.
+
+One concrete C# pattern worth memorizing: `IEnumerable<T>` injection. Registering multiple services with the same interface and injecting `IEnumerable<T>` is the .NET DI idiom for the composite/chain pattern:
+
+```csharp
+// Register multiple validators
+builder.Services.AddScoped<IOrderValidator, StockValidator>();
+builder.Services.AddScoped<IOrderValidator, FraudValidator>();
+builder.Services.AddScoped<IOrderValidator, AddressValidator>();
+
+// Inject all of them
+public class OrderService
+{
+    private readonly IEnumerable<IOrderValidator> _validators;
+
+    public OrderService(IEnumerable<IOrderValidator> validators)
+        => _validators = validators;
+
+    public void PlaceOrder(Order order)
+    {
+        foreach (var v in _validators) v.Validate(order);
+    }
+}
+```
 </Callout>
+
+---
+
+<MythBuster
+  myth="Composition over inheritance means never use inheritance"
+  reality="The principle says 'favor' composition — not 'never use inheritance.' Inheritance is appropriate for true is-a relationships where LSP holds, particularly with abstract base classes designed for extension. C# itself uses inheritance extensively in the BCL (Stream, Exception, Control). The guideline targets *implementation inheritance for code reuse* — pulling methods into a base class not because there is a behavioral contract, but just to avoid copying code. That use of inheritance creates tight coupling and should be replaced with composition."
+/>
+
+---
+
+## Code Challenge: Choose the Right Approach
+
+<CodeChallenge
+  id="06-solid/composition-inheritance/challenge-1"
+  title="Inheritance or Composition?"
+  description="You need a CachedUserRepository that wraps SqlUserRepository to add a memory cache. Which design is correct?"
+  code={`// Option A: Inheritance
+public class CachedUserRepository : SqlUserRepository
+{
+    private readonly IMemoryCache _cache;
+
+    public CachedUserRepository(string connStr, IMemoryCache cache)
+        : base(connStr)
+    {
+        _cache = cache;
+    }
+
+    public override User? GetById(int id)
+    {
+        if (_cache.TryGetValue(id, out User? cached)) return cached;
+        var user = base.GetById(id);
+        _cache.Set(id, user);
+        return user;
+    }
+}
+
+// Option B: Composition (Decorator)
+public class CachedUserRepository : IUserRepository
+{
+    private readonly IUserRepository _inner;
+    private readonly IMemoryCache _cache;
+
+    public CachedUserRepository(IUserRepository inner, IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public User? GetById(int id)
+    {
+        if (_cache.TryGetValue(id, out User? cached)) return cached;
+        var user = _inner.GetById(id);
+        _cache.Set(id, user);
+        return user;
+    }
+}`}
+  options={[
+    "Option A — simpler, reuses SqlUserRepository directly",
+    "Option B — composes via IUserRepository; swappable inner implementation",
+    "Both are equivalent — pick whichever is more readable",
+    "Neither — caching belongs in the service layer"
+  ]}
+  correctAnswer={1}
+  explanation="Option B (Decorator/composition) is correct. CachedUserRepository wraps any IUserRepository — not just SqlUserRepository. This means: (1) you can wrap a MongoUserRepository just as easily, (2) you can unit test CachedUserRepository with a fake inner repository without SQL, (3) CachedUserRepository does not inherit SqlUserRepository's internals — it is not coupled to SQL connection strings or EF contexts. Option A makes CachedUserRepository permanently coupled to SQL — the caching and the SQL implementation are fused."
+/>
+
+---
+
+<Quiz
+  id="06-solid/composition-inheritance/quiz-1"
+  questions={[
+    {
+      question: "What is the 'fragile base class problem'?",
+      options: [
+        "A base class that throws exceptions subclasses cannot catch",
+        "Changes to a base class that unexpectedly break subclasses, even when changes seem unrelated",
+        "A base class with too many abstract methods",
+        "A base class that is not sealed and gets inherited incorrectly"
+      ],
+      correctAnswer: 1,
+      explanation: "The fragile base class problem: subclasses depend on implementation details of their base class. When the base class changes (even a private implementation detail that changes method call order or adds a new virtual method), subclasses can break in unexpected ways. This happens because inheritance exposes the base class's internals to subclasses. Composition avoids this — the composed object is used only through its public interface."
+    },
+    {
+      question: "In ASP.NET Core DI, how do you inject all registered implementations of IOrderValidator into a class?",
+      options: [
+        "Inject IOrderValidator and it returns all registrations automatically",
+        "Inject IEnumerable<IOrderValidator> — the container resolves all registrations",
+        "Inject IServiceProvider and call GetServices<IOrderValidator>()",
+        "Register a composite IOrderValidator that wraps all others"
+      ],
+      correctAnswer: 1,
+      explanation: "ASP.NET Core's DI container resolves IEnumerable\<T\> as a collection of all registered implementations of T. This is the idiomatic way to implement the composite/chain pattern in .NET: register multiple implementations, inject IEnumerable\<IOrderValidator\>, and iterate them. Injecting IServiceProvider directly is the Service Locator anti-pattern. Option D works but requires writing a composite class — the IEnumerable\<T\> pattern is less code for the same result."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Inheritance (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance" },
+    { label: "Interfaces (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces" },
+    { label: "ASP.NET Core middleware pipeline (composition in practice)", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/" },
+    { label: "Dependency injection — injecting multiple implementations", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#multiple-constructor-discovery-rules" },
+  ]}
+/>

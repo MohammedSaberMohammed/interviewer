@@ -1,24 +1,312 @@
 ---
-title: "ConcurrentDictionary & Friends"
+title: "Concurrent Collections: Thread-Safe Without Manual Locking"
 slug: "concurrent-collections"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["ConcurrentDictionary", "ConcurrentQueue", "ConcurrentBag", "thread-safety", "lock-free", "concurrency"]
+summary: "ConcurrentDictionary, ConcurrentQueue, and ConcurrentBag provide thread-safe collections with fine-grained locking and lock-free algorithms. But thread-safety at the operation level doesn't mean thread-safety at the application level — that's the trap most developers fall into."
+docsLinks:
+  - label: "ConcurrentDictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2"
+  - label: "ConcurrentQueue<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentqueue-1"
+  - label: "ConcurrentBag<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentbag-1"
+  - label: "System.Collections.Concurrent namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Concurrent Collections Exist
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Using a regular `Dictionary<K,V>` from multiple threads simultaneously causes data corruption — torn reads, lost updates, and crashes. The naive fix is a `lock`:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Naive: manual lock around every access — correct but coarse-grained
+private readonly Dictionary<string, int> _counts = new();
+private readonly object _lock = new();
+
+public void Increment(string key)
+{
+    lock (_lock)
+    {
+        _counts.TryGetValue(key, out int count);
+        _counts[key] = count + 1;
+    }
+}
+```
+
+`System.Collections.Concurrent` provides collections that internalize this locking with **finer granularity** or **lock-free algorithms**, reducing contention in multi-threaded scenarios.
+
+---
+
+## ConcurrentDictionary\<K,V\>: The Workhorse
+
+`ConcurrentDictionary<K,V>` partitions its hash table into **segments** (by default: number of logical CPUs). Reads are entirely **lock-free**; writes acquire a lock only on the relevant segment, allowing concurrent writes to different segments to proceed in parallel.
+
+```csharp
+var dict = new ConcurrentDictionary<string, int>(
+    concurrencyLevel: Environment.ProcessorCount, // number of write segments
+    capacity: 1000);
+
+// Thread-safe read — lock-free
+dict.TryGetValue("key", out int value);
+
+// Thread-safe add-or-update patterns:
+
+// TryAdd — only adds if key doesn't exist (atomic)
+bool added = dict.TryAdd("visitors", 1);
+
+// GetOrAdd — returns existing or adds new (factory called at most once per key per race)
+int count = dict.GetOrAdd("page", _ => 0);
+
+// AddOrUpdate — atomic read-modify-write
+dict.AddOrUpdate(
+    key: "page",
+    addValue: 1,                          // value if key is absent
+    updateValueFactory: (k, old) => old + 1); // transform if key exists
+
+// GetOrAdd with factory (avoid if factory is expensive — may be called multiple times)
+var expensiveData = dict.GetOrAdd("config", key =>
+{
+    Thread.Sleep(100); // WARNING: this might run on multiple threads for same key!
+    return LoadConfig(key);
+});
+```
+
+<Callout type="trap">
+**Trap: GetOrAdd Factory Is Not Atomic**
+
+If multiple threads call `GetOrAdd` with the same key simultaneously, the factory **can be called multiple times**. The dictionary inserts the first result that wins the race and discards the others, but the factory side effects run multiple times.
+
+```csharp
+// DANGEROUS: factory creates a database connection — may be called 3x simultaneously
+var conn = dict.GetOrAdd("db", _ => new SqlConnection(connStr)); // BAD
+
+// SAFE: use Lazy<T> to ensure initialization runs once
+var lazyConn = dict.GetOrAdd("db", _ => new Lazy<SqlConnection>(
+    () => new SqlConnection(connStr)));
+var connection = lazyConn.Value; // Lazy ensures single initialization
+```
 </Callout>
+
+---
+
+## The Compound-Operation Trap
+
+Individual operations on `ConcurrentDictionary` are atomic. Sequences of operations are **not**:
+
+```csharp
+// RACE CONDITION: check-then-act is not atomic
+if (!dict.ContainsKey("key"))
+{
+    // Another thread can add "key" here!
+    dict["key"] = 42; // may overwrite the other thread's value
+}
+
+// CORRECT: use atomic TryAdd
+dict.TryAdd("key", 42); // atomic: adds only if key was absent at the moment of the call
+
+// RACE CONDITION: read-modify-write across two operations
+int old = dict["counter"];  // read
+dict["counter"] = old + 1;  // write — another thread may have changed it between!
+
+// CORRECT: use AddOrUpdate for atomic increment
+dict.AddOrUpdate("counter", 1, (_, old) => old + 1);
+
+// EVEN BETTER: use Interlocked for simple numeric counters (lock-free)
+var counters = new ConcurrentDictionary<string, long>();
+counters.AddOrUpdate("hits", 1L, (_, v) => Interlocked.Increment(ref v));
+```
+
+---
+
+## ConcurrentQueue\<T\>: Lock-Free FIFO
+
+`ConcurrentQueue<T>` uses a **lock-free algorithm** based on linked segments. Enqueue and Dequeue operations use `Interlocked` compare-exchange operations — no mutex, no blocking.
+
+```csharp
+var queue = new ConcurrentQueue<WorkItem>();
+
+// Producer threads
+Parallel.For(0, 100, i =>
+    queue.Enqueue(new WorkItem(i))); // no lock needed
+
+// Consumer threads
+while (queue.TryDequeue(out WorkItem? item))
+{
+    Process(item);
+}
+
+// TryPeek — look without removing (lock-free)
+if (queue.TryPeek(out WorkItem? next))
+    Console.WriteLine($"Next: {next.Id}");
+
+// Count is O(n) for ConcurrentQueue — avoid polling Count in tight loops!
+// IsEmpty is O(1) — use this for "is there work?" checks
+while (!queue.IsEmpty)
+    queue.TryDequeue(out _);
+```
+
+---
+
+## ConcurrentBag\<T\>: Thread-Local Stacks
+
+`ConcurrentBag<T>` is optimized for **producer-consumer scenarios where the same thread both adds and removes items**. Internally it maintains a per-thread local stack; inter-thread access requires "stealing" from other threads' stacks.
+
+```csharp
+var bag = new ConcurrentBag<string>();
+
+// Each thread pushes its results into the bag
+Parallel.ForEach(urls, url =>
+{
+    string result = Fetch(url);
+    bag.Add(result); // lock-free if on the same thread that last added
+});
+
+// Order of Take is undefined — bag doesn't guarantee FIFO or LIFO
+while (bag.TryTake(out string? result))
+    Console.WriteLine(result);
+```
+
+When **not** to use `ConcurrentBag`:
+- When one set of threads only produces and another only consumes — use `ConcurrentQueue` instead (no stealing overhead)
+- When you need ordered iteration — bag order is undefined
+
+---
+
+## BlockingCollection\<T\>: Bounded Producer-Consumer
+
+`BlockingCollection<T>` wraps any `IProducerConsumerCollection<T>` (usually `ConcurrentQueue<T>`) and adds **blocking semantics and bounding**:
+
+```csharp
+// Bounded queue: producer blocks when full (backpressure)
+using var buffer = new BlockingCollection<WorkItem>(boundedCapacity: 100);
+
+// Producer task
+Task producer = Task.Run(() =>
+{
+    foreach (var item in source)
+    {
+        buffer.Add(item); // blocks if Count == 100
+    }
+    buffer.CompleteAdding(); // signals "no more items"
+});
+
+// Consumer task
+Task consumer = Task.Run(() =>
+{
+    foreach (var item in buffer.GetConsumingEnumerable()) // blocks when empty, stops on CompleteAdding
+    {
+        Process(item);
+    }
+});
+
+await Task.WhenAll(producer, consumer);
+```
+
+<Callout type="info">
+**Modern Alternative: Channel\<T\>**
+
+For new code, prefer `System.Threading.Channels.Channel<T>` over `BlockingCollection<T>`. Channels support async/await natively, avoiding thread-blocking. `BlockingCollection` predates async/await and blocks OS threads during waits.
+</Callout>
+
+---
+
+<ComparisonTable
+  headers={["Collection", "Algorithm", "Best For", "Ordering", "Bounded"]}
+  rows={[
+    ["ConcurrentDictionary\<K,V\>", "Segment locking (reads lock-free)", "Shared key-value state across threads", "No", "No"],
+    ["ConcurrentQueue\<T\>", "Lock-free linked segments", "Classic FIFO producer-consumer", "FIFO", "No"],
+    ["ConcurrentStack\<T\>", "Lock-free linked nodes", "LIFO work stealing", "LIFO", "No"],
+    ["ConcurrentBag\<T\>", "Per-thread local stacks + stealing", "Same thread produces and consumes", "Undefined", "No"],
+    ["BlockingCollection\<T\>", "Wraps above + Monitor", "Blocking bounded producer-consumer", "Depends on inner", "Yes"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/concurrent-collections/challenge-1"
+  title="Safe Word Count Under Concurrency"
+  description="Which implementation correctly counts word frequencies from multiple threads?"
+  code={`string[] words = LoadMillionWords();
+
+// Option A: Dictionary with lock
+var dictA = new Dictionary\<string, int\>();
+object lockA = new();
+Parallel.ForEach(words, word =>
+{
+    lock (lockA)
+    {
+        dictA.TryGetValue(word, out int c);
+        dictA[word] = c + 1;
+    }
+});
+
+// Option B: ConcurrentDictionary with AddOrUpdate
+var dictB = new ConcurrentDictionary\<string, int\>();
+Parallel.ForEach(words, word =>
+    dictB.AddOrUpdate(word, 1, (_, old) => old + 1));
+
+// Option C: ConcurrentDictionary with indexer
+var dictC = new ConcurrentDictionary\<string, int\>();
+Parallel.ForEach(words, word =>
+{
+    dictC.TryGetValue(word, out int c);
+    dictC[word] = c + 1; // not atomic!
+});`}
+  options={[
+    "All three produce correct results",
+    "A and B are correct; C has a race condition and will undercount",
+    "Only B is correct; A deadlocks under high contention",
+    "B is incorrect because AddOrUpdate factory can run multiple times"
+  ]}
+  correctAnswer={1}
+  explanation="Option A is correct (lock serializes everything) but slow — the global lock is contended by all threads. Option B is correct — AddOrUpdate is an atomic read-modify-write operation. Option C is a classic race condition: TryGetValue and the indexer assignment are two separate operations; another thread can increment between them, causing lost updates. The AddOrUpdate factory running 'multiple times' on first Add only matters for expensive side effects; for pure computation like +1 it's safe because only one result wins."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: ConcurrentDictionary Enumeration Is a Snapshot**
+
+Enumerating a `ConcurrentDictionary` takes a **point-in-time snapshot** of each segment under lock. The full enumeration is not atomic across segments — you may see some keys at state T1 and others at state T2.
+
+```csharp
+// This is safe (no exception) but reflects mixed state:
+foreach (var kv in concurrentDict)
+    Console.WriteLine(kv); // values may be from slightly different moments
+
+// Count and ToArray() are similarly non-atomic across segments
+int approxCount = concurrentDict.Count;      // best estimate
+var snapshot    = concurrentDict.ToArray();  // consistent per-segment snapshot
+```
+
+For high-throughput counters (metrics, hit counts), consider `System.Threading.Metrics` (.NET 8+) or per-core counters with `ThreadLocal<long>` and periodic aggregation — these eliminate cross-thread contention entirely by keeping state thread-local.
+
+```csharp
+// Per-core counter pattern — zero contention during increment
+private readonly ThreadLocal<long> _counter = new(() => 0, trackAllValues: true);
+
+public void Increment() => _counter.Value++;
+
+public long Total => _counter.Values.Sum();
+```
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ConcurrentDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2" },
+    { label: "ConcurrentQueue\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentqueue-1" },
+    { label: "ConcurrentBag\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentbag-1" },
+    { label: "BlockingCollection\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.blockingcollection-1" },
+    { label: "System.Threading.Channels overview", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels" },
+    { label: "ThreadLocal\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.threadlocal-1" },
+  ]}
+/>

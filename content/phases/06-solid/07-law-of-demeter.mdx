@@ -3,22 +3,284 @@ title: "Law of Demeter"
 slug: "law-of-demeter"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["Law of Demeter", "coupling", "design principles", "fluent API", "encapsulation"]
+summary: "Only talk to your immediate friends — the Law of Demeter limits method call chains to reduce coupling. Learn what violates it, why fluent APIs are a deliberate exception, and how to apply it in C#."
+docsLinks:
+  - label: "Encapsulation (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/encapsulation"
+  - label: "LINQ method chaining (fluent API example)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq/"
+  - label: "Object-oriented programming — C# guide"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Law of Demeter?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Also known as the **Principle of Least Knowledge**, the Law of Demeter (LoD) states:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+> A method of an object should only call methods belonging to:
+> 1. The object itself (`this`)
+> 2. Objects passed as parameters to the method
+> 3. Objects created inside the method
+> 4. Direct fields/properties of the object
+
+The informal version: **only talk to your immediate friends, not strangers.**
+
+A "train wreck" — a chain of method calls like `a.GetB().GetC().DoSomething()` — is the classic LoD violation. You are navigating through intermediate objects you should not know about.
+
+---
+
+## The Train Wreck Problem
+
+```csharp
+// BAD: The Checkout method knows about Order, Customer, Address, and Country
+// That is 4 levels of object structure — all coupled to this one method
+
+public class CheckoutService
+{
+    public decimal CalculateShipping(Order order)
+    {
+        // Train wreck: navigating through 3 intermediate objects
+        string countryCode = order.Customer.Address.Country.IsoCode;
+
+        if (countryCode == "US")
+            return 9.99m;
+        else if (countryCode == "CA")
+            return 14.99m;
+        else
+            return 29.99m;
+    }
+}
+
+// The hidden coupling:
+// CheckoutService must know that Order has a Customer
+// CheckoutService must know that Customer has an Address
+// CheckoutService must know that Address has a Country
+// CheckoutService must know that Country has an IsoCode property
+//
+// If Address changes to have multiple Countries, or Country renames IsoCode to Code,
+// CheckoutService breaks — even though it is not about addresses or countries at all.
+```
+
+---
+
+## The Refactored Version: Tell, Don't Traverse
+
+```csharp
+// GOOD: Each class exposes what its callers need, hiding internal structure
+
+public class Country
+{
+    public string IsoCode { get; }
+    public Country(string isoCode) => IsoCode = isoCode;
+}
+
+public class Address
+{
+    private readonly Country _country;
+    public Address(Country country) => _country = country;
+
+    // Expose what callers need — hide the Country object itself
+    public string CountryCode => _country.IsoCode;
+}
+
+public class Customer
+{
+    private readonly Address _address;
+    public Customer(Address address) => _address = address;
+
+    // Expose what callers need — hide the Address object itself
+    public string ShippingCountryCode => _address.CountryCode;
+}
+
+public class Order
+{
+    private readonly Customer _customer;
+    public Order(Customer customer) => _customer = customer;
+
+    // Expose what callers need — hide the Customer object itself
+    public string CustomerCountryCode => _customer.ShippingCountryCode;
+}
+
+// Now CheckoutService only talks to Order — its immediate friend
+public class CheckoutService
+{
+    public decimal CalculateShipping(Order order)
+    {
+        // Clean: only one level of access
+        string countryCode = order.CustomerCountryCode;
+
+        return countryCode switch
+        {
+            "US" => 9.99m,
+            "CA" => 14.99m,
+            _    => 29.99m
+        };
+    }
+}
+```
+
+`CheckoutService` now has **zero knowledge** of `Customer`, `Address`, or `Country`. If the customer data model changes internally, `CheckoutService` is insulated.
+
+---
+
+## Practical LoD Patterns
+
+```csharp
+// PATTERN 1: Move behavior to the owning class
+
+// BAD: ProcessOrder knows too much about the order's internals
+public class OrderProcessor
+{
+    public bool CanProcess(Order order)
+    {
+        // Navigating into order's internals to check its own validity
+        return order.LineItems.Count > 0 &&
+               order.LineItems.All(li => li.Quantity > 0) &&
+               order.Customer.CreditLimit >= order.TotalAmount;
+    }
+}
+
+// GOOD: The Order knows whether it can be processed
+public class Order
+{
+    public bool IsReadyToProcess =>
+        LineItems.Any() &&
+        LineItems.All(li => li.Quantity > 0) &&
+        Customer.HasSufficientCredit(TotalAmount);
+
+    public IReadOnlyList<LineItem> LineItems { get; } = new List<LineItem>();
+    public Customer Customer { get; } = new Customer();
+    public decimal TotalAmount => LineItems.Sum(li => li.Quantity * li.UnitPrice);
+}
+
+public class OrderProcessor
+{
+    public bool CanProcess(Order order) => order.IsReadyToProcess; // One level
+}
+
+// PATTERN 2: Introduce intermediary methods for deep access
+public class InvoiceService
+{
+    // BAD
+    public string GetBillingCity_Bad(Invoice invoice) =>
+        invoice.BillingInfo.PostalAddress.City.Name; // three levels deep
+
+    // GOOD: Invoice exposes BillingCityName — hides internal structure
+    public string GetBillingCity_Good(Invoice invoice) =>
+        invoice.BillingCityName; // one level
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Fluent APIs Are a Deliberate Exception**
+
+LINQ is a chain of method calls, but it does not violate the spirit of LoD:
+
+```csharp
+var result = orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .OrderByDescending(o => o.PlacedAt)
+    .Select(o => new { o.Id, o.TotalAmount })
+    .Take(10)
+    .ToList();
+```
+
+This looks like a LoD violation (chained calls), but it is not, for two reasons:
+
+1. **Each method returns the same type** (or a related collection type) — you are not traversing into unrelated internal objects
+2. **The chain is a single logical operation** — each step transforms the same data, not navigation through a different object's internals
+
+The LoD test: are you traversing into objects you have no business knowing about, or are you performing a sequence of transformations on the same thing?
+
+`customer.GetOrder().GetLineItems().GetFirst().GetProduct().GetPrice()` — LoD violation. Each step exposes a different object's internals.
+
+`orders.Where(...).Select(...).ToList()` — not a violation. Each step transforms a sequence.
+
+Builder patterns (e.g., `services.AddAuthentication().AddJwtBearer(...)`) are also deliberate LoD exceptions by design: the builder is one logical object, and each method returns `this` or a related builder — not a foreign object's internals.
 </Callout>
+
+---
+
+<MythBuster
+  myth="The Law of Demeter means you can never chain more than one method call"
+  reality="LoD targets navigation through foreign object internals — accessing objects you should not know about by traversing a chain of different objects. It does not prohibit all method chaining. Fluent APIs, builders, and LINQ chains return the same (or related) objects and perform transformations rather than exposing foreign internals. The key question is: does this chain expose implementation details of objects I should not depend on?"
+/>
+
+---
+
+## Code Challenge: Spot the LoD Violation
+
+<CodeChallenge
+  id="06-solid/law-of-demeter/challenge-1"
+  title="Which Code Violates LoD?"
+  description="Three code snippets — which one is a genuine Law of Demeter violation?"
+  code={`// Snippet A
+var city = customer.GetAddress().GetCity();
+
+// Snippet B
+var filtered = products
+    .Where(p => p.Price > 10)
+    .Select(p => p.Name)
+    .ToList();
+
+// Snippet C
+var result = builder
+    .WithName("test")
+    .WithTimeout(30)
+    .Build();`}
+  options={[
+    "Snippet A — navigates through Address to get City, exposing foreign internals",
+    "Snippet B — LINQ chains violate LoD",
+    "Snippet C — builder chains violate LoD",
+    "None — all three are fine"
+  ]}
+  correctAnswer={0}
+  explanation="Snippet A is the LoD violation. The calling code must know that Customer has an Address and that Address has a City — it depends on two levels of foreign object structure. The fix is customer.GetCityName() — one level, hiding the Address internals. Snippets B and C are deliberate, acceptable fluent APIs: LINQ transforms the same sequence at each step, and the builder chains return the same builder object throughout — neither exposes unrelated foreign object internals."
+/>
+
+---
+
+<Quiz
+  id="06-solid/law-of-demeter/quiz-1"
+  questions={[
+    {
+      question: "What is the most direct consequence of LoD violations in a large codebase?",
+      options: [
+        "Performance degrades because of extra method calls",
+        "High coupling — changes to intermediate objects break many unrelated callers",
+        "Memory leaks from holding references to deep object graphs",
+        "Thread safety issues from accessing nested objects"
+      ],
+      correctAnswer: 1,
+      explanation: "The main harm of LoD violations is high coupling. When CheckoutService reaches through Order → Customer → Address → Country, it is coupled to all four types. A change to Address (e.g., supporting multiple addresses, renaming a property) breaks CheckoutService even though it has nothing to do with addresses. Isolating callers from intermediate objects is what makes the codebase resilient to change."
+    },
+    {
+      question: "Which approach best fixes the LoD violation in: order.GetCustomer().GetPaymentInfo().ChargeCard(amount)?",
+      options: [
+        "Extract the chain into a local variable: var paymentInfo = order.GetCustomer().GetPaymentInfo()",
+        "Move ChargeCard() to Order: order.ChargeCustomer(amount)",
+        "Use a static helper: PaymentHelper.Charge(order, amount)",
+        "Add a comment explaining why the chain is necessary"
+      ],
+      correctAnswer: 1,
+      explanation: "Moving ChargeCard() to Order (or having Order expose a method that delegates to the customer's payment info) is the LoD fix. The caller only needs to tell the Order to charge — it should not need to know about Customer or PaymentInfo at all. Extracting to a local variable (Option A) does not fix the coupling — it just hides the chain. Static helpers (Option C) are often Service Locator anti-patterns in disguise."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Encapsulation (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/encapsulation" },
+    { label: "LINQ — fluent API example and reference", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq/" },
+    { label: "Object-oriented programming concepts in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/" },
+  ]}
+/>

@@ -1,24 +1,290 @@
 ---
-title: "Iterator"
+title: "Iterator — IEnumerable<T> and yield"
 slug: "iterator"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["iterator", "behavioral", "IEnumerable", "IEnumerator", "yield", "lazy evaluation", "foreach"]
+summary: "Iterator provides a way to access elements of a collection sequentially without exposing its internal structure — and C# builds this into the language with IEnumerable<T> and yield."
+docsLinks:
+  - label: "IEnumerable<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "Iterators (C# programming guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/iterators"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Traversal Without Exposing Structure
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A collection might be backed by an array, linked list, tree, database cursor, or network stream. Clients shouldn't need to know the internals to loop over elements. Iterator defines a standard traversal contract — regardless of what's underneath.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## `IEnumerable<T>` and `IEnumerator<T>` — The CLR Iterator Pattern
+
+```csharp
+// The pattern is built into C#:
+// IEnumerable<T> = the collection (can produce an iterator)
+// IEnumerator<T> = the iterator itself (stateful, tracks position)
+
+// Manually implementing the pattern (normally you wouldn't)
+public class NumberRange : IEnumerable<int>
+{
+    private readonly int _start;
+    private readonly int _end;
+
+    public NumberRange(int start, int end) { _start = start; _end = end; }
+
+    // GetEnumerator() creates a new iterator each time
+    public IEnumerator<int> GetEnumerator() => new RangeEnumerator(_start, _end);
+
+    // Non-generic version required for legacy compatibility
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+        => GetEnumerator();
+}
+
+public class RangeEnumerator : IEnumerator<int>
+{
+    private readonly int _end;
+    private int _current;
+
+    public RangeEnumerator(int start, int end) { _current = start - 1; _end = end; }
+
+    public int     Current   => _current;
+    object System.Collections.IEnumerator.Current => _current;
+
+    public bool MoveNext()
+    {
+        _current++;
+        return _current <= _end;
+    }
+
+    public void Reset() => throw new NotSupportedException();
+    public void Dispose() { } // nothing to dispose here
+}
+
+// Usage via foreach (compiler calls GetEnumerator, MoveNext, Current)
+foreach (int n in new NumberRange(1, 5))
+    Console.Write($"{n} "); // 1 2 3 4 5
+```
+
+---
+
+## `yield return` — The Modern Way
+
+The manual `IEnumerator<T>` implementation above is verbose. C#'s `yield` keyword generates it for you:
+
+```csharp
+// yield return — compiler generates a state machine implementing IEnumerator<T>
+public IEnumerable<int> Range(int start, int end)
+{
+    for (int i = start; i <= end; i++)
+        yield return i; // pause here, emit i, resume on next MoveNext()
+}
+
+// Infinite sequence — only evaluated as needed (lazy)
+public IEnumerable<int> Fibonacci()
+{
+    int a = 0, b = 1;
+    while (true)
+    {
+        yield return a;
+        (a, b) = (b, a + b); // swap
+    }
+}
+
+// Usage — take only what you need from infinite sequence
+var first10 = Fibonacci().Take(10).ToList();
+// 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
+
+// Tree traversal with yield — elegant recursive iteration
+public IEnumerable<T> TraverseDepthFirst<T>(TreeNode<T> node)
+{
+    yield return node.Value;           // visit current node
+    foreach (var child in node.Children)
+        foreach (var value in TraverseDepthFirst(child))
+            yield return value;        // yield items from subtree
+}
+```
+
+---
+
+## Lazy Evaluation and Streaming
+
+`yield` enables lazy evaluation — elements are computed on demand, not all upfront:
+
+```csharp
+// Streaming large datasets from database — never loads all rows into memory
+public async IAsyncEnumerable<OrderDto> StreamOrdersAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    await foreach (var order in dbContext.Orders
+        .Where(o => o.Status == "Pending")
+        .AsAsyncEnumerable()
+        .WithCancellation(ct))
+    {
+        yield return new OrderDto(order.Id, order.Total, order.CreatedAt);
+    }
+}
+
+// Consumer — processes one order at a time (constant memory)
+await foreach (var order in StreamOrdersAsync())
+{
+    await ProcessOrderAsync(order);
+}
+
+// vs ToListAsync() — loads ALL orders into memory first (dangerous for large tables)
+```
+
+---
+
+## Custom Iterators for Complex Traversals
+
+```csharp
+// Paginated API iterator — transparent pagination, lazy HTTP calls
+public async IAsyncEnumerable<Product> GetAllProductsAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    int page = 1;
+    bool hasMore;
+
+    do
+    {
+        var response = await httpClient.GetFromJsonAsync<PagedResult<Product>>(
+            $"/api/products?page={page}&pageSize=100", ct);
+
+        foreach (var product in response!.Items)
+            yield return product; // caller gets products one by one
+
+        hasMore = response.HasNextPage;
+        page++;
+    }
+    while (hasMore);
+}
+
+// Usage — looks like iterating a local collection
+await foreach (var product in GetAllProductsAsync())
+    await indexer.IndexAsync(product);
+// Makes as many HTTP calls as needed, but consumer sees a simple async sequence
+```
+
+---
+
+<ComparisonTable
+  title="IEnumerable vs IAsyncEnumerable vs IObservable"
+  headers={["Type", "Synchronous?", "Push or Pull?", "Use When"]}
+  rows={[
+    ["IEnumerable\<T\>", "Yes", "Pull (caller requests)", "In-memory collections, lazy CPU work"],
+    ["IAsyncEnumerable\<T\>", "No (async)", "Pull (caller awaits)", "Streaming DB results, paginated APIs"],
+    ["IObservable\<T\>", "No", "Push (producer pushes)", "Event streams, real-time data, Rx pipelines"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/iterator/challenge-1"
+  title="yield Execution Model"
+  description="What does this code print, and in what order?"
+  code={`IEnumerable<int> SlowNumbers()
+{
+    Console.WriteLine("Before 1");
+    yield return 1;
+    Console.WriteLine("Before 2");
+    yield return 2;
+    Console.WriteLine("Before 3");
+    yield return 3;
+}
+
+var numbers = SlowNumbers(); // Line A
+Console.WriteLine("Got IEnumerable");
+foreach (int n in numbers) // Line B
+{
+    Console.WriteLine($"Processing {n}");
+}`}
+  options={[
+    "Before 1, Before 2, Before 3, Got IEnumerable, Processing 1, Processing 2, Processing 3",
+    "Got IEnumerable, Before 1, Processing 1, Before 2, Processing 2, Before 3, Processing 3",
+    "Got IEnumerable, Before 1, Before 2, Before 3, Processing 1, Processing 2, Processing 3",
+    "Before 1, Processing 1, Before 2, Processing 2, Before 3, Processing 3"
+  ]}
+  correctAnswer={1}
+  explanation="Line A creates the IEnumerable (the state machine) but executes NO code in SlowNumbers(). 'Got IEnumerable' prints first. Then foreach calls MoveNext() — which runs up to the first yield return: prints 'Before 1', yields 1. The foreach body prints 'Processing 1'. MoveNext() again: 'Before 2', yields 2, 'Processing 2'. Then 'Before 3', yields 3, 'Processing 3'. This interleaved execution is the core of yield's lazy evaluation model."
+/>
+
+---
+
+<Callout type="senior">
+**yield and State Machine Generation**
+
+When you write a `yield return` iterator, the C# compiler generates a state machine class — similar to what `async/await` generates. Understanding this helps explain several behaviors:
+
+```csharp
+// Your code:
+IEnumerable<int> Range(int start, int end)
+{
+    for (int i = start; i <= end; i++)
+        yield return i;
+}
+
+// Approximately what the compiler generates:
+private sealed class RangeStateMachine : IEnumerable<int>, IEnumerator<int>
+{
+    private int _state = -2; // not started
+    private int _current;
+    private int _start, _end, _i;
+
+    int IEnumerator<int>.Current => _current;
+
+    bool IEnumerator.MoveNext()
+    {
+        switch (_state)
+        {
+            case -2: // initial state
+                _i     = _start;
+                _state = 0;
+                goto case 0;
+            case 0:
+                if (_i > _end) return false;
+                _current = _i++;
+                return true; // paused here
+        }
+        return false;
+    }
+    // ...
+}
+```
+
+Key implications:
+1. **Multiple enumerations**: Calling `GetEnumerator()` creates a NEW state machine — iterating the same `IEnumerable<T>` twice is safe.
+2. **Deferred execution**: Code before the first `yield return` runs on the first `MoveNext()` call (i.e., at the start of `foreach`), NOT when you call the method.
+3. **Exception visibility**: If your iterator method throws before the first `yield return`, the exception won't be thrown until `foreach` starts.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/iterator/quiz-1"
+  question="Why can't you use yield return inside a try/catch block that has a catch clause?"
+  options={[
+    "It's a C# compiler restriction — yield is not allowed in try blocks at all",
+    "The state machine cannot preserve the exception handler state across yield points in catch blocks",
+    "catch blocks are always synchronous but yield requires async context",
+    "You can use yield inside try/catch — this restriction doesn't exist"
+  ]}
+  correctAnswer={1}
+  explanation="C# allows yield return inside try blocks, but NOT inside catch or finally blocks (before C# 2.0 also not in finally; now finally is allowed). The restriction on catch: the compiler-generated state machine would need to maintain exception handler state across yield suspension points, which the current implementation doesn't support. Workaround: catch the exception, store it, yield whatever you need to yield, then rethrow outside the catch block."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IEnumerable\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1" },
+    { label: "Iterators (C# programming guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/iterators" },
+    { label: "IAsyncEnumerable\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1" },
+    { label: "Async streams (C# 8)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-8#asynchronous-streams" },
+  ]}
+/>

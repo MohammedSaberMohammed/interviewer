@@ -1,24 +1,251 @@
 ---
-title: "Change Tracker"
+title: "Change Tracker: Tracked, Detached, Added, Modified, Deleted"
 slug: "change-tracker"
 order: 2
-difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 15
+status: "published"
+tags: ["change tracker", "entity states", "dbcontext", "identity map", "ef core", "savechanges"]
+summary: "The change tracker is EF Core's heart — it decides what SQL to generate. Understanding its five states and first-level cache is essential for writing correct, efficient data access code."
+docsLinks:
+  - label: "Change Tracking in EF Core"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/"
+  - label: "Entity States"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/entity-states"
+  - label: "Accessing Tracked Entities"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/entity-states#accessing-tracked-entities"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Change Tracker?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Every DbContext instance contains a `ChangeTracker` that maintains a **dictionary of tracked entities** — the identity map. Each entry records:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- The entity reference
+- Its **current state** (Added / Modified / Deleted / Unchanged / Detached)
+- A **snapshot** of property values at the time the entity was loaded (the "original values")
+
+When `SaveChanges()` is called, EF Core compares current values against the snapshot to determine which SQL statements to emit.
+
+```csharp
+using var db = new AppDbContext(options);
+
+var order = await db.Orders.FindAsync(42);
+// Entity state: Unchanged
+// Original snapshot captured
+
+order.Status = OrderStatus.Shipped;
+// Entity state: Modified (EF detected the property change)
+
+await db.SaveChangesAsync();
+// EF generates: UPDATE Orders SET Status = 'Shipped' WHERE Id = 42
+// State returns to: Unchanged, snapshot updated
+```
+
+---
+
+## The Five Entity States
+
+```csharp
+// UNCHANGED — loaded from DB, nothing changed
+var product = await db.Products.FindAsync(1);
+db.Entry(product).State; // EntityState.Unchanged
+
+// MODIFIED — at least one property changed
+product.Price = 29.99m;
+db.Entry(product).State; // EntityState.Modified (auto-detected)
+
+// ADDED — new entity, no DB row yet
+var newProduct = new Product { Name = "Widget", Price = 9.99m };
+db.Products.Add(newProduct);
+db.Entry(newProduct).State; // EntityState.Added
+// SaveChanges → INSERT
+
+// DELETED — marks for removal
+db.Products.Remove(product);
+db.Entry(product).State; // EntityState.Deleted
+// SaveChanges → DELETE WHERE Id = 1
+
+// DETACHED — not tracked at all
+var detached = new Product { Id = 5, Name = "Ghost" };
+db.Entry(detached).State; // EntityState.Detached
+// SaveChanges does nothing with this entity
+```
+
+---
+
+## Manual State Control
+
+You can force state transitions — critical when working with disconnected entities (e.g., API PUT endpoints):
+
+```csharp
+// Disconnected update pattern (API receives DTO, maps to entity)
+[HttpPut("{id}")]
+public async Task<IActionResult> UpdateProduct(int id, UpdateProductDto dto)
+{
+    var product = new Product
+    {
+        Id = id,
+        Name = dto.Name,
+        Price = dto.Price,
+        CategoryId = dto.CategoryId
+    };
+
+    // Option 1: Attach and mark as Modified — updates ALL columns
+    db.Products.Attach(product);
+    db.Entry(product).State = EntityState.Modified;
+    // SQL: UPDATE Products SET Name=..., Price=..., CategoryId=... WHERE Id=...
+
+    // Option 2: Only mark specific properties as modified — partial update
+    db.Products.Attach(product);
+    db.Entry(product).Property(p => p.Name).IsModified = true;
+    db.Entry(product).Property(p => p.Price).IsModified = true;
+    // SQL: UPDATE Products SET Name=..., Price=... WHERE Id=...
+    // CategoryId is NOT sent (avoids overwriting with default value)
+
+    await db.SaveChangesAsync();
+    return NoContent();
+}
+```
+
+---
+
+## The Identity Map (First-Level Cache)
+
+The change tracker acts as an identity map: if you query the same primary key twice, you get **the same object reference**:
+
+```csharp
+var a = await db.Orders.FindAsync(1);    // hits DB, caches in tracker
+var b = await db.Orders.FindAsync(1);    // returns cached reference — NO DB call
+var c = await db.Orders.FirstOrDefaultAsync(o => o.Id == 1); // also returns cached ref
+
+Console.WriteLine(object.ReferenceEquals(a, b)); // True
+Console.WriteLine(object.ReferenceEquals(a, c)); // True
+```
+
+This is a performance win for repeated lookups within a request. But it also means **stale data**: if another process updates the row between your two reads within the same DbContext scope, you see the old value.
+
+```csharp
+// Stale read scenario
+var order = await db.Orders.FindAsync(42); // reads Status = Pending
+
+// ... another process updates Status = Shipped ...
+
+var orderAgain = await db.Orders.FindAsync(42); // returns SAME cached object
+Console.WriteLine(orderAgain.Status); // Still "Pending" — stale!
+
+// Force a fresh read:
+await db.Entry(order).ReloadAsync(); // re-queries the DB
+Console.WriteLine(order.Status); // Now "Shipped"
+```
+
+---
+
+## Inspecting the Change Tracker
+
+```csharp
+// Dump all tracked entities and their states
+foreach (var entry in db.ChangeTracker.Entries())
+{
+    Console.WriteLine($"{entry.Metadata.Name} [{entry.State}] Key={entry.Properties
+        .Where(p => p.Metadata.IsPrimaryKey())
+        .Select(p => p.CurrentValue)
+        .FirstOrDefault()}");
+}
+
+// Count tracked entities (useful in perf monitoring)
+int trackedCount = db.ChangeTracker.Entries().Count();
+
+// Detect changes manually (normally auto-detected)
+db.ChangeTracker.DetectChanges();
+
+// Disable auto-detect for bulk operations (perf optimization)
+db.ChangeTracker.AutoDetectChangesEnabled = false;
+try
+{
+    foreach (var item in largeCollection)
+    {
+        db.Items.Add(item);
+    }
+    db.ChangeTracker.DetectChanges(); // detect once at the end
+    await db.SaveChangesAsync();
+}
+finally
+{
+    db.ChangeTracker.AutoDetectChangesEnabled = true;
+}
+```
+
+<Callout type="senior">
+**Senior Insight: Change Detection Complexity**
+
+`DetectChanges()` is O(n) in the number of tracked entities — it compares every property of every entity against its snapshot. With 10,000 tracked entities, each `Add()` or property access triggers `DetectChanges()` internally (unless disabled), making bulk inserts extremely slow.
+
+For bulk operations:
+1. Disable `AutoDetectChangesEnabled`
+2. Use `AddRange()` instead of `Add()` in a loop
+3. Batch `SaveChanges()` every ~500 records to limit memory usage
+4. Or switch to `ExecuteUpdateAsync` / a bulk insert library (covered in lesson 18)
+
+```csharp
+// Fast bulk insert pattern
+db.ChangeTracker.AutoDetectChangesEnabled = false;
+const int batchSize = 500;
+
+for (int i = 0; i < records.Count; i += batchSize)
+{
+    db.Items.AddRange(records.Skip(i).Take(batchSize));
+    await db.SaveChangesAsync();
+    db.ChangeTracker.Clear(); // release all tracked entities, free memory
+}
+
+db.ChangeTracker.AutoDetectChangesEnabled = true;
+```
+
+`ChangeTracker.Clear()` (EF Core 5+) is the correct way to detach all entities at once — much faster than calling `db.Entry(e).State = EntityState.Detached` in a loop.
 </Callout>
+
+---
+
+<MythBuster
+  myth="EF Core generates a UPDATE statement for every property when any property changes"
+  truth="EF Core generates UPDATE statements only for properties that actually changed (comparing current vs. original snapshot). If you load an entity and set a property to the same value it already had, no UPDATE is generated. However, if you use EntityState.Modified directly (disconnected scenario), ALL properties are marked modified by default — which is why partial property marking matters."
+/>
+
+---
+
+<CodeChallenge
+  id="09-ef-core/change-tracker/challenge-1"
+  title="What SQL Does SaveChanges Generate?"
+  description="Given this code, what SQL statements does SaveChanges produce?"
+  code={`var customer = await db.Customers.FindAsync(10);
+customer.Email = "new@example.com";
+
+var newOrder = new Order { CustomerId = 10, Total = 99.99m };
+db.Orders.Add(newOrder);
+
+var oldOrder = await db.Orders.FindAsync(5);
+db.Orders.Remove(oldOrder);
+
+await db.SaveChangesAsync();`}
+  options={[
+    "One UPDATE for customer, one INSERT for newOrder, one DELETE for oldOrder",
+    "Three UPDATEs — EF always uses UPDATE statements",
+    "One INSERT only — EF batches everything as INSERTs",
+    "One UPDATE for customer, one INSERT for newOrder — Remove() is ignored until explicitly committed"
+  ]}
+  correctAnswer={0}
+  explanation="EF Core generates exactly the SQL that the entity states dictate. The customer entity is Unchanged after load, then Modified after property assignment → UPDATE. The new order is Added → INSERT. The loaded old order is moved to Deleted via Remove() → DELETE. SaveChanges sends all three statements in a single transaction by default, batching them together for efficiency (using UPDATE ... ; INSERT ... ; DELETE ... in one round-trip where the provider supports it)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Change Tracking in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/" },
+    { label: "Entity States", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/entity-states" },
+    { label: "Identity Resolution in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/identity-resolution" },
+    { label: "ChangeTracker.Clear", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.changetracking.changetracker.clear" },
+  ]}
+/>

@@ -1,24 +1,300 @@
 ---
-title: "Builder"
+title: "Builder — Fluent Construction"
 slug: "builder"
 order: 4
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["builder", "creational", "fluent api", "immutable", "StringBuilder", "WebApplicationBuilder"]
+summary: "Builder separates the construction of a complex object from its representation — enabling fluent APIs, step-by-step assembly, and immutable objects."
+docsLinks:
+  - label: "StringBuilder Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder"
+  - label: "WebApplicationBuilder"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.builder.webapplicationbuilder"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Constructor Overload Hell
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When an object requires many optional parameters, constructors become unwieldy. Telescoping constructors (a chain of overloads adding one parameter each) are hard to read and error-prone — swapping two `string` arguments compiles silently but produces wrong behavior.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Telescoping constructor anti-pattern
+public HttpRequest(string url) : this(url, "GET") { }
+public HttpRequest(string url, string method) : this(url, method, null) { }
+public HttpRequest(string url, string method, string? body) : this(url, method, body, 30) { }
+public HttpRequest(string url, string method, string? body, int timeoutSeconds) { ... }
+
+// Which argument is which? Easy to mix up
+var req = new HttpRequest("https://api.example.com", "POST", null, 60);
+```
+
+---
+
+## The Builder Pattern
+
+```csharp
+// The product — immutable once built
+public sealed class HttpRequest
+{
+    public string  Url            { get; }
+    public string  Method         { get; }
+    public string? Body           { get; }
+    public int     TimeoutSeconds { get; }
+    public Dictionary<string, string> Headers { get; }
+
+    // Private constructor — only the builder can create it
+    private HttpRequest(Builder b)
+    {
+        Url            = b.Url;
+        Method         = b.Method;
+        Body           = b.Body;
+        TimeoutSeconds = b.TimeoutSeconds;
+        Headers        = new Dictionary<string, string>(b.Headers);
+    }
+
+    // Nested builder class
+    public class Builder
+    {
+        internal string  Url            { get; private set; }
+        internal string  Method         { get; private set; } = "GET";
+        internal string? Body           { get; private set; }
+        internal int     TimeoutSeconds { get; private set; } = 30;
+        internal Dictionary<string, string> Headers { get; } = new();
+
+        public Builder(string url) => Url = url;
+
+        // Fluent methods — each returns 'this' for chaining
+        public Builder WithMethod(string method)  { Method = method; return this; }
+        public Builder WithBody(string body)      { Body   = body;   return this; }
+        public Builder WithTimeout(int seconds)   { TimeoutSeconds = seconds; return this; }
+        public Builder WithHeader(string key, string value)
+        {
+            Headers[key] = value;
+            return this;
+        }
+
+        // Terminal method — validates and constructs the product
+        public HttpRequest Build()
+        {
+            if (string.IsNullOrWhiteSpace(Url))
+                throw new InvalidOperationException("URL is required.");
+            return new HttpRequest(this);
+        }
+    }
+}
+
+// Usage — readable, self-documenting
+HttpRequest request = new HttpRequest.Builder("https://api.example.com/orders")
+    .WithMethod("POST")
+    .WithBody(@"{""item"": ""book""}")
+    .WithHeader("Authorization", "Bearer token123")
+    .WithHeader("Content-Type", "application/json")
+    .WithTimeout(60)
+    .Build();
+```
+
+---
+
+## Modern C# Alternative: `init` Properties + Object Initializer
+
+For simpler cases, `init`-only properties with C# 9 object initializers can replace a full Builder:
+
+```csharp
+public sealed class HttpRequestOptions
+{
+    public required string Url            { get; init; }
+    public string          Method         { get; init; } = "GET";
+    public string?         Body           { get; init; }
+    public int             TimeoutSeconds { get; init; } = 30;
+
+    // Validate after construction
+    public HttpRequestOptions Validate()
+    {
+        if (!Uri.TryCreate(Url, UriKind.Absolute, out _))
+            throw new InvalidOperationException("Invalid URL");
+        return this;
+    }
+}
+
+// Clean initialization syntax
+var options = new HttpRequestOptions
+{
+    Url    = "https://api.example.com",
+    Method = "POST",
+    Body   = "{}",
+}.Validate();
+```
+
+Use a full Builder when: you need validation during construction, construction is multi-step, or you need to build multiple variations from the same builder state.
+
+---
+
+## Real .NET BCL Example: `StringBuilder`
+
+`StringBuilder` is the canonical .NET Builder — it accumulates string fragments and produces a `string` at the end:
+
+```csharp
+var sb = new StringBuilder();
+
+sb.Append("SELECT ")
+  .Append("Id, Name, Email ")
+  .Append("FROM Users ")
+  .AppendLine("WHERE IsActive = 1")
+  .Append("ORDER BY Name");
+
+string sql = sb.ToString(); // build the final product
+
+// More complex: build HTML
+var html = new StringBuilder()
+    .AppendLine("<ul>")
+    .AppendJoin('\n', items.Select(i => $"  <li>{i}</li>"))
+    .AppendLine()
+    .AppendLine("</ul>")
+    .ToString();
+```
+
+---
+
+## Real ASP.NET Core Example: `WebApplicationBuilder`
+
+```csharp
+// WebApplicationBuilder is a Builder — configure services and middleware step by step
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+// Add services (configure the dependency injection container)
+builder.Services.AddControllers();
+builder.Services.AddDbContext<AppDbContext>(o =>
+    o.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer();
+
+// Build the application — terminal step produces WebApplication
+WebApplication app = builder.Build();
+
+// Configure middleware pipeline
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+```
+
+`WebApplicationBuilder` separates service registration (construction) from the running application (product). You can't use the app until `Build()` is called.
+
+---
+
+<ComparisonTable
+  title="Builder vs Constructor Overloads vs init Properties"
+  headers={["Approach", "Readability", "Validation", "Immutability", "Complexity"]}
+  rows={[
+    ["Telescoping constructors", "Poor (param order)", "At construction", "Yes", "Low"],
+    ["Builder pattern", "Excellent (fluent)", "At Build() call", "Yes (product)", "High"],
+    ["init-only properties", "Good (object init)", "Manual (Validate())", "Yes", "Low"],
+    ["Mutable setters", "Good", "None (by default)", "No", "Lowest"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/builder/challenge-1"
+  title="Fluent Builder Return Type"
+  description="What must each fluent method in a Builder return to enable method chaining?"
+  code={`public class QueryBuilder
+{
+    private string _table = "";
+    private string _where = "";
+
+    public ??? From(string table)
+    {
+        _table = table;
+        return ???;
+    }
+
+    public ??? Where(string condition)
+    {
+        _where = condition;
+        return ???;
+    }
+
+    public string Build() => \$"SELECT * FROM {_table} WHERE {_where}";
+}`}
+  options={[
+    "void — the method modifies state and doesn't need to return anything",
+    "string — the current SQL fragment",
+    "QueryBuilder — returning 'this' enables chaining",
+    "IQueryBuilder — always return an interface for flexibility"
+  ]}
+  correctAnswer={2}
+  explanation="Each fluent method must return 'this' (the current builder instance) to enable chaining. Returning void breaks the chain. Returning string returns the wrong type. Returning an interface can work but requires the interface to declare all builder methods — useful if you want to control which methods are callable at each step (step builder pattern), but 'return this' is the standard approach."
+/>
+
+---
+
+<Callout type="senior">
+**Step Builder Pattern — Compile-Time Construction Order**
+
+For objects where steps must happen in a specific order, the Step Builder pattern uses separate interfaces per step:
+
+```csharp
+public interface IFromStep    { IWhereStep From(string table); }
+public interface IWhereStep   { IBuildStep Where(string condition); }
+public interface IBuildStep   { string Build(); }
+
+public class QueryBuilder : IFromStep, IWhereStep, IBuildStep
+{
+    private string _table = "";
+    private string _where = "";
+
+    private QueryBuilder() { }
+
+    // Entry point — returns the first step interface only
+    public static IFromStep Create() => new QueryBuilder();
+
+    IWhereStep IFromStep.From(string table) { _table = table; return this; }
+    IBuildStep IWhereStep.Where(string c)   { _where = c;     return this; }
+    string     IBuildStep.Build()           => $"SELECT * FROM {_table} WHERE {_where}";
+}
+
+// Usage — only valid methods are available at each step
+string sql = QueryBuilder.Create()
+    .From("Users")       // returns IWhereStep — .Build() not available yet
+    .Where("IsActive=1") // returns IBuildStep
+    .Build();
+
+// This does NOT compile — Build() isn't on IFromStep
+// QueryBuilder.Create().Build();
+```
+
+This encodes the correct construction sequence in the type system — invalid usage is a compile error, not a runtime exception.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/builder/quiz-1"
+  question="In WebApplicationBuilder, why can't you call app.MapControllers() before calling builder.Build()?"
+  options={[
+    "It's a coding convention, not a technical constraint",
+    "Build() creates the WebApplication object — the middleware pipeline doesn't exist yet before it",
+    "MapControllers() requires the DI container, which isn't available until Build()",
+    "Both B and C — Build() creates the app AND finalizes the DI container"
+  ]}
+  correctAnswer={3}
+  explanation="Both B and C are correct. builder.Build() does two things: it builds the DI container (making all registered services available) and creates the WebApplication object (which owns the middleware pipeline). You need the app object to call MapControllers(), and MapControllers() needs the DI container to resolve controllers. Before Build(), neither exists."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "StringBuilder Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder" },
+    { label: "WebApplicationBuilder Class", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.builder.webapplicationbuilder" },
+    { label: "Required members (C# 11)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-11#required-members" },
+    { label: "Init-only properties (C# 9)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init" },
+  ]}
+/>

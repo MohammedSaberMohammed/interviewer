@@ -1,24 +1,252 @@
 ---
-title: "N+1 Query Problem"
+title: "N+1 Query Problem: Detection, Split Queries, Batch Loading"
 slug: "n-plus-one"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["n+1", "performance", "split queries", "lazy loading", "include", "query optimization", "ef core"]
+summary: "N+1 is the most common EF Core performance problem in production. Learn to detect it with logging, eliminate it with Include or projections, and understand when split queries help."
+docsLinks:
+  - label: "Single vs. Split Queries"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/single-split-queries"
+  - label: "Efficient Querying"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying"
+  - label: "Logging and Diagnostics"
+    url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the N+1 Problem?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The N+1 problem occurs when code loads N parent records and then fires 1 additional query **per parent** to load related data — resulting in N+1 total database round-trips.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Classic N+1: looks harmless, catastrophic in production
+var customers = await db.Customers.ToListAsync(); // Query 1: loads 500 customers
+
+foreach (var customer in customers)
+{
+    // This fires a new SELECT query for EACH customer!
+    var orderCount = customer.Orders.Count; // Queries 2–501 (lazy load)
+    Console.WriteLine(\$"{customer.Name}: {orderCount} orders");
+}
+// Total: 501 queries for 500 customers
+// Each query has network round-trip overhead: 501 × ~1ms = ~500ms wasted
+```
+
+---
+
+## Detecting N+1 in Development
+
+EF Core logs every SQL query. Enable sensitive logging to see the full query flow:
+
+```csharp
+// Program.cs — development only
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .LogTo(Console.WriteLine, LogLevel.Information)
+           .EnableSensitiveDataLogging()  // shows parameter values
+           .EnableDetailedErrors());      // better error messages
+
+// Or use a named logger
+builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
+{
+    var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+    options.UseSqlServer(connectionString)
+           .UseLoggerFactory(loggerFactory);
+});
+```
+
+**Signs of N+1 in logs**: the same query template repeating with different parameter values, or seeing hundreds of queries where you expect tens.
+
+**MiniProfiler** (excellent for web apps):
+
+```csharp
+// NuGet: MiniProfiler.AspNetCore.Mvc + MiniProfiler.EntityFrameworkCore
+builder.Services.AddMiniProfiler(options =>
+    options.RouteBasePath = "/profiler")
+    .AddEntityFramework();
+
+// In development, visit /profiler/results-index to see duplicate queries highlighted
+```
+
+---
+
+## Fix 1: Eager Loading with Include
+
+The most direct fix — load everything in one JOIN query:
+
+```csharp
+// BEFORE: N+1
+var customers = await db.Customers.ToListAsync();
+foreach (var c in customers)
+    Console.WriteLine(c.Orders.Count); // lazy load fires per customer
+
+// AFTER: 1 query
+var customers = await db.Customers
+    .Include(c => c.Orders)
+    .ToListAsync();
+foreach (var c in customers)
+    Console.WriteLine(c.Orders.Count); // already loaded, no DB hit
+```
+
+For nested N+1 (loading grandchildren), chain `ThenInclude`:
+
+```csharp
+// Orders → Items → Product in one query
+var orders = await db.Orders
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product)
+    .ToListAsync();
+```
+
+---
+
+## Fix 2: Projection (Best for Read Scenarios)
+
+Projections eliminate N+1 without fetching unnecessary data:
+
+```csharp
+// One query, only the columns you need, no lazy load possible
+var customerSummaries = await db.Customers
+    .Select(c => new CustomerSummaryDto
+    {
+        Id = c.Id,
+        Name = c.Name,
+        OrderCount = c.Orders.Count(),              // translated to COUNT subquery
+        TotalSpent = c.Orders.Sum(o => o.Total),    // translated to SUM subquery
+        LastOrderDate = c.Orders.Max(o => o.CreatedAt)
+    })
+    .ToListAsync();
+// SQL: SELECT c.Id, c.Name,
+//        (SELECT COUNT(*) FROM Orders WHERE CustomerId = c.Id) AS OrderCount,
+//        (SELECT SUM(Total) FROM Orders WHERE CustomerId = c.Id) AS TotalSpent,
+//        (SELECT MAX(CreatedAt) FROM Orders WHERE CustomerId = c.Id) AS LastOrderDate
+//      FROM Customers c
+```
+
+---
+
+## Fix 3: Explicit Batch Loading
+
+When you already have parent entities and need to load related data efficiently:
+
+```csharp
+// Load parents
+var orders = await db.Orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .ToListAsync();
+
+var orderIds = orders.Select(o => o.Id).ToList();
+
+// Load all related items in one batch query
+var items = await db.OrderItems
+    .Where(i => orderIds.Contains(i.OrderId))
+    .Include(i => i.Product)
+    .ToListAsync();
+
+// Manually stitch them together in memory
+var itemsByOrder = items.ToLookup(i => i.OrderId);
+foreach (var order in orders)
+{
+    var orderItems = itemsByOrder[order.Id].ToList();
+    // process order with its items
+}
+```
+
+This is the explicit batch pattern — particularly useful when the parent entities come from a different query or were already in memory.
+
+---
+
+## The Cartesian Explosion Counter-Problem
+
+Eager loading with multiple collection includes can cause the opposite problem — **cartesian explosion**:
+
+```csharp
+// This generates a CROSS JOIN between Tags and Comments
+var posts = await db.Posts
+    .Include(p => p.Tags)     // 10 tags per post
+    .Include(p => p.Comments) // 50 comments per post
+    .ToListAsync();
+// Each row is duplicated: 100 posts × 10 tags × 50 comments = 50,000 result rows!
+// EF must deduplicate all 50,000 rows back into 100 posts
+```
+
+EF Core warns about this (look for "Compiling a query which loads related collections for more than one collection navigation" in logs).
+
+---
+
+<Callout type="senior">
+**Senior Insight: Using AsSplitQuery to Avoid Cartesian Explosion**
+
+Split queries solve cartesian explosion by breaking one multi-collection query into separate queries:
+
+```csharp
+var posts = await db.Posts
+    .Include(p => p.Tags)
+    .Include(p => p.Comments)
+    .AsSplitQuery()  // 3 queries instead of cartesian join
+    .ToListAsync();
+// Query 1: SELECT * FROM Posts
+// Query 2: SELECT * FROM Tags WHERE PostId IN (1, 2, ..., 100)
+// Query 3: SELECT * FROM Comments WHERE PostId IN (1, 2, ..., 100)
+// EF stitches the results in memory — 100 + 10×100 + 50×100 rows total, not 50,000
+```
+
+**Split query trade-offs:**
+- Eliminates cartesian data duplication
+- Uses multiple round-trips (but usually still 2–3, not N+1)
+- **Not transactionally consistent** — if data changes between queries, you may see inconsistent snapshots
+- Cannot be combined with certain LINQ operations (Skip/Take on the main query is fine; pagination on included collections is not)
+
+Configure split query as the default if most of your queries include multiple collections:
+
+```csharp
+options.UseSqlServer(connectionString)
+       .UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+```
 </Callout>
+
+---
+
+<MythBuster
+  myth="EF Core's Include() always generates efficient SQL regardless of how many navigations you include"
+  truth="Include() with multiple collection navigations generates a single query with multiple JOINs. If all are single-reference navigations, this is fine. If any are collection navigations, you get cartesian explosion — EF multiplies the result rows. Two collection includes on a 1000-row table can return 1,000,000 rows. Use AsSplitQuery() or projections in these cases."
+/>
+
+---
+
+<CodeChallenge
+  id="09-ef-core/n-plus-one/challenge-1"
+  title="Identify and Fix the N+1"
+  description="This code has an N+1 problem. Rewrite it to use a single query projection."
+  code={`// Given: Blog has many Posts, Post has many Comments
+var blogs = await db.Blogs.ToListAsync();
+
+var result = blogs.Select(b => new
+{
+    b.Title,
+    PostCount = b.Posts.Count,          // N lazy loads
+    CommentCount = b.Posts.Sum(p => p.Comments.Count) // N*M lazy loads!
+}).ToList();`}
+  options={[
+    "Add .Include(b => b.Posts).ThenInclude(p => p.Comments) before ToListAsync()",
+    "Move the Select() before ToListAsync() so EF translates it to SQL subqueries",
+    "Use AsSplitQuery() to separate the Posts and Comments queries",
+    "Add AsNoTracking() to avoid the change tracker overhead"
+  ]}
+  correctAnswer={1}
+  explanation="Moving the Select() before ToListAsync() causes EF to translate the entire projection to SQL, including Count() and Sum() as subqueries. EF never materializes Blog or Post entities — it executes one query with correlated subqueries. Option A (Include) would load all data into memory first (still cartesian risk), then LINQ-to-objects does the aggregation — functional but wasteful. AsSplitQuery and AsNoTracking do not fix the N+1 — they address different concerns."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Efficient Querying", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying" },
+    { label: "Single vs. Split Queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/single-split-queries" },
+    { label: "EF Core Logging", url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/" },
+  ]}
+/>

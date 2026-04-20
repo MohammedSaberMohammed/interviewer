@@ -3,22 +3,323 @@ title: "Host Builder & Application Startup"
 slug: "host-builder"
 order: 1
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["asp.net core", "host builder", "startup", "IHostedService", "WebApplication", "Program.cs"]
+summary: "WebApplication.CreateBuilder wires up the entire host — configuration, DI, logging, and Kestrel — before your first line of code runs."
+docsLinks:
+  - label: "ASP.NET Core fundamentals: app startup"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/startup"
+  - label: "WebApplication and WebApplicationBuilder"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/migration/50-to-60"
+  - label: "IHostedService and BackgroundService"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services"
+  - label: "Generic Host"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/generic-host"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Host: What It Is and Why It Exists
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Every ASP.NET Core app runs inside a **host** — a runtime container responsible for:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- Lifetime management (startup, graceful shutdown)
+- Dependency injection container construction
+- Configuration loading (appsettings, env vars, secrets)
+- Logging infrastructure
+- The web server (Kestrel) — if this is a web app
+
+Before .NET 6, you wrote a separate `Startup` class. Since .NET 6, the **minimal hosting model** collapses everything into `Program.cs` using `WebApplicationBuilder`.
+
+```csharp
+// Program.cs — the entire host lifecycle in one file
+var builder = WebApplication.CreateBuilder(args); // Phase 1: Configure services
+
+// Register services into the DI container
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddSingleton<IMyService, MyService>();
+
+var app = builder.Build(); // Phase 2: Build — locks the DI container
+
+// Configure the middleware pipeline
+if (app.Environment.IsDevelopment())
+    app.UseSwagger();
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run(); // Phase 3: Run — blocks until shutdown
+```
+
+---
+
+## Host Lifecycle in Detail
+
+The host goes through three distinct phases. Understanding them prevents common mistakes like registering services after `Build()`.
+
+```
+CreateBuilder(args)
+  │
+  ├─ Reads environment (ASPNETCORE_ENVIRONMENT)
+  ├─ Loads configuration sources (in order):
+  │    appsettings.json
+  │    appsettings.{Environment}.json
+  │    User Secrets (Development only)
+  │    Environment variables
+  │    Command-line args
+  ├─ Configures default logging (Console, Debug)
+  └─ Sets up Kestrel as the default server
+
+builder.Build()
+  │
+  ├─ Freezes the service collection — no more registrations
+  ├─ Builds the root IServiceProvider
+  └─ Instantiates singletons marked for eager construction
+
+app.Run()
+  │
+  ├─ Starts IHostedService.StartAsync() on all registered services
+  ├─ Starts Kestrel and begins accepting connections
+  └─ Blocks until CancellationToken fires (SIGTERM / Ctrl+C)
+       │
+       └─ IHostedService.StopAsync() called with 30s default timeout
+```
+
+```csharp
+// Accessing configuration and environment during builder phase
+var builder = WebApplication.CreateBuilder(args);
+
+// Read config during service registration
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var isDev = builder.Environment.IsDevelopment();
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString));
+
+// Add configuration sources
+builder.Configuration.AddJsonFile("custom.json", optional: true, reloadOnChange: true);
+builder.Configuration.AddEnvironmentVariables(prefix: "MYAPP_");
+```
+
+---
+
+## IHostedService: Background Work at Host Level
+
+`IHostedService` lets you hook into the host start/stop lifecycle for background tasks, warm-up logic, or scheduled jobs.
+
+```csharp
+// Option 1: Implement IHostedService directly (full control)
+public class DatabaseMigratorService : IHostedService
+{
+    private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<DatabaseMigratorService> _logger;
+
+    public DatabaseMigratorService(IServiceProvider sp, ILogger<DatabaseMigratorService> logger)
+    {
+        _serviceProvider = sp;
+        _logger = logger;
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Running database migrations...");
+
+        // IHostedService is singleton — create a scope to use scoped services
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.MigrateAsync(cancellationToken);
+
+        _logger.LogInformation("Migrations complete.");
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+// Option 2: BackgroundService base class (for long-running loops)
+public class OrderProcessingService : BackgroundService
+{
+    private readonly ILogger<OrderProcessingService> _logger;
+
+    public OrderProcessingService(ILogger<OrderProcessingService> logger)
+        => _logger = logger;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Processing orders at {time}", DateTimeOffset.UtcNow);
+            await ProcessPendingOrdersAsync(stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+
+    private Task ProcessPendingOrdersAsync(CancellationToken ct) => Task.CompletedTask;
+}
+
+// Registration
+builder.Services.AddHostedService<DatabaseMigratorService>();
+builder.Services.AddHostedService<OrderProcessingService>();
+```
+
+<Callout type="trap">
+**Trap: Slow StartAsync Blocks the Host**
+
+`IHostedService.StartAsync` is called sequentially for each service before Kestrel accepts connections. If your StartAsync blocks for 30 seconds (e.g., waiting for an external service), your app appears down for that entire time.
+
+For slow initialization, use a pattern where StartAsync fires off work and returns immediately, then signals readiness:
+
+```csharp
+public class SlowWarmupService : BackgroundService
+{
+    private readonly IHostApplicationLifetime _lifetime;
+
+    public SlowWarmupService(IHostApplicationLifetime lifetime) => _lifetime = lifetime;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await DoSlowWarmupAsync(stoppingToken);
+        // Signal that the app is ready to accept traffic
+        // Kestrel already started — health check can now return healthy
+    }
+}
+```
+
+Alternatively, use `IHostApplicationLifetime.ApplicationStarted` to run code after Kestrel is up.
 </Callout>
+
+---
+
+## WebApplication vs Generic Host
+
+ASP.NET Core apps use `WebApplication`, but the underlying `Generic Host` (`IHost`) is used for non-HTTP scenarios like worker services and console apps.
+
+<ComparisonTable
+  headers={["Aspect", "WebApplication (ASP.NET Core)", "IHost (Generic Host)"]}
+  rows={[
+    ["Entry point", "WebApplication.CreateBuilder()", "Host.CreateDefaultBuilder()"],
+    ["Use case", "HTTP APIs, MVC, Blazor", "Worker services, console apps"],
+    ["Kestrel", "Included by default", "Not included"],
+    ["Middleware pipeline", "Yes — app.Use...()", "No"],
+    ["IHostedService", "Yes", "Yes"],
+    ["Configuration", "Yes", "Yes"],
+    ["DI container", "Yes", "Yes"],
+  ]}
+/>
+
+```csharp
+// Generic Host for a worker service (no HTTP)
+var host = Host.CreateDefaultBuilder(args)
+    .ConfigureServices((context, services) =>
+    {
+        services.AddHostedService<OrderProcessingService>();
+        services.AddSingleton<IOrderRepository, SqlOrderRepository>();
+    })
+    .Build();
+
+await host.RunAsync();
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Host Startup Order and IHostApplicationLifetime**
+
+In production systems you often need fine-grained control over the startup sequence. `IHostApplicationLifetime` exposes three cancellation tokens:
+
+```csharp
+public class StartupCoordinatorService : IHostedService
+{
+    private readonly IHostApplicationLifetime _lifetime;
+
+    public StartupCoordinatorService(IHostApplicationLifetime lifetime)
+        => _lifetime = lifetime;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        // Fires when app has fully started (after all StartAsync complete)
+        _lifetime.ApplicationStarted.Register(() =>
+            Console.WriteLine("App is fully up — registering with service mesh"));
+
+        // Fires when graceful shutdown begins
+        _lifetime.ApplicationStopping.Register(() =>
+            Console.WriteLine("Shutdown signal — draining connections"));
+
+        // Fires when shutdown is complete
+        _lifetime.ApplicationStopped.Register(() =>
+            Console.WriteLine("All background services stopped"));
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+```
+
+Also note: `DOTNET_SHUTDOWNTIMEOUTSECONDS` (default 30) controls how long the host waits for `StopAsync` to complete before force-killing. In containerized environments this must align with your orchestrator's `terminationGracePeriodSeconds`.
+</Callout>
+
+---
+
+## Quiz
+
+<Quiz
+  id="10-aspnet-core/host-builder/quiz-1"
+  question="When is it too late to call builder.Services.AddSingleton<T>() in a minimal hosting model app?"
+  options={[
+    "After app.UseRouting() is called",
+    "After var app = builder.Build() is called",
+    "After app.MapControllers() is called",
+    "After app.Run() is called"
+  ]}
+  correctAnswer={1}
+  explanation="builder.Build() freezes the service collection and constructs the root IServiceProvider. Any attempt to add services after Build() throws an InvalidOperationException. The middleware pipeline (UseRouting, MapControllers) is configured after Build() and does not affect the DI container."
+/>
+
+---
+
+<MythBuster
+  myth="You need a Startup class to properly organize ASP.NET Core apps"
+  truth="The Startup class was deprecated in .NET 6. The minimal hosting model in Program.cs is the recommended approach. For large apps, use extension methods to organize registration logic — e.g., builder.Services.AddApplicationServices() — without reverting to Startup."
+/>
+
+---
+
+## Code Challenge
+
+<CodeChallenge
+  id="10-aspnet-core/host-builder/challenge-1"
+  title="Fix the Service Registration Order"
+  description="This code throws an InvalidOperationException at runtime. Identify the problem and fix it."
+  code={`var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllers();
+var app = builder.Build();
+
+// Oops — forgot to add a required service
+builder.Services.AddSingleton\<IEmailService, SmtpEmailService\>();
+
+app.MapControllers();
+app.Run();`}
+  options={[
+    "Move AddSingleton before builder.Build()",
+    "Move AddSingleton after app.MapControllers()",
+    "Use app.Services instead of builder.Services",
+    "Call builder.Build() again after adding the service"
+  ]}
+  correctAnswer={0}
+  explanation="Services must be registered before builder.Build() is called. After Build(), the IServiceProvider is constructed and the service collection is locked. Moving builder.Services.AddSingleton before var app = builder.Build() fixes the error."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ASP.NET Core fundamentals: app startup", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/startup" },
+    { label: "WebApplication and WebApplicationBuilder", url: "https://learn.microsoft.com/en-us/aspnet/core/migration/50-to-60" },
+    { label: "IHostedService and BackgroundService", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services" },
+    { label: "Generic Host in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/generic-host" },
+  ]}
+/>

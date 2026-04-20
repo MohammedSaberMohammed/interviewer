@@ -3,22 +3,271 @@ title: "Classes, Structs, Records: When to Use Which"
 slug: "classes-structs-records"
 order: 1
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["classes", "structs", "records", "value types", "reference types", "immutability", "performance"]
+summary: "Choosing between class, struct, and record is not a style preference — it's a semantics decision that affects memory layout, equality, mutability, and performance."
+docsLinks:
+  - label: "Classes (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/classes"
+  - label: "Structs (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct"
+  - label: "Records (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Core Distinction: Reference vs Value Semantics
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before picking a keyword, ask yourself one question: **do I want reference semantics or value semantics?**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Reference semantics** — two variables can point to the same object; mutations are shared. A `class`.
+- **Value semantics** — assigning copies the data; each variable owns its own copy. A `struct` or `record struct`.
+- **Value semantics with equality baked in** — a `record class` or positional `record struct`.
+
+```csharp
+// Reference semantics (class)
+var a = new Point { X = 1, Y = 2 };
+var b = a;          // b points to the SAME object
+b.X = 99;
+Console.WriteLine(a.X); // 99 — a was mutated through b!
+
+// Value semantics (struct)
+var c = new PointStruct { X = 1, Y = 2 };
+var d = c;          // d is a COPY
+d.X = 99;
+Console.WriteLine(c.X); // 1 — c is unchanged
+```
+
+---
+
+## Classes — The Default Choice
+
+A `class` is a reference type. Use it when:
+- The type has **identity** (two objects with the same data are still different objects)
+- The type has **mutable state** that needs to be shared across callers
+- The type needs **inheritance**
+- Instances will be **long-lived** or large
+
+```csharp
+// Good class candidate: has identity, is mutable, has behavior
+public class BankAccount
+{
+    public string Id { get; } = Guid.NewGuid().ToString();
+    public decimal Balance { get; private set; }
+
+    public void Deposit(decimal amount)
+    {
+        if (amount <= 0) throw new ArgumentOutOfRangeException(nameof(amount));
+        Balance += amount;
+    }
+
+    public void Withdraw(decimal amount)
+    {
+        if (amount > Balance) throw new InvalidOperationException("Insufficient funds");
+        Balance -= amount;
+    }
+}
+
+// Two accounts with same balance are NOT the same account — identity matters
+var acc1 = new BankAccount();
+var acc2 = new BankAccount();
+Console.WriteLine(acc1 == acc2); // false (reference equality)
+```
+
+---
+
+## Structs — For Small, Short-Lived Values
+
+A `struct` is a value type. Use it when:
+- The type is **small** (guideline: ≤16 bytes, though this is not a hard rule)
+- The type is **logically immutable** or treated as a primitive
+- Instances are **short-lived** (local variables, stack frames)
+- You need **zero heap allocation** (performance-critical paths)
+- The type represents a **measurement or coordinate**: `Point`, `Color`, `Temperature`
+
+```csharp
+// Good struct candidate: small, value-like, represents a measurement
+public readonly struct Temperature
+{
+    public double Celsius { get; }
+    public double Fahrenheit => Celsius * 9.0 / 5.0 + 32;
+
+    public Temperature(double celsius) => Celsius = celsius;
+
+    public static Temperature FromFahrenheit(double f)
+        => new Temperature((f - 32) * 5.0 / 9.0);
+
+    public override string ToString() => $"{Celsius:F1}°C";
+}
+
+// No heap allocation — lives on the stack
+Temperature bodyTemp = new Temperature(37.0);
+Temperature boiling = Temperature.FromFahrenheit(212.0);
+Console.WriteLine(boiling); // 100.0°C
+```
+
+<Callout type="warning">
+**Mutable structs cause bugs.** If a struct is passed to a method or stored in a field, the caller gets a *copy*. Mutating that copy silently does nothing from the caller's perspective. Always mark structs `readonly` unless you have a specific performance reason not to.
+
+```csharp
+public struct MutablePoint { public int X; }
+
+var points = new List<MutablePoint> { new MutablePoint { X = 1 } };
+points[0].X = 99; // COMPILE ERROR in C# — modifying a copy returned by indexer
+                   // This would silently do nothing if it compiled, which is why the compiler rejects it
+```
 </Callout>
+
+---
+
+## Records — Value Equality + Concise Syntax
+
+A `record` (introduced in C# 9) provides **compiler-generated value equality**, `ToString`, `GetHashCode`, and deconstruction. Records come in two flavors:
+
+- `record class` (default) — reference type, value equality
+- `record struct` — value type, value equality
+
+```csharp
+// Positional record class — compiler generates everything
+public record Point(double X, double Y);
+
+var p1 = new Point(1.0, 2.0);
+var p2 = new Point(1.0, 2.0);
+
+Console.WriteLine(p1 == p2);      // true  — value equality (not reference!)
+Console.WriteLine(p1.Equals(p2)); // true
+Console.WriteLine(p1);            // Point { X = 1, Y = 2 } — auto ToString
+
+// Non-destructive mutation with 'with'
+var p3 = p1 with { Y = 99.0 };
+Console.WriteLine(p3); // Point { X = 1, Y = 99 }
+Console.WriteLine(p1); // Point { X = 1, Y = 2 } — p1 unchanged!
+
+// Deconstruction
+var (x, y) = p1;
+Console.WriteLine($"x={x}, y={y}");
+```
+
+Records are perfect for **DTOs, value objects, and immutable data models**:
+
+```csharp
+// A money value object — immutable, equality by value, self-documenting
+public record Money(decimal Amount, string Currency)
+{
+    // You can add methods to records
+    public Money Add(Money other)
+    {
+        if (Currency != other.Currency)
+            throw new InvalidOperationException($"Cannot add {Currency} and {other.Currency}");
+        return this with { Amount = Amount + other.Amount };
+    }
+
+    public override string ToString() => $"{Amount:F2} {Currency}";
+}
+
+var price = new Money(9.99m, "USD");
+var tax   = new Money(0.80m, "USD");
+var total = price.Add(tax);
+Console.WriteLine(total); // 10.79 USD
+```
+
+---
+
+<ComparisonTable
+  headers={["Feature", "class", "struct", "record class", "record struct"]}
+  rows={[
+    ["Heap allocation", "Always", "No (stack/inline)", "Always", "No (stack/inline)"],
+    ["Equality default", "Reference", "Member-wise (but broken for arrays)", "Value (generated)", "Value (generated)"],
+    ["Inheritance", "Yes", "No", "Yes (record hierarchy)", "No"],
+    ["Immutability", "Manual", "use readonly", "Default (init-only)", "use readonly"],
+    ["with expression", "No", "No", "Yes", "Yes"],
+    ["Null possible", "Yes", "No (unless Nullable\<T\>)", "Yes", "No (unless Nullable\<T\>)"],
+    ["Primary use case", "Entities, services", "Coordinates, primitives", "DTOs, value objects", "Tiny immutable values"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="Structs are always faster than classes because they avoid heap allocation."
+  reality="Structs avoid heap allocation for small, short-lived values — but they can be slower when they're large, boxed, or copied frequently. A 200-byte struct copied on every method call creates more work than a single reference. The sweet spot is small (ideally ≤16 bytes), readonly, short-lived values. For anything else, benchmark before assuming."
+/>
+
+---
+
+<CodeChallenge
+  id="02-oop/classes-structs-records/challenge-1"
+  title="Pick the Right Type"
+  description="You're designing a 2D game. You need a type to represent a pixel color (R, G, B, A bytes — 4 bytes total). Two colors with the same RGBA values should be considered equal. Which type fits best?"
+  code={`// Option A
+public class Color { public byte R, G, B, A; }
+
+// Option B
+public struct Color { public byte R, G, B, A; }
+
+// Option C
+public record Color(byte R, byte G, byte B, byte A);
+
+// Option D
+public readonly record struct Color(byte R, byte G, byte B, byte A);`}
+  options={[
+    "Option A — class, because colors have identity",
+    "Option B — struct, because colors are small value types",
+    "Option C — record class, because we need value equality",
+    "Option D — readonly record struct, because it's small (4 bytes), needs value equality, and should be stack-allocated"
+  ]}
+  correctAnswer={3}
+  explanation="Option D is ideal. A pixel color is exactly 4 bytes — tiny. It should have value equality (two colors with same RGBA are equal). It should be immutable (a color doesn't change). And it should avoid heap allocation for performance-critical rendering loops. readonly record struct delivers all four properties. Option B (plain struct) would work but requires you to implement Equals/GetHashCode manually. Option C (record class) gives value equality but incurs heap allocation for every color — a serious problem when you're processing millions of pixels."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Record Inheritance and the Fragile Base Problem**
+
+Record classes can inherit from other record classes, and equality is inheritance-aware:
+
+```csharp
+public record Shape(string Color);
+public record Circle(string Color, double Radius) : Shape(Color);
+public record Rectangle(string Color, double Width, double Height) : Shape(Color);
+
+var c1 = new Circle("red", 5.0);
+var c2 = new Circle("red", 5.0);
+var s1 = (Shape)c1;
+var s2 = (Shape)c2;
+
+Console.WriteLine(c1 == c2); // true  — same runtime type + same values
+Console.WriteLine(s1 == s2); // true  — runtime type is still Circle, so Circle equality runs
+Console.WriteLine(c1 == s1); // true  — still Circle vs Circle
+```
+
+The compiler generates a virtual `EqualityContract` property that returns `typeof(T)` at each level. Equality checks this property first — so a `Circle` and a `Shape` with the same color will never be equal even if compared via the `Shape` reference. This avoids the classic Liskov violation you'd get with hand-written equality methods.
+
+In practice: use record inheritance sparingly. Flat record hierarchies with discriminated-union patterns (a sealed base record + derived records) are more maintainable than deep hierarchies.
+</Callout>
+
+---
+
+## The Decision Framework
+
+Use this flow when choosing:
+
+1. **Does it need inheritance?** → `class` or `record class`
+2. **Is it a pure data container with value equality (DTO, command, event)?** → `record class`
+3. **Is it small (≤16 bytes), value-like, and short-lived?** → `readonly struct` or `readonly record struct`
+4. **Does it have mutable identity (domain entity, service object)?** → `class`
+5. **Default when unsure** → `class`
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Classes (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/classes" },
+    { label: "Structs (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct" },
+    { label: "Records (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+    { label: "Choosing between class and struct", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/choosing-between-class-and-struct" },
+  ]}
+/>

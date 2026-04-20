@@ -1,24 +1,241 @@
 ---
-title: "Transactions"
+title: "Transactions: SaveChanges, BeginTransaction, and Ambient Transactions"
 slug: "transactions"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["transactions", "savechanges", "begintransaction", "isolation level", "savepoint", "ef core"]
+summary: "SaveChanges wraps all changes in an implicit transaction. For multi-context or multi-operation scenarios, use BeginTransaction explicitly. Understand isolation levels and savepoints for production correctness."
+docsLinks:
+  - label: "Using Transactions"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Implicit Transaction
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Every call to `SaveChanges()` or `SaveChangesAsync()` is **automatically wrapped in a transaction**. All changes in the current unit of work succeed or fail together:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// This is automatically atomic — all or nothing
+customer.Email = "new@example.com";
+db.Orders.Add(newOrder);
+db.OrderItems.AddRange(items);
+
+await db.SaveChangesAsync();
+// EF executes:
+// BEGIN TRANSACTION
+// UPDATE Customers SET Email = ... WHERE Id = ...
+// INSERT INTO Orders ...
+// INSERT INTO OrderItems ... (batched)
+// COMMIT
+// (or ROLLBACK if any statement fails)
+```
+
+You do not need an explicit transaction for the common case. Add one only when you need to:
+- Coordinate multiple `SaveChanges()` calls
+- Mix EF operations with raw SQL
+- Control the isolation level
+- Use savepoints for partial rollbacks
+
+---
+
+## Explicit Transactions
+
+```csharp
+// Pattern for multi-step operations that must be atomic
+await using var transaction = await db.Database.BeginTransactionAsync();
+
+try
+{
+    // Step 1: deduct from source account
+    var source = await db.Accounts.FindAsync(sourceId);
+    source.Balance -= amount;
+    await db.SaveChangesAsync();
+
+    // Step 2: credit to target account
+    var target = await db.Accounts.FindAsync(targetId);
+    target.Balance += amount;
+    await db.SaveChangesAsync();
+
+    // Step 3: record the transfer
+    db.Transfers.Add(new Transfer
+    {
+        FromAccountId = sourceId,
+        ToAccountId = targetId,
+        Amount = amount,
+        Timestamp = DateTime.UtcNow
+    });
+    await db.SaveChangesAsync();
+
+    await transaction.CommitAsync();
+}
+catch
+{
+    await transaction.RollbackAsync();
+    throw;
+}
+```
+
+---
+
+## Isolation Levels
+
+Choose the appropriate isolation level for your scenario:
+
+```csharp
+using System.Data;
+
+// ReadCommitted (SQL Server default) — prevents dirty reads
+await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+
+// RepeatableRead — also prevents non-repeatable reads (data changes between reads)
+await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead);
+
+// Serializable — prevents phantoms (new rows appearing between reads)
+// Highest protection, lowest throughput
+await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+
+// Snapshot — non-blocking reads, uses row versioning (SQL Server with READ_COMMITTED_SNAPSHOT)
+await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Snapshot);
+```
+
+<ComparisonTable
+  title="Isolation Level Trade-offs"
+  headers={["Level", "Dirty Reads", "Non-repeatable", "Phantom Reads", "Performance"]}
+  rows={[
+    ["Read Uncommitted", "Possible", "Possible", "Possible", "Highest"],
+    ["Read Committed (default)", "Prevented", "Possible", "Possible", "High"],
+    ["Repeatable Read", "Prevented", "Prevented", "Possible", "Medium"],
+    ["Serializable", "Prevented", "Prevented", "Prevented", "Low"],
+    ["Snapshot (RCSI)", "Prevented", "Prevented", "Prevented*", "High"],
+  ]}
+/>
+
+---
+
+## Savepoints: Partial Rollbacks
+
+EF Core 5+ supports savepoints for rolling back part of a transaction:
+
+```csharp
+await using var transaction = await db.Database.BeginTransactionAsync();
+
+// Phase 1: always-critical operations
+var order = new Order { CustomerId = 42, Total = 299m };
+db.Orders.Add(order);
+await db.SaveChangesAsync();
+
+// Create savepoint before the optional phase
+await transaction.CreateSavepointAsync("BeforeNotifications");
+
+try
+{
+    // Phase 2: optional/unreliable operations
+    await SendOrderConfirmationEmail(order);
+    await PublishOrderCreatedEvent(order);
+}
+catch (Exception)
+{
+    // Roll back only the notification phase
+    // The order INSERT remains intact
+    await transaction.RollbackToSavepointAsync("BeforeNotifications");
+    // Log: notification failed, order still created
+}
+
+await transaction.CommitAsync(); // commits the order regardless of notification success
+```
+
+---
+
+## Sharing a Transaction Across Multiple DbContexts
+
+When you need two DbContext instances in the same transaction:
+
+```csharp
+await using var connection = new SqlConnection(connectionString);
+await connection.OpenAsync();
+await using var transaction = connection.BeginTransaction();
+
+// Context 1
+var appDb = new AppDbContext(
+    new DbContextOptionsBuilder<AppDbContext>()
+        .UseSqlServer(connection)
+        .Options);
+appDb.Database.UseTransaction(transaction);
+
+// Context 2 (different schema / same database)
+var auditDb = new AuditDbContext(
+    new DbContextOptionsBuilder<AuditDbContext>()
+        .UseSqlServer(connection)
+        .Options);
+auditDb.Database.UseTransaction(transaction);
+
+// Both contexts share the same transaction
+order.Status = OrderStatus.Shipped;
+await appDb.SaveChangesAsync();
+
+auditDb.AuditLogs.Add(new AuditLog { Action = "OrderShipped", OrderId = order.Id });
+await auditDb.SaveChangesAsync();
+
+transaction.Commit(); // both commits or both rollback
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Avoid System.Transactions (TransactionScope) with EF Core**
+
+`TransactionScope` (ambient transactions) works with EF Core but has critical pitfalls:
+
+```csharp
+// Looks clean but has hidden costs
+using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+{
+    await db.DoSomethingAsync();
+    await otherService.DoSomethingElseAsync();
+    scope.Complete();
+}
+```
+
+Problems:
+1. Any database connection enlisted after the first promotes to a **Distributed Transaction (MSDTC)** — which is unavailable on most cloud platforms and Linux
+2. `TransactionScopeAsyncFlowOption.Enabled` is required for async code and is easy to forget
+3. It creates invisible coupling — any code in the call stack can silently enlist in your transaction
+
+Prefer explicit `BeginTransactionAsync()` + passing `IDbContextTransaction` down the call chain. It is more verbose but honest about what is happening.
 </Callout>
+
+---
+
+<MythBuster
+  myth="You need to wrap SaveChanges in a try/catch to ensure rollback on error"
+  truth="EF Core's implicit SaveChanges transaction automatically rolls back if any statement fails — you do not need explicit transaction management for a single SaveChanges call. You only need explicit transactions when coordinating multiple SaveChanges calls or mixing EF with raw SQL in a single atomic operation. The try/catch/rollback pattern is only needed with explicit BeginTransaction."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/transactions/challenge-1"
+  question="You need to debit one bank account and credit another atomically — both operations must succeed or both must fail. Which approach is correct?"
+  options={[
+    "Call SaveChanges() twice — once per account — EF wraps each in its own transaction",
+    "Load both accounts, modify both, then call SaveChanges() once — all changes share one implicit transaction",
+    "Use BeginTransactionAsync(), call SaveChanges() after each account modification, then CommitAsync()",
+    "Use TransactionScope with the default constructor — it automatically handles async flows"
+  ]}
+  correctAnswer={1}
+  explanation="If you can load both entities and modify them before calling SaveChanges(), a single SaveChanges() call is the simplest and correct approach — EF wraps all pending changes in one transaction. Option C (explicit transaction with multiple SaveChanges) also works but is more complex than necessary for this case. Option A is wrong — two separate SaveChanges calls each have their own transaction, so the first could succeed while the second fails (half-committed state). Option D is wrong — TransactionScope without AsyncFlowOption.Enabled causes issues with async code, and without it specified, the async continuation may run outside the transaction."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Using Transactions in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions" },
+    { label: "Savepoints", url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions#savepoints" },
+    { label: "System.Transactions / TransactionScope", url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions#using-systemtransactions" },
+  ]}
+/>

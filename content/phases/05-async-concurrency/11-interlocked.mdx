@@ -1,24 +1,275 @@
 ---
-title: "Interlocked Operations"
+title: "Interlocked Operations: Atomic Arithmetic and Compare-Exchange"
 slug: "interlocked"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["Interlocked", "atomic", "CompareExchange", "lock-free", "CAS", "memory model", "thread safety"]
+summary: "Interlocked operations provide lock-free atomic updates using CPU instructions — mastering CompareExchange lets you build efficient, correct concurrent data structures."
+docsLinks:
+  - label: "Interlocked class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked"
+  - label: "Memory model and volatility"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/threading/overview-of-synchronization-primitives"
+  - label: "Lock-free programming"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Interlocked Operations?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`System.Threading.Interlocked` provides **atomic operations** on shared variables — operations that complete as an indivisible unit without explicit locking. These operations map directly to CPU atomic instructions (like x86 `LOCK XADD`, `LOCK CMPXCHG`).
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+They are:
+- **Thread-safe**: no race conditions
+- **Lock-free**: no OS lock overhead, no context switches
+- **Fast**: typically 1–5 CPU cycles (vs ~200+ for a mutex)
+
+```csharp
+// Atomic increment — safer and faster than lock(_syncRoot) { _count++; }
+private int _count = 0;
+Interlocked.Increment(ref _count);   // Returns new value
+Interlocked.Decrement(ref _count);   // Returns new value
+Interlocked.Add(ref _count, 5);      // Returns new value
+
+// Atomic exchange — set and return old value atomically
+int oldValue = Interlocked.Exchange(ref _count, 42); // Returns the old value
+
+// Atomic read of 64-bit values on 32-bit processes
+// (64-bit reads/writes are not atomic on 32-bit; Interlocked.Read fixes this)
+long snapshot = Interlocked.Read(ref _longValue);
+```
+
+---
+
+## The Non-Atomic Trap
+
+Without `Interlocked`, even simple `++` is not thread-safe:
+
+```csharp
+// RACE CONDITION: non-atomic increment
+private int _counter = 0;
+
+// Thread A: reads _counter = 5
+// Thread B: reads _counter = 5 (same value!)
+// Thread A: writes _counter = 6
+// Thread B: writes _counter = 6 (lost the increment from Thread A!)
+// Result: 6 instead of 7
+
+// In 1000 parallel increments, you might get 600–999 instead of 1000
+Parallel.For(0, 1000, _ => _counter++); // Wrong!
+
+// CORRECT: atomic increment
+Parallel.For(0, 1000, _ => Interlocked.Increment(ref _counter)); // Always 1000
+```
+
+---
+
+## CompareExchange: The Foundation of Lock-Free Programming
+
+`Interlocked.CompareExchange(ref location, value, comparand)` atomically:
+1. Reads the current value of `location`
+2. If it equals `comparand`, writes `value`
+3. Returns the **original** value (before any potential write)
+
+This is the **Compare-and-Swap (CAS)** primitive — the building block of all lock-free algorithms:
+
+```csharp
+// CAS signature:
+// int CompareExchange(ref int location, int value, int comparand)
+// "If location == comparand, set location = value; return old location"
+
+private int _state = 0; // 0 = idle, 1 = busy
+
+// Transition from idle to busy — atomically, only if currently idle
+int original = Interlocked.CompareExchange(ref _state, 1, 0);
+bool wasIdle = original == 0; // True if we successfully acquired
+
+if (wasIdle)
+{
+    try { DoWork(); }
+    finally { Interlocked.Exchange(ref _state, 0); } // Reset to idle
+}
+```
+
+---
+
+## CAS Loop Pattern
+
+The CAS loop is the idiomatic pattern for lock-free updates of complex values:
+
+```csharp
+// Lock-free lazy initialization of a single object
+private object? _singleton = null;
+
+public object GetSingleton()
+{
+    // Fast path: already initialized (no synchronization needed)
+    var result = Volatile.Read(ref _singleton);
+    if (result != null) return result;
+
+    // Slow path: create candidate and try to publish it
+    var candidate = new ExpensiveObject();
+    var previous = Interlocked.CompareExchange(ref _singleton, candidate, null);
+
+    // If previous is null, WE won the race — our candidate was installed
+    // If previous is not null, SOMEONE ELSE won — discard our candidate
+    return previous ?? candidate;
+}
+
+// CAS loop for a running maximum (lock-free Max update):
+private int _maxValue = int.MinValue;
+
+public void UpdateMax(int newValue)
+{
+    int current;
+    do
+    {
+        current = _maxValue;
+        if (newValue <= current) return; // New value isn't larger — done
+    }
+    while (Interlocked.CompareExchange(ref _maxValue, newValue, current) != current);
+    // Loop until CAS succeeds: "if _maxValue is still 'current', set to 'newValue'"
+    // If it changed between our read and CAS (another thread updated it), retry
+}
+```
+
+---
+
+## Interlocked with Reference Types
+
+`CompareExchange` also works on reference types (any `object`):
+
+```csharp
+// Lock-free stack push using reference CAS
+private class Node<T>
+{
+    public T Value;
+    public Node<T>? Next;
+    public Node(T value) => Value = value;
+}
+
+private Node<int>? _head = null;
+
+public void Push(int value)
+{
+    var node = new Node<int>(value);
+    Node<int>? current;
+    do
+    {
+        current = Volatile.Read(ref _head);
+        node.Next = current;
+    }
+    while (Interlocked.CompareExchange(ref _head, node, current) != current);
+    // Atomically: if head is still 'current', set head = node
+    // If head changed (another push happened), retry with new current
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The ABA Problem**
+
+The CAS loop has a subtle weakness called the **ABA problem**:
+
+```
+Thread 1 reads: location = A
+Thread 2 changes: location A → B → A  (thread 2 replaced and put back the same value)
+Thread 1 CAS: (location == A) → success! But state has actually changed.
+```
+
+For primitive integers and simple flags, ABA is usually not a concern. But in lock-free linked lists or memory-reuse scenarios, ABA can cause corruption (a "recycled" node is treated as fresh).
+
+Solutions:
+1. **Stamped/versioned references**: pair the reference with a version counter
+2. **Hazard pointers**: declare which nodes you're reading before CAS
+3. **Use `Interlocked.CompareExchange` with a generation counter**:
+
+```csharp
+// Stamped CAS pattern (version prevents ABA)
+private (object? Value, int Version) _stamped = (null, 0);
+
+void Set(object newValue)
+{
+    (object? Value, int Version) current, next;
+    do
+    {
+        current = _stamped;
+        next = (newValue, current.Version + 1);
+    }
+    while (Interlocked.CompareExchange(ref _stamped, next, current) != current);
+    // Struct CAS — works in .NET 5+ with Unsafe helpers or on aligned structs
+}
+```
+
+In practice, most application-level code should use `ConcurrentQueue<T>`, `ConcurrentDictionary<K,V>`, or `Channel<T>` (which handle ABA and other hazards internally) rather than writing raw CAS loops.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Interlocked.Increment is always better than lock"
+  reality="Interlocked operations are faster for simple atomic updates on single variables. But for updates spanning multiple variables, Interlocked cannot help — you need a lock for consistency. Example: updating both a dictionary key AND a counter atomically requires a lock (or a redesign). Using Interlocked for each separately doesn't give you a consistent snapshot between them. Use the right tool for the scope of what you're protecting."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/interlocked/challenge-1"
+  title="Spot the Lost Update"
+  description="This code uses Interlocked but still has a bug. What is it?"
+  code={`private int _successCount = 0;
+private int _failureCount = 0;
+
+public void RecordResult(bool success)
+{
+    if (success)
+        Interlocked.Increment(ref _successCount);
+    else
+        Interlocked.Increment(ref _failureCount);
+}
+
+public (int success, int failure, int total) GetStats()
+{
+    int s = _successCount;
+    int f = _failureCount;
+    return (s, f, s + f); // Is s + f == total processed?
+}`}
+  options={[
+    "Interlocked.Increment is not thread-safe for int fields — use long",
+    "GetStats() reads _successCount and _failureCount separately — another thread can increment between the two reads, making s + f potentially inconsistent with actual totals processed",
+    "The if/else in RecordResult is not atomic — the check and increment can be interleaved",
+    "There is no bug — each Interlocked operation is independently correct"
+  ]}
+  correctAnswer={1}
+  explanation="Each Interlocked.Increment is individually atomic. But GetStats() reads _successCount and _failureCount in two separate non-atomic operations. Between reading s and reading f, another thread can increment either counter. So s + f may not equal the actual number of processed items at any real point in time — it's a torn snapshot. For a consistent snapshot of multiple related counters, you need either a lock around all reads, or a redesign using a single struct updated atomically."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/interlocked/quiz-1"
+  question="What does Interlocked.CompareExchange(ref x, newVal, expected) return?"
+  options={[
+    "true if the exchange was performed, false if not",
+    "The new value of x after the operation",
+    "The original value of x before the operation (regardless of whether the exchange happened)",
+    "The expected value that was compared against"
+  ]}
+  correctAnswer={2}
+  explanation="CompareExchange always returns the original value of the location — the value it read before deciding whether to do the exchange. If the returned value equals 'expected', the exchange happened. If it doesn't, the exchange did not happen (because the actual value was different from expected). This return value is what CAS loops check to decide whether to retry: 'while (CompareExchange(ref x, newVal, current) != current) { current = x; }'."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Interlocked class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked" },
+    { label: "Thread-safe collections", url: "https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/" },
+    { label: "Volatile class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.volatile" },
+    { label: "Parallel programming best practices", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/potential-pitfalls-in-data-and-task-parallelism" },
+  ]}
+/>

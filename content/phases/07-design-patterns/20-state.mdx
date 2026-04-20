@@ -1,24 +1,309 @@
 ---
-title: "State"
+title: "State Machine — Explicit State Objects vs switch"
 slug: "state"
 order: 20
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["state", "behavioral", "state machine", "workflow", "switch statements", "Stateless"]
+summary: "State pattern replaces sprawling switch statements with explicit state objects — each state encapsulates its own behavior and valid transitions, making complex workflows manageable."
+docsLinks:
+  - label: "Stateless — state machine library for .NET"
+    url: "https://github.com/dotnet-state-machine/stateless"
+  - label: "Workflow Foundation"
+    url: "https://learn.microsoft.com/en-us/dotnet/framework/windows-workflow-foundation/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Switch Statement Hell
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When behavior depends on state, naive code puts `switch` statements everywhere:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// The anti-pattern — state scattered across the class
+public class Order
+{
+    public string Status { get; private set; } = "Pending";
+
+    public void Submit()
+    {
+        switch (Status)
+        {
+            case "Pending": Status = "Submitted"; break;
+            case "Submitted": throw new InvalidOperationException("Already submitted");
+            case "Shipped": throw new InvalidOperationException("Cannot submit shipped order");
+            // Add more states → update every switch statement!
+        }
+    }
+
+    public void Ship()
+    {
+        switch (Status)
+        {
+            case "Submitted": Status = "Shipped"; break;
+            case "Pending": throw new InvalidOperationException("Submit first");
+            // ...
+        }
+    }
+}
+```
+
+Every new state or action requires updating all switch statements. The State pattern eliminates this.
+
+---
+
+## State Pattern Structure
+
+```csharp
+// State interface — each state implements allowed transitions
+public interface IOrderState
+{
+    void Submit(OrderContext order);
+    void Pay(OrderContext order);
+    void Ship(OrderContext order);
+    void Cancel(OrderContext order);
+    string Name { get; }
+}
+
+// Context — delegates to current state
+public class OrderContext
+{
+    private IOrderState _state;
+
+    public OrderContext() => _state = new PendingState();
+
+    // Expose state management to concrete states
+    internal void TransitionTo(IOrderState newState)
+    {
+        Console.WriteLine($"  {_state.Name} → {newState.Name}");
+        _state = newState;
+    }
+
+    public string CurrentState => _state.Name;
+
+    // All operations delegate to the current state
+    public void Submit() => _state.Submit(this);
+    public void Pay()    => _state.Pay(this);
+    public void Ship()   => _state.Ship(this);
+    public void Cancel() => _state.Cancel(this);
+}
+
+// Concrete states
+public class PendingState : IOrderState
+{
+    public string Name => "Pending";
+
+    public void Submit(OrderContext order) => order.TransitionTo(new SubmittedState());
+    public void Pay(OrderContext order)    => throw new InvalidOperationException("Submit first");
+    public void Ship(OrderContext order)   => throw new InvalidOperationException("Pay first");
+    public void Cancel(OrderContext order) => order.TransitionTo(new CancelledState());
+}
+
+public class SubmittedState : IOrderState
+{
+    public string Name => "Submitted";
+
+    public void Submit(OrderContext order) => throw new InvalidOperationException("Already submitted");
+    public void Pay(OrderContext order)    => order.TransitionTo(new PaidState());
+    public void Ship(OrderContext order)   => throw new InvalidOperationException("Pay first");
+    public void Cancel(OrderContext order) => order.TransitionTo(new CancelledState());
+}
+
+public class PaidState : IOrderState
+{
+    public string Name => "Paid";
+
+    public void Submit(OrderContext order) => throw new InvalidOperationException("Already paid");
+    public void Pay(OrderContext order)    => throw new InvalidOperationException("Already paid");
+    public void Ship(OrderContext order)   => order.TransitionTo(new ShippedState());
+    public void Cancel(OrderContext order) => throw new InvalidOperationException("Cannot cancel — paid");
+}
+
+public class ShippedState : IOrderState
+{
+    public string Name => "Shipped";
+
+    public void Submit(OrderContext order) => throw new InvalidOperationException("Already shipped");
+    public void Pay(OrderContext order)    => throw new InvalidOperationException("Already paid");
+    public void Ship(OrderContext order)   => throw new InvalidOperationException("Already shipped");
+    public void Cancel(OrderContext order) => throw new InvalidOperationException("Cannot cancel — shipped");
+}
+
+public class CancelledState : IOrderState
+{
+    public string Name => "Cancelled";
+
+    public void Submit(OrderContext order) => throw new InvalidOperationException("Order is cancelled");
+    public void Pay(OrderContext order)    => throw new InvalidOperationException("Order is cancelled");
+    public void Ship(OrderContext order)   => throw new InvalidOperationException("Order is cancelled");
+    public void Cancel(OrderContext order) => throw new InvalidOperationException("Already cancelled");
+}
+
+// Usage
+var order = new OrderContext();
+Console.WriteLine(order.CurrentState); // Pending
+order.Submit();                         // Pending → Submitted
+order.Pay();                            // Submitted → Paid
+order.Ship();                           // Paid → Shipped
+```
+
+---
+
+## Practical: Stateless Library
+
+Writing state classes by hand is verbose. The **Stateless** NuGet package provides a clean fluent DSL:
+
+```csharp
+using Stateless;
+
+public enum OrderStatus { Pending, Submitted, Paid, Shipped, Cancelled }
+public enum OrderTrigger { Submit, Pay, Ship, Cancel }
+
+public class Order
+{
+    private readonly StateMachine<OrderStatus, OrderTrigger> _machine;
+
+    public Order()
+    {
+        _machine = new StateMachine<OrderStatus, OrderTrigger>(OrderStatus.Pending);
+
+        _machine.Configure(OrderStatus.Pending)
+            .Permit(OrderTrigger.Submit, OrderStatus.Submitted)
+            .Permit(OrderTrigger.Cancel, OrderStatus.Cancelled);
+
+        _machine.Configure(OrderStatus.Submitted)
+            .Permit(OrderTrigger.Pay,    OrderStatus.Paid)
+            .Permit(OrderTrigger.Cancel, OrderStatus.Cancelled)
+            .OnEntry(() => Console.WriteLine("Order submitted — awaiting payment"));
+
+        _machine.Configure(OrderStatus.Paid)
+            .Permit(OrderTrigger.Ship, OrderStatus.Shipped)
+            .OnEntry(() => Console.WriteLine("Payment received — preparing to ship"));
+
+        _machine.Configure(OrderStatus.Shipped)
+            .OnEntry(() => Console.WriteLine("Order shipped!"));
+
+        _machine.Configure(OrderStatus.Cancelled)
+            .OnEntry(() => Console.WriteLine("Order cancelled"));
+    }
+
+    public OrderStatus Status => _machine.State;
+
+    public void Submit() => _machine.Fire(OrderTrigger.Submit);
+    public void Pay()    => _machine.Fire(OrderTrigger.Pay);
+    public void Ship()   => _machine.Fire(OrderTrigger.Ship);
+    public void Cancel() => _machine.Fire(OrderTrigger.Cancel);
+
+    // Generate a state diagram (Graphviz/Mermaid)
+    public string GetDiagram() => Stateless.Graph.UmlDotGraph.Format(_machine.GetInfo());
+}
+```
+
+---
+
+<ComparisonTable
+  title="State Machine Implementation Options"
+  headers={["Approach", "Complexity", "Visualization", "Persistence", "Use When"]}
+  rows={[
+    ["switch/if-else", "Low to build, high to maintain", "No", "Simple field", "< 3 states, rarely changes"],
+    ["State pattern (GoF)", "Medium", "No", "Serialize state name", "Complex per-state behavior"],
+    ["Stateless library", "Low", "Yes (DOT/Mermaid)", "Serialize enum state", "Most production workflows"],
+    ["Workflow Foundation / Elsa", "High", "Yes (visual designer)", "Built-in persistence", "Long-running human workflows"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/state/challenge-1"
+  title="Invalid Transition Handling"
+  description="In the Stateless library, what happens when you try to fire a trigger that is not permitted in the current state?"
+  code={`var order = new Order(); // starts in Pending state
+
+// Valid transitions: Pending → Submitted or Pending → Cancelled
+// What happens here?
+order.Pay(); // Pay trigger is not configured for Pending state`}
+  options={[
+    "The trigger is silently ignored and state stays Pending",
+    "Stateless throws an InvalidOperationException with a message about the invalid transition",
+    "Stateless transitions to the nearest valid state automatically",
+    "A compile-time error — invalid triggers can't be called"
+  ]}
+  correctAnswer={1}
+  explanation="Stateless throws an InvalidOperationException: 'No valid leaving transitions are permitted from state Pending for trigger Pay.' This is correct behavior — invalid state transitions should be errors, not silent failures. Stateless allows you to configure .Ignore() on specific triggers to silently ignore them, or .PermitIf() to conditionally allow transitions with guard conditions."
+/>
+
+---
+
+<Callout type="senior">
+**State Persistence and Long-Running Workflows**
+
+Real-world state machines must survive process restarts. The state machine state is persisted to a database:
+
+```csharp
+// Entity with persisted state
+public class OrderEntity
+{
+    public int         Id     { get; set; }
+    public OrderStatus Status { get; set; } = OrderStatus.Pending; // persisted!
+}
+
+// Reconstruct state machine from persisted state
+public class OrderStateMachine
+{
+    private readonly StateMachine<OrderStatus, OrderTrigger> _machine;
+    private readonly OrderEntity _entity;
+
+    public OrderStateMachine(OrderEntity entity)
+    {
+        _entity = entity;
+
+        // Initialize from persisted state — not always Pending
+        _machine = new StateMachine<OrderStatus, OrderTrigger>(
+            stateAccessor:  () => _entity.Status,
+            stateMutator:   s  => _entity.Status = s); // mutates entity directly
+
+        // Configure transitions...
+        _machine.Configure(OrderStatus.Pending)
+            .Permit(OrderTrigger.Submit, OrderStatus.Submitted);
+        // ...
+    }
+
+    public void Fire(OrderTrigger trigger) => _machine.Fire(trigger);
+}
+
+// Usage — load from DB, reconstruct, transition, save
+var entity = await dbContext.Orders.FindAsync(orderId);
+var machine = new OrderStateMachine(entity);
+machine.Fire(OrderTrigger.Pay); // transitions entity.Status
+await dbContext.SaveChangesAsync(); // persists new state
+```
+
+**Elsa Workflows** (NuGet: Elsa) extends this to visual, long-running workflows with built-in persistence and a browser-based designer — the production-grade solution for complex order workflows, approval processes, and document routing.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/state/quiz-1"
+  question="What is the primary advantage of the State pattern over switch statements for managing state-dependent behavior?"
+  options={[
+    "State pattern is faster at runtime due to virtual dispatch",
+    "Each state class encapsulates all behavior for that state — adding new states or actions requires no changes to other states",
+    "State pattern automatically persists state to a database",
+    "State pattern prevents invalid states at compile time"
+  ]}
+  correctAnswer={1}
+  explanation="The primary advantage is encapsulation and Open/Closed Principle. Adding a new state (e.g., 'RefundRequested') means adding one new class — no modifications to existing states. Adding a new action (e.g., 'RequestRefund') means updating the IOrderState interface and implementing it in each state — but the behavior for each state is localized. With switch statements, every new state or action requires modifying every switch block across the codebase."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Stateless — .NET state machine library", url: "https://github.com/dotnet-state-machine/stateless" },
+    { label: "Elsa Workflows for .NET", url: "https://elsa-workflows.github.io/elsa-core/" },
+    { label: "Azure Durable Functions (stateful workflows)", url: "https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview" },
+  ]}
+/>

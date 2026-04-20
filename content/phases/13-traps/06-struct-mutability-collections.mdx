@@ -1,24 +1,227 @@
 ---
-title: "Struct Mutability in Collections"
+title: "Mutable Structs in Collections"
 slug: "struct-mutability-collections"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["structs", "value types", "collections", "mutation", "copy semantics", "List"]
+summary: "Indexing a List<T> of structs returns a copy — assigning to a field on that copy silently does nothing. The compiler won't warn you."
+docsLinks:
+  - label: "Structs (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct"
+  - label: "Value types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-types"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have a mutable struct and a list of them. You try to update a field on one item:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Mutable struct — THE SETUP
+public struct Point
+{
+    public int X;
+    public int Y;
+}
+
+var points = new List<Point>
+{
+    new Point { X = 1, Y = 1 },
+    new Point { X = 2, Y = 2 },
+};
+
+// THE BUG — looks like it should work:
+points[0].X = 99;
+
+Console.WriteLine(points[0].X); // Still 1 — the assignment was silently lost!
+```
+
+In fact, this **doesn't compile** — the compiler stops you with:
+
+> `CS1612: Cannot modify the return value of 'List<Point>.this[int]' because it is not a variable`
+
+But the trap appears when you use a wrapper that compiles fine but silently does nothing:
+
+```csharp
+// This COMPILES and RUNS — and silently does nothing useful:
+void MovePoint(List<Point> points, int index, int dx, int dy)
+{
+    Point p = points[index]; // COPY — p is a brand-new Point on the stack
+    p.X += dx;               // Modifies the copy
+    p.Y += dy;               // Modifies the copy
+    // p goes out of scope — the list is unchanged!
+}
+
+MovePoint(points, 0, 10, 10);
+Console.WriteLine(points[0].X); // Still 1 — you modified a copy
+```
+
+<Callout type="trap">
+`List<T>[i]` returns a **copy** of the struct, not a reference to the element inside the list. Any mutation you apply to that copy is thrown away when the copy goes out of scope. The list element is unchanged.
 </Callout>
+
+---
+
+## Why It Happens
+
+Structs are value types. Every assignment, return, or parameter passing creates a **full copy**:
+
+```csharp
+// What the indexer actually does:
+// public T this[int index] { get { return _items[index]; } }
+//                                     ^^^^^^^^^^^^^^^^
+//                                     returns a COPY of the element
+
+// Compare with arrays — arrays allow ref access:
+Point[] arr = { new Point { X = 1, Y = 1 } };
+arr[0].X = 99; // WORKS — arr[0] is a ref to the element in the array buffer
+Console.WriteLine(arr[0].X); // 99
+
+// But List<T> uses a getter property that returns by value:
+List<Point> list = new() { new Point { X = 1, Y = 1 } };
+list[0].X = 99; // COMPILE ERROR — cannot modify return value of a property getter
+```
+
+---
+
+## The Fix
+
+**Option 1: Replace the whole struct (most correct)**
+
+```csharp
+// Extract, modify, re-insert
+var p = points[0];
+p.X = 99;
+points[0] = p; // Re-assign the whole struct back
+
+Console.WriteLine(points[0].X); // 99 — correct
+```
+
+**Option 2: Use a class instead of a struct (if mutability is frequent)**
+
+```csharp
+public class PointClass // Reference type — no copy semantics
+{
+    public int X { get; set; }
+    public int Y { get; set; }
+}
+
+var points = new List<PointClass> { new() { X = 1, Y = 1 } };
+points[0].X = 99; // Works — points[0] is a reference, not a copy
+Console.WriteLine(points[0].X); // 99
+```
+
+**Option 3: Use Span\<T\> or CollectionsMarshal for performance-critical mutation**
+
+```csharp
+using System.Runtime.InteropServices;
+
+// CollectionsMarshal.AsSpan gives direct ref access to the backing array
+var span = CollectionsMarshal.AsSpan(points);
+span[0].X = 99; // Modifies in-place — no copy!
+Console.WriteLine(points[0].X); // 99
+
+// WARNING: Do NOT add/remove from the list while holding the span —
+// the backing array may be replaced and the span becomes dangling
+```
+
+---
+
+<MythBuster
+  myth="Structs in a List<T> behave like objects — indexing gives you access to the actual element"
+  truth="List<T> returns structs by value (copy). Only arrays (T[]) and Span<T> give you direct ref access to struct elements. With a List<T>, you must extract, modify, and re-insert."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/struct-mutability-collections/challenge-1"
+  title="What is the output?"
+  description="A struct is stored in a List and accessed through a loop. What does the code print?"
+  code={`struct Counter { public int Value; }
+
+var counters = new List\<Counter\> { new Counter { Value = 0 } };
+
+for (int i = 0; i < 3; i++)
+{
+    Counter c = counters[0]; // What does this do?
+    c.Value++;
+    // Note: we do NOT re-assign counters[0] = c
+}
+
+Console.WriteLine(counters[0].Value);`}
+  options={[
+    "3 — the counter was incremented three times",
+    "1 — only the last increment was visible",
+    "0 — each increment modified a temporary copy",
+    "Compile error — cannot modify a struct field in a loop"
+  ]}
+  correctAnswer={2}
+  explanation="Output is 0. Each iteration, 'Counter c = counters[0]' creates a new copy of the struct. c.Value++ modifies the copy. The copy goes out of scope at the end of each iteration without being written back. The list element is never touched. To fix it, add 'counters[0] = c;' after incrementing."
+/>
+
+---
+
+## Readonly Structs — the Modern Answer
+
+```csharp
+// If mutation is not needed: make the struct readonly
+// The compiler will prevent accidental mutation
+public readonly struct ImmutablePoint
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+
+    public ImmutablePoint Translate(int dx, int dy)
+        => new ImmutablePoint { X = X + dx, Y = Y + dy }; // returns new instance
+}
+
+// Usage:
+var points = new List<ImmutablePoint> { new() { X = 1, Y = 1 } };
+// points[0].X = 99; // Compile error — readonly struct, cannot set X
+var moved = points[0].Translate(10, 10); // Returns a new value
+points[0] = moved; // Explicit re-assignment — the intent is clear
+```
+
+---
+
+<Callout type="senior">
+**The Dictionary&lt;TKey, TValue&gt; version of this trap**
+
+The same copy-on-read behavior applies to `Dictionary<TKey, TValue>` when the value type is a struct:
+
+```csharp
+var dict = new Dictionary<string, Point>
+{
+    ["origin"] = new Point { X = 0, Y = 0 }
+};
+
+// This does NOT compile — same CS1612 error
+// dict["origin"].X = 5;
+
+// But this compiles and silently fails (older pattern):
+Point p = dict["origin"];
+p.X = 5;
+// dict["origin"] is still X=0 — you modified the copy
+
+// Correct approach:
+dict["origin"] = new Point { X = 5, Y = dict["origin"].Y };
+```
+
+The general rule from the C# design guidelines: **structs should be immutable**. If you find yourself wanting to mutate structs stored in collections, it is a design smell suggesting a class would be more appropriate.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Structs (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct" },
+    { label: "Value types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-types" },
+    { label: "CollectionsMarshal.AsSpan", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.collectionsmarshal.asspan" },
+    { label: "readonly struct (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/struct#readonly-struct" },
+  ]}
+/>

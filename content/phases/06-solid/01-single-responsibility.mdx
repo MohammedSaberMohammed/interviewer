@@ -3,22 +3,307 @@ title: "Single Responsibility Principle"
 slug: "single-responsibility"
 order: 1
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["SOLID", "SRP", "cohesion", "coupling", "design principles", "refactoring"]
+summary: "A class should have only one reason to change — learn to spot SRP violations through cohesion and coupling, and refactor toward focused, maintainable classes."
+docsLinks:
+  - label: "Design principles — Microsoft Architecture Guide"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles"
+  - label: "Common web application architectures"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures"
+  - label: "Dependency injection in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Single Responsibility Principle?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Robert C. Martin's definition: **a class should have only one reason to change.**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The key word is *reason*. Not "one method," not "one field" — one *reason to change*, which maps to one *stakeholder* or *business concern* that can cause that class to be modified.
+
+Think of it this way: if two different people in your organization could independently ask you to change the same class for unrelated reasons, that class has too many responsibilities.
+
+---
+
+## The Classic Violation
+
+```csharp
+// BAD: This class has at least THREE reasons to change:
+// 1. Business logic changes (how invoices are calculated)
+// 2. Data persistence changes (switching from SQL to a document DB)
+// 3. Reporting/formatting changes (PDF instead of HTML)
+public class Invoice
+{
+    public List<LineItem> LineItems { get; set; } = new();
+
+    // Reason 1: Business logic
+    public decimal CalculateTotal()
+    {
+        decimal subtotal = LineItems.Sum(li => li.Quantity * li.UnitPrice);
+        decimal tax = subtotal * 0.2m;
+        return subtotal + tax;
+    }
+
+    // Reason 2: Persistence
+    public void SaveToDatabase(string connectionString)
+    {
+        using var conn = new SqlConnection(connectionString);
+        conn.Open();
+        // ... INSERT INTO Invoices ...
+        foreach (var item in LineItems)
+        {
+            // ... INSERT INTO LineItems ...
+        }
+    }
+
+    // Reason 3: Formatting / reporting
+    public string GenerateHtmlReport()
+    {
+        var sb = new StringBuilder("<html><body><table>");
+        foreach (var item in LineItems)
+        {
+            sb.Append($"<tr><td>{item.Name}</td><td>{item.UnitPrice:C}</td></tr>");
+        }
+        sb.Append($"<tr><td>Total</td><td>{CalculateTotal():C}</td></tr>");
+        sb.Append("</table></body></html>");
+        return sb.ToString();
+    }
+}
+```
+
+**The problem:** every time the tax calculation changes, the DBA schema changes, or the report format changes, you touch the same class — and risk breaking the other two concerns.
+
+---
+
+## The Refactored Version
+
+```csharp
+// GOOD: Three focused classes, each with one reason to change
+
+// Responsibility 1: Business logic only
+public class Invoice
+{
+    public int Id { get; set; }
+    public List<LineItem> LineItems { get; set; } = new();
+
+    public decimal CalculateSubtotal() =>
+        LineItems.Sum(li => li.Quantity * li.UnitPrice);
+
+    public decimal CalculateTax(decimal rate = 0.2m) =>
+        CalculateSubtotal() * rate;
+
+    public decimal CalculateTotal() =>
+        CalculateSubtotal() + CalculateTax();
+}
+
+// Responsibility 2: Persistence
+public class InvoiceRepository
+{
+    private readonly string _connectionString;
+
+    public InvoiceRepository(string connectionString)
+        => _connectionString = connectionString;
+
+    public void Save(Invoice invoice)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        conn.Open();
+        // INSERT logic here
+    }
+
+    public Invoice? GetById(int id)
+    {
+        // SELECT logic here
+        return null;
+    }
+}
+
+// Responsibility 3: Formatting / reporting
+public class InvoiceHtmlFormatter
+{
+    public string Format(Invoice invoice)
+    {
+        var sb = new StringBuilder("<html><body><table>");
+        foreach (var item in invoice.LineItems)
+        {
+            sb.Append($"<tr><td>{item.Name}</td><td>{item.UnitPrice:C}</td></tr>");
+        }
+        sb.Append($"<tr><td><strong>Total</strong></td><td>{invoice.CalculateTotal():C}</td></tr>");
+        sb.Append("</table></body></html>");
+        return sb.ToString();
+    }
+}
+```
+
+Now each class has **one reason to change**: a business rule change touches `Invoice`, a schema migration touches `InvoiceRepository`, and a redesign of the report touches `InvoiceHtmlFormatter`.
+
+---
+
+## Cohesion vs. Coupling
+
+These two metrics are the practical tools for detecting SRP violations:
+
+**Cohesion** — how closely related are the things inside a class? High cohesion = good. Low cohesion = SRP violation.
+
+**Coupling** — how many other classes does this class depend on? Low coupling = good. High coupling = fragile design.
+
+SRP directly improves cohesion. By splitting concerns into separate classes, each class becomes tightly focused and its internals all relate to the same concept.
+
+```csharp
+// LOW COHESION — unrelated methods crammed together
+public class UserManager
+{
+    public User GetUser(int id) { /* ... */ return null!; }
+    public void SendWelcomeEmail(User user) { /* SMTP logic */ }
+    public string FormatUserForDisplay(User user) => $"{user.FirstName} {user.LastName}";
+    public void WriteAuditLog(string message) { /* file I/O */ }
+    public bool ValidatePassword(string password) { /* regex */ return true; }
+}
+
+// HIGH COHESION — each class is tightly focused
+public class UserRepository   { /* only data access */         }
+public class EmailService     { /* only email sending */       }
+public class UserFormatter    { /* only display formatting */  }
+public class AuditLogger      { /* only audit logging */       }
+public class PasswordValidator{ /* only password rules */      }
+```
+
+---
+
+<MythBuster
+  myth="SRP means every class should only have one method"
+  reality="SRP is about one *reason to change*, not one method. An Invoice class can have CalculateSubtotal(), CalculateTax(), and CalculateTotal() — all related to the same business concern. It is the mixing of unrelated concerns (calculation + persistence + formatting) that violates SRP."
+/>
+
+---
+
+## Real-World Smell: The God Class
+
+The most common SRP violation in real codebases is the **God Class** — a class that "knows too much" and does too much. Spotting them:
+
+- Class name contains words like `Manager`, `Handler`, `Helper`, `Utility`, `Service` that are so generic they describe nothing
+- Class has 20+ methods spanning multiple domains
+- Unit testing requires mocking 6+ dependencies
+- Merge conflicts happen in this file multiple times a week
+
+```csharp
+// Smell: "OrderService" doing everything
+public class OrderService
+{
+    // Order creation
+    public Order CreateOrder(Cart cart) { /* ... */ return null!; }
+
+    // Payment processing (should be PaymentService)
+    public bool ChargeCard(Order order, CreditCard card) { /* Stripe API */ return true; }
+
+    // Inventory (should be InventoryService)
+    public void ReserveStock(Order order) { /* ... */ }
+
+    // Email (should be NotificationService)
+    public void SendConfirmationEmail(Order order) { /* SMTP */ }
+
+    // Shipping (should be ShippingService)
+    public string GenerateShippingLabel(Order order) { /* FedEx API */ return ""; }
+
+    // Reporting (should be ReportingService)
+    public decimal GetRevenueForPeriod(DateTime from, DateTime to) { /* SQL */ return 0m; }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: SRP at Every Scale**
+
+SRP applies at multiple levels of abstraction simultaneously:
+
+- **Method level**: a method that both validates input and sends an email violates SRP
+- **Class level**: the classic Invoice example above
+- **Module/project level**: a single project that handles API routing, business logic, and database migration has too many reasons to change
+- **Microservice level**: a "UserService" that handles authentication, profiles, billing, and notifications is a distributed monolith
+
+In practice, the hardest SRP decisions are about *granularity*. Split too aggressively and you get an explosion of tiny, context-free classes that are hard to navigate. The heuristic senior engineers use: **split when you anticipate independent rates of change**. If the business logic and the persistence never change for different reasons, keeping them together might be pragmatic — until they do.
+
+In .NET specifically, the SRP is what drives the layered architecture that ASP.NET Core applications use: Controllers (handle HTTP), Services (business logic), Repositories (data access), and Domain models (business rules) each have one primary reason to change.
 </Callout>
+
+---
+
+## Code Challenge: Identify the Violation
+
+<CodeChallenge
+  id="06-solid/single-responsibility/challenge-1"
+  title="How Many Reasons to Change?"
+  description="The UserAccountService below violates SRP. How many distinct reasons to change does it have?"
+  code={`public class UserAccountService
+{
+    public User Register(string email, string password)
+    {
+        if (!email.Contains('@')) throw new ArgumentException("Invalid email");
+        if (password.Length < 8) throw new ArgumentException("Password too short");
+
+        var hashedPassword = BCrypt.HashPassword(password);
+        var user = new User { Email = email, PasswordHash = hashedPassword };
+
+        using var conn = new SqlConnection(_connString);
+        conn.Execute("INSERT INTO Users ...", user);
+
+        _smtpClient.Send(new MailMessage("noreply@app.com", email, "Welcome!", "..."));
+
+        return user;
+    }
+}`}
+  options={[
+    "1 — it only does user registration",
+    "2 — validation and persistence",
+    "3 — validation, persistence, and email notification",
+    "4 — validation, password hashing, persistence, and email notification"
+  ]}
+  correctAnswer={2}
+  explanation="There are at least 3 distinct reasons this class could change: (1) business validation rules change (e.g., new password policy), (2) the persistence layer changes (switching to a different ORM or database), and (3) the notification strategy changes (switching from SMTP to SendGrid or adding a welcome SMS). Password hashing policy could also be considered a fourth reason. Each of these is owned by a different stakeholder — a security team, a DBA, and a marketing team — which is the clearest indicator of SRP violation."
+/>
+
+---
+
+## Quiz: SRP Concepts
+
+<Quiz
+  id="06-solid/single-responsibility/quiz-1"
+  questions={[
+    {
+      question: "A class has high cohesion. What does this tell you about SRP?",
+      options: [
+        "The class definitely violates SRP",
+        "The class likely follows SRP — its members all relate to the same concern",
+        "Cohesion has nothing to do with SRP",
+        "High cohesion means the class has only one method"
+      ],
+      correctAnswer: 1,
+      explanation: "High cohesion means the elements inside a class are closely related and work together toward a single purpose. This is exactly what SRP aims for — one reason to change means all the code inside is working toward the same concern."
+    },
+    {
+      question: "Which class name is the strongest signal of a likely SRP violation?",
+      options: [
+        "InvoiceCalculator",
+        "OrderRepository",
+        "ApplicationManager",
+        "PasswordHasher"
+      ],
+      correctAnswer: 2,
+      explanation: "'ApplicationManager' is so generic it can absorb any responsibility. Names like Manager, Helper, Handler, and Utility are red flags because they say nothing about what single concern the class owns. Specific names like InvoiceCalculator, OrderRepository, and PasswordHasher are much better indicators of focused responsibility."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Architectural principles — Microsoft Architecture Guide", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles" },
+    { label: "Common web application architectures", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/common-web-application-architectures" },
+    { label: "Dependency injection in .NET (enables SRP through composition)", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection" },
+  ]}
+/>

@@ -3,22 +3,285 @@ title: "LINQ Common Pitfalls"
 slug: "linq-pitfalls"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["LINQ", "pitfalls", "multiple enumeration", "N+1", "side effects", "performance", "deferred execution"]
+summary: "Multiple enumeration, N+1 queries, side effects in predicates, and modifying collections during iteration are the LINQ bugs that slip through code review."
+docsLinks:
+  - label: "LINQ best practices"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/linq/linq-to-xml-overview"
+  - label: "Standard Query Operators"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/linq/standard-query-operators/"
+  - label: "EF Core — Loading related data"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Pitfall 1: Multiple Enumeration
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Enumerating a deferred LINQ query more than once re-executes it entirely each time. When the source is expensive (a database query, file read, API call, or even a CPU-heavy computation), this silently multiplies your costs:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Expensive source — simulated with a counter
+int callCount = 0;
+IEnumerable<int> expensiveSource = GetExpensiveData();
+
+IEnumerable<int> GetExpensiveData()
+{
+    callCount++;
+    return Enumerable.Range(1, 1000); // imagine: DB query or HTTP call
+}
+
+// These three operations each trigger a full enumeration:
+int count  = expensiveSource.Count();     // callCount = 1
+int sum    = expensiveSource.Sum();       // callCount = 2
+int max    = expensiveSource.Max();       // callCount = 3
+
+Console.WriteLine(callCount); // 3 — source queried 3 times!
+
+// FIX: materialize once
+int[] data = expensiveSource.ToArray();   // callCount = 4 (one more to materialize)
+count = data.Length;
+sum   = data.Sum();
+max   = data.Max();
+// Now source is only hit once for all three calculations
+```
+
+### Roslyn Analyzers Can Catch This
+
+Tools like **ReSharper** and the **Microsoft.CodeAnalysis.NetAnalyzers** package flag IEnumerable parameters used multiple times. Enable `CA1851` (Possible multiple enumerations) in your `.editorconfig`:
+
+```ini
+[*.cs]
+dotnet_diagnostic.CA1851.severity = warning
+```
+
+---
+
+## Pitfall 2: Side Effects in Predicates
+
+LINQ queries read as "descriptions" — they imply no side effects. But nothing prevents you from writing side-effecting predicates, leading to unpredictable behavior when query execution order changes:
+
+```csharp
+var log = new List<string>();
+
+int[] nums = { 1, 2, 3, 4, 5 };
+
+// Side effect inside Where — order depends on deferred execution internals
+var result = nums
+    .Where(n =>
+    {
+        log.Add($"checking {n}");    // side effect
+        return n % 2 == 0;
+    })
+    .Take(1)
+    .ToList();
+
+// log: ["checking 1", "checking 2"] — execution short-circuited at Take(1)
+// Works "correctly" here, but:
+
+// If you add .OrderBy before .Take, all elements must be evaluated first:
+var result2 = nums
+    .Where(n => { log.Add($"checking {n}"); return n % 2 == 0; })
+    .OrderBy(n => n)    // buffers ALL elements — Where runs for all 5
+    .Take(1)
+    .ToList();
+
+// log now has 5 entries, even though you only wanted 1 result
+```
+
+**Rule of thumb**: LINQ predicates and selectors should be **pure** (no side effects, no external state mutation). Use `foreach` or explicit loops when you need side effects.
+
+---
+
+## Pitfall 3: The N+1 Query Problem
+
+The N+1 problem occurs when you execute one query to load N parent records, then N separate queries to load each parent's related data:
+
+```csharp
+// N+1 with EF Core — catastrophic at scale
+var orders = dbContext.Orders.Where(o => o.IsActive).ToList(); // 1 query: N rows
+
+foreach (var order in orders)
+{
+    // Each access to order.Customer triggers a separate DB query!
+    // N orders = N additional queries = N+1 total
+    Console.WriteLine(order.Customer.Name); // lazy load — N queries
+}
+// With 1000 orders: 1001 database round-trips!
+
+// FIX 1: Eager loading with Include
+var orders = dbContext.Orders
+    .Where(o => o.IsActive)
+    .Include(o => o.Customer)   // JOIN in single query
+    .ToList();
+// Now: 1 query with a JOIN. Zero lazy loads.
+
+// FIX 2: Projection to avoid loading entire entity graphs
+var orderSummaries = dbContext.Orders
+    .Where(o => o.IsActive)
+    .Select(o => new { o.Id, CustomerName = o.Customer.Name, o.Total })
+    .ToList();
+// EF generates: SELECT o.Id, c.Name, o.Total FROM Orders o JOIN Customers c ...
+```
+
+<Callout type="trap">
+**Trap: N+1 in Pure In-Memory LINQ**
+
+N+1 also occurs in in-memory LINQ when you nest queries:
+
+```csharp
+var customers = GetCustomers();  // List<Customer>
+var orders    = GetOrders();     // List<Order>
+
+// O(n*m) — for each customer, scans ALL orders
+var result = customers
+    .Select(c => new
+    {
+        Customer = c,
+        Orders   = orders.Where(o => o.CustomerId == c.Id).ToList() // full scan per customer!
+    })
+    .ToList();
+
+// FIX: group first, then join — O(n+m)
+var ordersByCustomer = orders.ToLookup(o => o.CustomerId);
+
+var result = customers
+    .Select(c => new
+    {
+        Customer = c,
+        Orders   = ordersByCustomer[c.Id].ToList() // O(1) lookup
+    })
+    .ToList();
+```
 </Callout>
+
+---
+
+## Pitfall 4: Modifying a Collection During Iteration
+
+Iterating an `IEnumerable<T>` while mutating the underlying collection throws `InvalidOperationException`:
+
+```csharp
+var list = new List<int> { 1, 2, 3, 4, 5 };
+
+// THROWS: InvalidOperationException — collection was modified
+foreach (int n in list)
+{
+    if (n % 2 == 0) list.Remove(n); // modifies list while iterating!
+}
+
+// FIX 1: Iterate a snapshot
+foreach (int n in list.ToList()) // ToList() copies the list first
+{
+    if (n % 2 == 0) list.Remove(n); // safe — modifying original, iterating copy
+}
+
+// FIX 2: Use RemoveAll (built for this purpose)
+list.RemoveAll(n => n % 2 == 0); // single pass, no iteration conflict
+
+// FIX 3: Build a new collection via LINQ
+list = list.Where(n => n % 2 != 0).ToList();
+```
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/linq-pitfalls/challenge-1"
+  title="Count the DB Queries"
+  description="How many SQL queries does this EF Core code execute (lazy loading is enabled)?"
+  code={`var departments = dbContext.Departments.ToList();  // returns 5 departments
+
+var report = departments.Select(d => new
+{
+    Name       = d.Name,
+    EmployeeCount = d.Employees.Count()
+}).ToList();`}
+  options={[
+    "1 — EF Core detects the pattern and generates a single query with GROUP BY",
+    "2 — one for departments, one for all employees",
+    "6 — one for departments, then one per department for Employees",
+    "5 — one query per department (the initial ToList is free)"
+  ]}
+  correctAnswer={2}
+  explanation="With lazy loading enabled, the initial dbContext.Departments.ToList() fires 1 SQL query loading 5 departments. Then, inside the Select, accessing d.Employees for each department triggers a lazy load — 5 additional queries (one per department). Total: 6 queries. The fix is to use EF Core's eager loading: dbContext.Departments.Include(d => d.Employees).ToList() generates a single JOIN query. Alternatively, project directly: dbContext.Departments.Select(d => new { d.Name, EmployeeCount = d.Employees.Count() }).ToList() — EF Core translates the Count() into a correlated subquery or GROUP BY."
+/>
+
+---
+
+## Pitfall 5: FirstOrDefault Without a Null Check
+
+`FirstOrDefault()` returns `null` for reference types and `default(T)` for value types when the sequence is empty. Forgetting the null check is a common source of `NullReferenceException`:
+
+```csharp
+// DANGEROUS
+var user = users.FirstOrDefault(u => u.Role == "Admin");
+Console.WriteLine(user.Name); // NullReferenceException if no admin exists!
+
+// SAFE patterns
+var user = users.FirstOrDefault(u => u.Role == "Admin");
+if (user is not null) Console.WriteLine(user.Name);
+
+// Or use null-conditional
+Console.WriteLine(users.FirstOrDefault(u => u.Role == "Admin")?.Name ?? "No admin");
+
+// For value types — default(T) can be a valid value, causing subtle bugs
+int[] empty = Array.Empty<int>();
+int first = empty.FirstOrDefault(); // returns 0 — valid int value, not "nothing"
+// Better: check Any() first, or use TryGetFirst() pattern
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Measuring LINQ Query Costs**
+
+Before optimizing LINQ, measure. The most common tools:
+
+```csharp
+// 1. EF Core logging — log all SQL queries
+services.AddDbContext<AppDbContext>(opts =>
+    opts.UseSqlServer(connectionString)
+        .LogTo(Console.WriteLine, LogLevel.Information)
+        .EnableSensitiveDataLogging());
+
+// 2. MiniProfiler — shows N+1 visually in dev toolbar
+// Install: MiniProfiler.AspNetCore.Mvc + MiniProfiler.EntityFrameworkCore
+// Displays query count, duration, and duplicates per HTTP request
+
+// 3. BenchmarkDotNet for in-memory LINQ micro-benchmarks
+[MemoryDiagnoser]
+public class LinqBenchmarks
+{
+    private List<int> _data = Enumerable.Range(1, 10_000).ToList();
+
+    [Benchmark(Baseline = true)]
+    public int MultipleEnumeration()
+    {
+        var q = _data.Where(n => n % 2 == 0);
+        return q.Count() + q.Sum() + q.Max(); // 3 passes
+    }
+
+    [Benchmark]
+    public int SingleEnumeration()
+    {
+        var arr = _data.Where(n => n % 2 == 0).ToArray(); // 1 pass
+        return arr.Length + arr.Sum() + arr.Max();
+    }
+}
+```
+
+For production workloads with EF Core, **Application Insights** or **OpenTelemetry** with the EF Core instrumentation package logs query counts, durations, and automatically flags slow queries.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "EF Core — Loading related data", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/" },
+    { label: "EF Core — Eager loading", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/eager" },
+    { label: "Standard Query Operators", url: "https://learn.microsoft.com/en-us/dotnet/csharp/linq/standard-query-operators/" },
+    { label: "CA1851 — Possible multiple enumerations", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1851" },
+  ]}
+/>

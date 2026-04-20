@@ -1,24 +1,254 @@
 ---
-title: "Built-in Middleware"
+title: "Built-in Middleware: Routing, Auth, CORS, Static Files"
 slug: "builtin-middleware"
 order: 3
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["middleware", "routing", "authentication", "CORS", "static files", "HSTS", "asp.net core"]
+summary: "ASP.NET Core ships a rich set of built-in middleware. Knowing what each one does and when to enable it is a core senior skill."
+docsLinks:
+  - label: "ASP.NET Core built-in middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/#built-in-middleware"
+  - label: "Static files in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/static-files"
+  - label: "CORS in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/cors"
+  - label: "Response compression"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/response-compression"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Routing Middleware
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Routing is split into two phases in ASP.NET Core: **matching** and **execution**.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllers();
+builder.Services.AddRouting(options =>
+{
+    options.LowercaseUrls = true;          // /Products -> /products
+    options.LowercaseQueryStrings = false;
+    options.AppendTrailingSlash = false;   // /products/ -> /products
+});
+
+var app = builder.Build();
+
+app.UseRouting(); // Matches request to endpoint, populates HttpContext.GetEndpoint()
+
+// Middleware here can read matched endpoint metadata via context.GetEndpoint()
+
+app.MapControllers();            // Registers controller action endpoints
+app.MapRazorPages();             // Registers Razor Page endpoints
+app.MapHealthChecks("/healthz"); // Registers health check endpoint
+app.MapGet("/ping", () => "pong"); // Minimal API endpoint
+```
+
+---
+
+## Static Files Middleware
+
+Serves files from the file system without hitting the routing or auth pipeline:
+
+```csharp
+// Basic static files — serves from wwwroot/
+app.UseStaticFiles();
+
+// Custom file provider for files outside wwwroot
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(
+        Path.Combine(builder.Environment.ContentRootPath, "assets")),
+    RequestPath = "/assets",
+    OnPrepareResponse = ctx =>
+    {
+        // Cache static files for 30 days in CDN and browser
+        ctx.Context.Response.Headers.CacheControl = "public, max-age=2592000";
+    }
+});
+
+// Directory browsing (development only — never in production)
+if (app.Environment.IsDevelopment())
+{
+    app.UseDirectoryBrowser(new DirectoryBrowserOptions
+    {
+        FileProvider = new PhysicalFileProvider(
+            Path.Combine(builder.Environment.ContentRootPath, "wwwroot")),
+        RequestPath = "/files"
+    });
+}
+```
+
+<Callout type="trap">
+**Trap: Static Files Bypass Authorization**
+
+`UseStaticFiles()` runs before `UseAuthentication()` and `UseAuthorization()` in the recommended pipeline. Files in `wwwroot/` are **always publicly accessible** — including any JSON config files, API docs, or private assets accidentally placed there.
+
+Never put sensitive files in `wwwroot`. If you need to serve files that require auth, use a controller action with a custom `IFileProvider` and move the static files middleware after `UseAuthorization`.
 </Callout>
+
+---
+
+## HTTPS Redirection and HSTS
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddHsts(options =>
+{
+    options.Preload = true;
+    options.IncludeSubDomains = true;
+    options.MaxAge = TimeSpan.FromDays(365);
+    options.ExcludedHosts.Add("localhost");
+    options.ExcludedHosts.Add("127.0.0.1");
+});
+
+builder.Services.AddHttpsRedirection(options =>
+{
+    options.RedirectStatusCode = StatusCodes.Status308PermanentRedirect;
+    options.HttpsPort = 443;
+});
+
+var app = builder.Build();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();            // Sends Strict-Transport-Security header
+}
+
+app.UseHttpsRedirection();    // Redirects HTTP to HTTPS (301/308)
+```
+
+---
+
+## CORS Middleware
+
+Cross-Origin Resource Sharing must be configured correctly or browsers block API responses:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddCors(options =>
+{
+    // Named policy — referenced in middleware or endpoint attributes
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy
+            .WithOrigins("https://myapp.com", "https://www.myapp.com")
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials(); // Required for cookies and auth headers
+    });
+
+    // Development-only open policy
+    options.AddPolicy("DevelopmentOpen", policy =>
+        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+});
+
+var app = builder.Build();
+
+app.UseRouting();
+app.UseCors("AllowFrontend"); // Must be between UseRouting and UseAuthorization
+
+// Per-endpoint override using attribute:
+// [EnableCors("DevelopmentOpen")]
+// [DisableCors]
+app.MapControllers();
+```
+
+<Callout type="warning">
+**CORS is a browser security feature, not a server security feature.** The server sends CORS headers; the browser decides whether to allow the response. A server-side HTTP client (curl, Postman, another API) ignores CORS headers entirely. CORS does not protect your API from non-browser callers — that is what authentication and authorization are for.
+</Callout>
+
+---
+
+## Response Compression
+
+```csharp
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true; // Opt-in — see CRIME/BREACH attacks note below
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+        new[] { "application/json", "text/plain" });
+});
+
+builder.Services.Configure<BrotliCompressionProviderOptions>(options =>
+    options.Level = CompressionLevel.Fastest);
+
+var app = builder.Build();
+app.UseResponseCompression(); // Must come before static files and endpoints
+```
+
+---
+
+## Built-in Middleware Reference
+
+<ComparisonTable
+  headers={["Middleware", "Service Registration", "Placement Rule"]}
+  rows={[
+    ["UseExceptionHandler", "AddProblemDetails() (optional)", "First — outermost wrapper"],
+    ["UseHsts", "AddHsts()", "After exception handler"],
+    ["UseHttpsRedirection", "AddHttpsRedirection()", "Early, before static files"],
+    ["UseStaticFiles", "None required", "Before routing — bypasses auth"],
+    ["UseRouting", "AddRouting()", "Before CORS and auth"],
+    ["UseCors", "AddCors()", "After routing, before auth"],
+    ["UseAuthentication", "AddAuthentication()", "After routing, before authorization"],
+    ["UseAuthorization", "AddAuthorization()", "After authentication"],
+    ["UseResponseCaching", "AddResponseCaching()", "Before endpoints"],
+    ["UseResponseCompression", "AddResponseCompression()", "Before static files"],
+    ["UseRequestDecompression", "AddRequestDecompression()", "Before endpoint reading body"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Middleware vs Filters — When to Use Which**
+
+A common architectural question is whether to put cross-cutting concerns in middleware or in MVC filters. The rule:
+
+- **Middleware** — operates on all requests (static files, auth, CORS, logging, compression). Has access to the raw `HttpContext`. Runs before MVC/Minimal API takes over.
+- **Filters** — operates only on controller actions or Razor Pages. Has access to `ActionContext`, `ModelState`, and `IActionResult`. Use for concerns tightly coupled to MVC semantics (validation, result transformation, exception handling within actions).
+
+If your concern applies only to API controllers, a filter is cleaner. If it applies to everything (including static files, health checks, non-MVC routes), it belongs in middleware.
+
+Also note: `IExceptionFilter` inside MVC does not catch exceptions from other middleware. `UseExceptionHandler` is the only reliable catch-all.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/builtin-middleware/quiz-1"
+  question="A file placed in wwwroot/config/settings.json is accessible at /config/settings.json without authentication. Why?"
+  options={[
+    "UseStaticFiles is not configured correctly and should require auth",
+    "UseStaticFiles runs before UseAuthentication in the recommended pipeline, so auth is never checked for static files",
+    "JSON files are excluded from authorization checks by default in ASP.NET Core",
+    "wwwroot files use a separate IFileProvider that bypasses the auth pipeline"
+  ]}
+  correctAnswer={1}
+  explanation="UseStaticFiles is intentionally placed before UseAuthentication and UseAuthorization in the recommended pipeline order. Any file in wwwroot is served directly without checking identity or permissions. This is a deliberate performance design, but means you must never store sensitive files in wwwroot."
+/>
+
+---
+
+<MythBuster
+  myth="Enabling CORS on the server secures my API from unauthorized cross-origin access"
+  truth="CORS is enforced by browsers, not servers. A server-side HTTP client ignores CORS headers completely. CORS prevents a malicious web page from making browser-authenticated requests to your API on behalf of a logged-in user. It is not an access control mechanism — authentication and authorization handle that."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ASP.NET Core built-in middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/#built-in-middleware" },
+    { label: "Static files in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/static-files" },
+    { label: "CORS in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/cors" },
+    { label: "Response compression", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/response-compression" },
+    { label: "HTTPS enforcement in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/enforcing-ssl" },
+  ]}
+/>

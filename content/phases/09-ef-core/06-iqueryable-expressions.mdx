@@ -1,24 +1,230 @@
 ---
-title: "IQueryable & Expression Trees"
+title: "IQueryable and Expression Trees: How LINQ Becomes SQL"
 slug: "iqueryable-expressions"
 order: 6
-difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "advanced"
+readingTime: 16
+status: "published"
+tags: ["iqueryable", "expression trees", "linq", "sql translation", "deferred execution", "ef core"]
+summary: "IQueryable is not IEnumerable with a database behind it — it is a composable expression tree that EF Core translates to SQL. Understanding this boundary is the key to avoiding client-side evaluation."
+docsLinks:
+  - label: "How Queries Work"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/how-query-works"
+  - label: "Client vs. Server Evaluation"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/client-eval"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## IEnumerable vs IQueryable
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The distinction between `IEnumerable<T>` and `IQueryable<T>` is fundamental to understanding EF Core:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// IEnumerable<T>: data lives in memory, filtering happens in .NET
+IEnumerable<Product> products = db.Products.ToList(); // ALL rows fetched first
+var expensive = products.Where(p => p.Price > 100);   // filter in memory
+
+// IQueryable<T>: expression tree built, nothing executed yet
+IQueryable<Product> query = db.Products;              // no SQL yet
+var expensive = query.Where(p => p.Price > 100);      // still no SQL — tree grows
+var result = await expensive.ToListAsync();            // SQL executed HERE
+// SQL: SELECT * FROM Products WHERE Price > 100
+```
+
+Every LINQ method on `IQueryable<T>` adds a node to an **expression tree**. When you call a terminal operator (`ToList`, `FirstOrDefault`, `Count`, `Any`), EF Core's LINQ provider traverses the tree and translates it to SQL.
+
+---
+
+## The Expression Tree Pipeline
+
+```csharp
+// This LINQ expression:
+var result = await db.Orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .Where(o => o.CustomerId == customerId)
+    .OrderByDescending(o => o.CreatedAt)
+    .Take(10)
+    .Select(o => new { o.Id, o.Total })
+    .ToListAsync();
+
+// EF Core builds an expression tree, then the LINQ provider translates it to:
+// SELECT TOP(10) o.Id, o.Total
+// FROM Orders o
+// WHERE o.Status = 1 AND o.CustomerId = @p0
+// ORDER BY o.CreatedAt DESC
+
+// The expression tree is a data structure — not code — that can be inspected:
+Expression<Func<Order, bool>> predicate = o => o.Status == OrderStatus.Pending;
+// predicate.Body is a BinaryExpression (Equal)
+// predicate.Body.Left is a MemberExpression (o.Status)
+// predicate.Body.Right is a ConstantExpression (OrderStatus.Pending = 1)
+```
+
+---
+
+## Building Dynamic Queries with IQueryable
+
+Because `IQueryable` is composable, you can build queries dynamically without string concatenation:
+
+```csharp
+public async Task<List<Product>> SearchProductsAsync(ProductSearchRequest request)
+{
+    IQueryable<Product> query = db.Products.AsNoTracking();
+
+    // Conditionally add WHERE clauses
+    if (!string.IsNullOrWhiteSpace(request.Name))
+        query = query.Where(p => p.Name.Contains(request.Name));
+
+    if (request.MinPrice.HasValue)
+        query = query.Where(p => p.Price >= request.MinPrice.Value);
+
+    if (request.MaxPrice.HasValue)
+        query = query.Where(p => p.Price <= request.MaxPrice.Value);
+
+    if (request.CategoryId.HasValue)
+        query = query.Where(p => p.CategoryId == request.CategoryId.Value);
+
+    if (request.InStockOnly)
+        query = query.Where(p => p.StockQuantity > 0);
+
+    // Sorting
+    query = request.SortBy switch
+    {
+        "price_asc"  => query.OrderBy(p => p.Price),
+        "price_desc" => query.OrderByDescending(p => p.Price),
+        "name"       => query.OrderBy(p => p.Name),
+        _            => query.OrderBy(p => p.Id)
+    };
+
+    // Pagination
+    return await query
+        .Skip((request.Page - 1) * request.PageSize)
+        .Take(request.PageSize)
+        .ToListAsync();
+    // Only one SQL query is sent, with all conditions combined
+}
+```
+
+---
+
+## Client-Side Evaluation: The Silent Performance Trap
+
+When EF Core cannot translate a LINQ expression to SQL, it either throws an exception or (in older versions) silently evaluates it in memory:
+
+```csharp
+// EF Core 3.0+ throws for untranslatable expressions
+var orders = await db.Orders
+    .Where(o => MyCustomMethod(o.Total)) // THROWS: could not be translated
+    .ToListAsync();
+
+// Common causes of untranslatable expressions:
+// 1. Custom C# methods
+// 2. Instance methods on non-entity objects
+// 3. Complex string operations not supported by the provider
+// 4. Calling .ToString() in a WHERE clause (some providers support, some don't)
+
+// Fix: evaluate in memory AFTER fetching, or restructure query
+var orders = await db.Orders
+    .Where(o => o.Total > 100)       // translatable filter to reduce rows
+    .ToListAsync();                  // fetch to memory first
+
+var filtered = orders
+    .Where(o => MyCustomMethod(o.Total)) // now it's IEnumerable — runs in memory
+    .ToList();
+```
+
+---
+
+## Reusable Query Specifications
+
+Package reusable filtering logic as expression trees:
+
+```csharp
+// Expression-based specification pattern
+public static class OrderSpecifications
+{
+    public static Expression<Func<Order, bool>> IsPending()
+        => o => o.Status == OrderStatus.Pending;
+
+    public static Expression<Func<Order, bool>> BelongsToCustomer(int customerId)
+        => o => o.CustomerId == customerId;
+
+    public static Expression<Func<Order, bool>> IsHighValue(decimal threshold)
+        => o => o.Total >= threshold;
+}
+
+// Usage — all translated to WHERE clauses in one query
+var orders = await db.Orders
+    .Where(OrderSpecifications.IsPending())
+    .Where(OrderSpecifications.BelongsToCustomer(42))
+    .ToListAsync();
+```
+
+For combining specifications with AND/OR, use `LinqKit` or write an `ExpressionCombiner`:
+
+```csharp
+// LinqKit: predicate composition
+var predicate = PredicateBuilder.New<Order>(true); // starts as "o => true"
+predicate = predicate.And(OrderSpecifications.IsPending());
+predicate = predicate.And(o => o.Total > 500);
+
+var orders = await db.Orders.AsExpandable().Where(predicate).ToListAsync();
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: IQueryable Leaks Across Abstraction Layers**
+
+A common architecture mistake is returning `IQueryable<T>` from a repository. This leaks the EF dependency into your domain/application layer and makes testing harder:
+
+```csharp
+// Anti-pattern: returning IQueryable from repository
+public interface IOrderRepository
+{
+    IQueryable<Order> GetAll(); // callers can add any LINQ — untestable, leaky
+}
+
+// Better: return IReadOnlyList or accept specifications
+public interface IOrderRepository
+{
+    Task<List<Order>> GetPendingOrdersAsync(int? customerId = null);
+    Task<PagedResult<Order>> SearchAsync(OrderSearchRequest request);
+}
+```
+
+However, **inside a single application layer** (e.g., in a service that owns its own DbContext), composing `IQueryable<T>` is fine and is the intended EF Core usage pattern. The key is not to leak the composable query object across architectural boundaries where EF Core is an implementation detail.
 </Callout>
+
+---
+
+<MythBuster
+  myth="LINQ queries execute immediately when you write them"
+  truth="LINQ queries on IQueryable<T> use deferred execution — they build an expression tree but do not hit the database until a terminal operator is called (ToList, ToArray, First, Count, Any, Sum, etc.). This is why you can compose a query across multiple method calls and only one SQL statement is generated. Assigning an IQueryable to a variable does not execute anything."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/iqueryable-expressions/challenge-1"
+  question="Which of the following causes client-side evaluation (fetches all rows, then filters in memory)?"
+  options={[
+    "db.Products.Where(p => p.Price > 100).ToListAsync()",
+    "db.Products.Where(p => p.Name.StartsWith(\"A\")).ToListAsync()",
+    "db.Products.ToListAsync().Result.Where(p => p.Price > 100)",
+    "db.Products.Where(p => p.CategoryId == 5).Select(p => p.Name).ToListAsync()"
+  ]}
+  correctAnswer={2}
+  explanation="Option C calls ToListAsync().Result first — this is a terminal operator that fetches ALL products from the database. The subsequent .Where() operates on IEnumerable<Product> in memory. Options A, B, and D all operate on IQueryable<T> before calling the terminal operator, so EF Core translates the Where/Select to SQL and only fetches matching rows. Note: .Result on an async method also blocks the thread — use await instead."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "How Queries Work in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/querying/how-query-works" },
+    { label: "Client vs. Server Evaluation", url: "https://learn.microsoft.com/en-us/ef/core/querying/client-eval" },
+    { label: "Raw SQL Queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/raw-sql" },
+  ]}
+/>

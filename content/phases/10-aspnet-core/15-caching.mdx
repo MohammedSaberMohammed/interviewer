@@ -1,24 +1,298 @@
 ---
-title: "Caching: Memory, Distributed, Output"
+title: "Caching: IMemoryCache, IDistributedCache, Output Caching"
 slug: "caching"
 order: 15
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["caching", "IMemoryCache", "IDistributedCache", "Redis", "output caching", "performance", "asp.net core"]
+summary: "Three caching layers, three use cases: IMemoryCache for in-process speed, IDistributedCache for multi-server consistency, and Output Caching (.NET 7+) for HTTP response caching with invalidation."
+docsLinks:
+  - label: "Cache in-memory in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/memory"
+  - label: "Distributed caching in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed"
+  - label: "Output caching middleware in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/output"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## IMemoryCache: In-Process Caching
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`IMemoryCache` stores data in the app's memory. It is fast (no serialization, no network) but does not survive restarts and is not shared across multiple instances.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Registration
+builder.Services.AddMemoryCache(options =>
+{
+    options.SizeLimit = 1024;              // Max 1024 size units (you define what "1 unit" means)
+    options.CompactionPercentage = 0.25;   // Remove 25% when limit is hit
+    options.ExpirationScanFrequency = TimeSpan.FromMinutes(1);
+});
+
+// Usage
+public class ProductService : IProductService
+{
+    private readonly IMemoryCache _cache;
+    private readonly IProductRepository _repo;
+
+    public ProductService(IMemoryCache cache, IProductRepository repo)
+    {
+        _cache = cache;
+        _repo = repo;
+    }
+
+    public async Task<Product?> GetByIdAsync(int id)
+    {
+        var cacheKey = $"product:{id}";
+
+        // GetOrCreate — atomic get-or-populate (not truly atomic under concurrency)
+        return await _cache.GetOrCreateAsync(cacheKey, async entry =>
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5);
+            entry.SlidingExpiration = TimeSpan.FromMinutes(2);
+            entry.Size = 1;             // Count toward SizeLimit
+            entry.Priority = CacheItemPriority.Normal;
+
+            // Register a callback when evicted
+            entry.RegisterPostEvictionCallback((key, value, reason, state) =>
+            {
+                Console.WriteLine($"Cache evicted: {key}, reason: {reason}");
+            });
+
+            return await _repo.GetByIdAsync(id);
+        });
+    }
+
+    public void Invalidate(int id)
+    {
+        _cache.Remove($"product:{id}");
+    }
+}
+```
+
+<Callout type="trap">
+**Trap: GetOrCreateAsync Race Condition**
+
+`GetOrCreateAsync` is NOT atomic. Under concurrent load, multiple threads can simultaneously miss the cache and all call the factory function — this is called **cache stampede** or **thundering herd**. For expensive operations:
+
+```csharp
+// Use SemaphoreSlim to serialize population of the same key
+private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
+
+public async Task<Product?> GetByIdSafeAsync(int id)
+{
+    var key = $"product:{id}";
+
+    if (_cache.TryGetValue(key, out Product? cached))
+        return cached;
+
+    var semaphore = _locks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+    await semaphore.WaitAsync();
+    try
+    {
+        // Double-check after acquiring lock
+        if (_cache.TryGetValue(key, out cached))
+            return cached;
+
+        cached = await _repo.GetByIdAsync(id);
+        _cache.Set(key, cached, TimeSpan.FromMinutes(5));
+        return cached;
+    }
+    finally
+    {
+        semaphore.Release();
+    }
+}
+```
 </Callout>
+
+---
+
+## IDistributedCache: Multi-Server Caching
+
+`IDistributedCache` abstracts Redis, SQL Server, and other distributed stores. All instances of your app share the same cache — essential for load-balanced deployments.
+
+```csharp
+// Registration — Redis (preferred)
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration["Redis:ConnectionString"];
+    options.InstanceName = "MyApp:"; // Key prefix to avoid collisions
+});
+
+// Registration — SQL Server (development/testing)
+builder.Services.AddDistributedSqlServerCache(options =>
+{
+    options.ConnectionString = builder.Configuration["ConnectionStrings:Cache"];
+    options.SchemaName = "dbo";
+    options.TableName = "DistributedCache";
+});
+
+// Usage — requires manual serialization
+public class SessionService : ISessionService
+{
+    private readonly IDistributedCache _cache;
+
+    public SessionService(IDistributedCache cache) => _cache = cache;
+
+    public async Task<UserSession?> GetSessionAsync(string sessionId, CancellationToken ct)
+    {
+        var bytes = await _cache.GetAsync($"session:{sessionId}", ct);
+        if (bytes is null) return null;
+
+        return JsonSerializer.Deserialize<UserSession>(bytes);
+    }
+
+    public async Task SetSessionAsync(string sessionId, UserSession session, CancellationToken ct)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(session);
+
+        await _cache.SetAsync($"session:{sessionId}", bytes, new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(8),
+            SlidingExpiration = TimeSpan.FromMinutes(30)
+        }, ct);
+    }
+
+    public async Task InvalidateAsync(string sessionId, CancellationToken ct)
+        => await _cache.RemoveAsync($"session:{sessionId}", ct);
+}
+```
+
+---
+
+## Output Caching (.NET 7+)
+
+Output Caching caches entire HTTP responses at the middleware level — no changes to your action logic required:
+
+```csharp
+// Registration
+builder.Services.AddOutputCache(options =>
+{
+    // Define reusable policies
+    options.AddBasePolicy(policy => policy.Expire(TimeSpan.FromSeconds(10)));
+
+    options.AddPolicy("Products", policy =>
+        policy.Expire(TimeSpan.FromMinutes(5))
+              .SetVaryByQuery("category", "page", "pageSize")
+              .Tag("products")); // Tag for targeted invalidation
+
+    options.AddPolicy("UserSpecific", policy =>
+        policy.Expire(TimeSpan.FromMinutes(1))
+              .SetVaryByHeader("Authorization") // Separate cache per user
+              .SetVaryByRouteValue("userId"));
+});
+
+var app = builder.Build();
+app.UseOutputCache(); // Before MapControllers
+
+// Apply on Minimal API endpoints
+app.MapGet("/products", async (IProductService svc) => await svc.GetAllAsync())
+    .CacheOutput("Products");
+
+app.MapGet("/products/{id:int}", async (int id, IProductService svc) =>
+{
+    var product = await svc.GetByIdAsync(id);
+    return product is null ? Results.NotFound() : Results.Ok(product);
+})
+.CacheOutput(policy => policy.Expire(TimeSpan.FromMinutes(10)).Tag("products"));
+
+// Apply on controller actions
+[HttpGet]
+[OutputCache(PolicyName = "Products")]
+public async Task<IActionResult> GetAll() => Ok(await _service.GetAllAsync());
+```
+
+**Invalidation by tag (no more manual cache busting):**
+
+```csharp
+[HttpPost]
+public async Task<IActionResult> Create(
+    CreateProductRequest request,
+    IOutputCacheStore cacheStore,
+    CancellationToken ct)
+{
+    var product = await _service.CreateAsync(request);
+
+    // Invalidate ALL cached responses tagged with "products"
+    await cacheStore.EvictByTagAsync("products", ct);
+
+    return CreatedAtAction(nameof(GetById), new { id = product.Id }, product);
+}
+```
+
+---
+
+## Choosing the Right Cache
+
+<ComparisonTable
+  headers={["Cache Type", "Scope", "Persistence", "Serialization", "Best For"]}
+  rows={[
+    ["IMemoryCache", "Single process/instance", "Lost on restart", "None (reference)", "Hot read data, computed results, single-server"],
+    ["IDistributedCache (Redis)", "All instances", "Survives restart (with persistence)", "Required (bytes)", "Session, shared state, multi-server"],
+    ["Output Cache (in-memory)", "Single instance", "Lost on restart", "None (response bytes)", "Read-heavy API responses, no auth"],
+    ["Output Cache (Redis)", "All instances", "Configurable", "Response bytes", "Multi-server API caching"],
+    ["Response Caching MW", "Single instance + client/CDN", "Browser-controlled", "None", "Public static API responses with Cache-Control"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Cache-Aside vs Output Caching — When to Use Each**
+
+**Cache-aside** (IMemoryCache/IDistributedCache):
+- You control what gets cached and when
+- Cache complex domain objects, query results, computed aggregates
+- You can invalidate specific keys on mutation
+- Adds latency to first request (cache miss)
+
+**Output caching** (Output Cache middleware):
+- Framework caches entire HTTP responses for you
+- Zero changes to action logic
+- Vary by route, query, headers (including Authorization for user-specific caches)
+- Tag-based invalidation in .NET 7+
+- Cannot cache responses containing sensitive real-time data
+
+The real-world pattern for high-traffic APIs:
+1. Output cache for public list endpoints (products, categories)
+2. Cache-aside for expensive computed results (recommendations, analytics)
+3. Distributed cache for session and cross-service shared data
+
+Never cache responses with `Authorization` headers visible in the cache key without also using `SetVaryByHeader("Authorization")` — otherwise User A sees User B's data.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/caching/quiz-1"
+  question="Your app runs on 3 instances behind a load balancer. You use IMemoryCache to cache product data. User A updates a product, which correctly removes it from Instance 1's cache. What happens on Instance 2 and 3?"
+  options={[
+    "The cache is automatically synchronized across all instances",
+    "The old data remains cached on Instance 2 and 3 until their TTL expires",
+    "IMemoryCache throws an exception when used in multi-instance scenarios",
+    "The load balancer invalidates the cache on all instances automatically"
+  ]}
+  correctAnswer={1}
+  explanation="IMemoryCache is in-process only — each app instance has its own isolated cache. Invalidating Instance 1's cache has no effect on Instances 2 and 3. They will continue serving stale data until their TTL expires or they are restarted. For multi-instance deployments that need consistent cache invalidation, use IDistributedCache (Redis) or Output Cache with a Redis backing store."
+/>
+
+---
+
+<MythBuster
+  myth="Adding caching to every endpoint is always a performance improvement"
+  truth="Over-caching creates stale data bugs, hard-to-debug inconsistencies, and increased memory pressure. Cache only when: (1) the data is expensive to compute, (2) it changes infrequently, and (3) brief staleness is acceptable. Never cache user-specific data without per-user cache keys, and never cache responses containing sensitive real-time data like account balances."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Cache in-memory in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/memory" },
+    { label: "Distributed caching in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed" },
+    { label: "Output caching middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/output" },
+    { label: "Response caching in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/response" },
+  ]}
+/>

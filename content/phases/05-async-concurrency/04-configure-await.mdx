@@ -3,22 +3,249 @@ title: "ConfigureAwait(false): When and Why"
 slug: "configure-await"
 order: 4
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["ConfigureAwait", "async", "await", "SynchronizationContext", "library", "performance", "context"]
+summary: "ConfigureAwait(false) is the correct default for library code — it prevents context capture, avoids deadlocks in legacy contexts, and reduces overhead."
+docsLinks:
+  - label: "ConfigureAwait FAQ"
+    url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/"
+  - label: "ConfiguredTaskAwaitable"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.configuredtaskawaitable"
+  - label: "Async guidance for library authors"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/task-based-asynchronous-pattern-tap"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What ConfigureAwait Does
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`ConfigureAwait(bool continueOnCapturedContext)` controls whether an `await` expression captures the current `SynchronizationContext` and `TaskScheduler` for resumption.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// DEFAULT (continueOnCapturedContext: true)
+// Captures SynchronizationContext.Current before suspending.
+// Resume posts back to that context.
+var data = await httpClient.GetStringAsync(url);
+
+// ConfigureAwait(false) — no context capture
+// Resume runs on whatever thread the task completed on (usually a ThreadPool thread)
+var data = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+```
+
+The parameter name makes the intent clear: `continueOnCapturedContext: false` means "I don't care which context I resume on — don't try to get back to the original one."
+
+---
+
+## The Two Rules
+
+**Rule 1: Library code should always use `ConfigureAwait(false)`**
+
+Library code doesn't know what context its callers run in. If a WinForms caller accidentally uses your library synchronously (`.Result`), your library's awaits that capture the context can participate in a deadlock:
+
+```csharp
+// BAD: library code without ConfigureAwait(false)
+// If a caller blocks with .Result in a SynchronizationContext,
+// this await captures that context and tries to resume on it.
+// The context is blocked waiting for this — DEADLOCK.
+public async Task<string> MyLibraryMethodAsync()
+{
+    var response = await httpClient.GetStringAsync(url); // captures caller's context!
+    return response.ToUpper();
+}
+
+// GOOD: library code with ConfigureAwait(false) — safe for any caller
+public async Task<string> MyLibraryMethodAsync()
+{
+    var response = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+    return response.ToUpper(); // Runs on ThreadPool — no context dependency
+}
+```
+
+**Rule 2: Application code (UI event handlers, controller actions) should generally NOT use `ConfigureAwait(false)` when it needs the context after the await**
+
+```csharp
+// WinForms: need to be on UI thread after await to update controls
+private async void btnLoad_Click(object sender, EventArgs e)
+{
+    // NO ConfigureAwait(false) here — we need the UI context to resume
+    string data = await _service.GetDataAsync();
+    labelResult.Text = data; // Safe: still on UI thread
+}
+
+// ASP.NET Core: ConfigureAwait(false) is less critical (no context anyway)
+// but it's still fine to use for clarity or cross-platform library-style code
+[HttpGet]
+public async Task<IActionResult> GetAsync()
+{
+    // In ASP.NET Core, SynchronizationContext.Current is null,
+    // so ConfigureAwait(false) is a no-op effectively. Still valid.
+    var data = await _service.GetDataAsync().ConfigureAwait(false);
+    return Ok(data);
+}
+```
+
+---
+
+## ConfigureAwait Applies Per-await
+
+`ConfigureAwait(false)` affects only the **immediately following await**. It does not cascade to nested calls:
+
+```csharp
+public async Task<int> ProcessAsync()
+{
+    // This await: no context capture
+    var raw = await FetchRawAsync().ConfigureAwait(false);
+
+    // This await: context IS captured again (back to default)
+    // because ConfigureAwait(false) on the previous await doesn't carry over
+    var parsed = await ParseAsync(raw); // Captures whatever context is current
+
+    return parsed;
+}
+```
+
+This means in library code, **every single `await` must have `.ConfigureAwait(false)`** for full protection:
+
+```csharp
+// Correctly applied library method — every await has ConfigureAwait(false)
+public async Task<Report> GenerateReportAsync(int id)
+{
+    var data = await _db.FetchDataAsync(id).ConfigureAwait(false);
+    var enriched = await _enricher.EnrichAsync(data).ConfigureAwait(false);
+    var formatted = await _formatter.FormatAsync(enriched).ConfigureAwait(false);
+    return formatted;
+}
+```
+
+---
+
+## ValueTask and ConfigureAwait
+
+`ConfigureAwait(false)` works on `ValueTask<T>` too:
+
+```csharp
+ValueTask<int> vt = GetCachedValueAsync();
+int result = await vt.ConfigureAwait(false);
+
+// Also works on IAsyncDisposable (C# 8+)
+await using var resource = await GetResourceAsync().ConfigureAwait(false);
+
+// And on IAsyncEnumerable (C# 8+) via WithCancellation / ConfigureAwait
+await foreach (var item in GetItemsAsync().ConfigureAwait(false))
+{
+    Process(item);
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: ConfigureAwait(false) is less important in ASP.NET Core — but still matters**
+
+ASP.NET Core has no `SynchronizationContext`, so context capture is effectively free (there's nothing to post to). However, `ConfigureAwait(false)` still matters in two ways:
+
+1. **Library portability**: your library might be consumed in WinForms or legacy ASP.NET — always use `ConfigureAwait(false)` in libraries regardless of where you develop.
+
+2. **Roslyn analyzer enforcement**: `ConfigureAwait(false)` in library code is enforced by `CA2007` in .NET analyzers. Shipping a NuGet package without it is a code quality issue that will generate warnings for your consumers.
+
+In .NET 9+, there's `ConfigureAwait(ConfigureAwaitOptions)` with richer options:
+```csharp
+// .NET 9: force continuation on the ThreadPool even if a context is present
+await task.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+
+// Suppress context AND force a yield point (useful for benchmarking overhead)
+await Task.Yield().ConfigureAwait(ConfigureAwaitOptions.None);
+```
+
+For application code in ASP.NET Core, skipping `ConfigureAwait(false)` is acceptable — but be consistent with your team's conventions.
 </Callout>
+
+---
+
+## The Roslyn Analyzer Approach
+
+For libraries, manually adding `ConfigureAwait(false)` to every await is error-prone. Use the analyzer:
+
+```xml
+<!-- .csproj for library projects -->
+<ItemGroup>
+  <PackageReference Include="Microsoft.VisualStudio.Threading.Analyzers" Version="17.*" />
+</ItemGroup>
+
+<!-- Or enable the built-in CA2007 analyzer -->
+<PropertyGroup>
+  <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  <AnalysisLevel>latest</AnalysisLevel>
+</PropertyGroup>
+```
+
+Then in `.editorconfig` or `Directory.Build.props`:
+```ini
+# Enforce ConfigureAwait(false) in library projects
+dotnet_diagnostic.CA2007.severity = error
+```
+
+For application projects (ASP.NET Core), you can suppress it:
+```csharp
+// In your global suppressions or per-file
+#pragma warning disable CA2007 // App code doesn't need ConfigureAwait(false)
+```
+
+---
+
+<MythBuster
+  myth="ConfigureAwait(false) makes async code faster"
+  reality="ConfigureAwait(false) does not speed up individual operations. It eliminates the overhead of scheduling a continuation on a specific context (avoiding a Post() call and possibly a thread switch), but this is only significant in hot loops with thousands of awaits per second. The main reason to use ConfigureAwait(false) in library code is correctness (deadlock prevention) and portability — not performance."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/configure-await/challenge-1"
+  title="Library Code Audit"
+  description="Which await in this library method is missing ConfigureAwait(false)?"
+  code={`// This is library code consumed by various application types
+public async Task<byte[]> DownloadAndCompressAsync(string url)
+{
+    var response = await _http.GetAsync(url).ConfigureAwait(false);
+    var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+    using var ms = new MemoryStream();
+    await stream.CopyToAsync(ms);   // Line A
+    return Compress(ms.ToArray());
+}`}
+  options={[
+    "Line A — stream.CopyToAsync(ms) is missing ConfigureAwait(false)",
+    "The response.Content.ReadAsStreamAsync() line — it should not have ConfigureAwait(false)",
+    "All awaits are correct — the last one doesn't need it because there's no more code after",
+    "None — ConfigureAwait(false) only needs to be on the first await in a method"
+  ]}
+  correctAnswer={0}
+  explanation="Line A — stream.CopyToAsync(ms) — is missing ConfigureAwait(false). In library code, every await needs ConfigureAwait(false). The fact that it's the last await before a synchronous call (Compress) doesn't exempt it: after CopyToAsync completes, the code still resumes on the captured context, which in a SynchronizationContext environment means an unnecessary marshaling cost or potential deadlock contribution. Always add ConfigureAwait(false) to every await in library code."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/configure-await/quiz-1"
+  question="You add ConfigureAwait(false) to the first await in a 3-await method. Which awaits are now context-free?"
+  options={[
+    "All three — ConfigureAwait(false) cascades to all subsequent awaits in the method",
+    "Only the first one — ConfigureAwait(false) applies per-await, not per-method",
+    "The first and second, but the third still captures context",
+    "All awaits after the first, since the context was already abandoned"
+  ]}
+  correctAnswer={1}
+  explanation="ConfigureAwait(false) applies only to the specific await it is attached to. Each await is an independent suspension point with independent context capture. To suppress context capture for the entire method, every await must have ConfigureAwait(false). This is why library code requires careful application of ConfigureAwait(false) to every single await expression."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ConfigureAwait FAQ (Stephen Toub)", url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/" },
+    { label: "ConfiguredTaskAwaitable struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.configuredtaskawaitable" },
+    { label: "CA2007: Consider calling ConfigureAwait", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca2007" },
+    { label: "Task-based Asynchronous Pattern", url: "https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/task-based-asynchronous-pattern-tap" },
+  ]}
+/>

@@ -1,24 +1,293 @@
 ---
-title: "EF Core Anti-Patterns"
+title: "EF Core Anti-Patterns: Singleton Context, Lazy Loading in APIs, SaveChanges in Loops"
 slug: "ef-anti-patterns"
 order: 20
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["anti-patterns", "singleton", "lazy loading", "savechanges in loops", "dbcontext", "ef core", "performance"]
+summary: "The most dangerous EF Core mistakes are the ones that look correct and only fail under load. This lesson catalogs the top anti-patterns with concrete fixes for every one."
+docsLinks:
+  - label: "EF Core Performance"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/"
+  - label: "DbContext Lifetime"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Anti-Pattern 1: DbContext as Singleton
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Registering DbContext as a singleton is the most dangerous EF Core mistake:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// WRONG: singleton DbContext
+builder.Services.AddSingleton<AppDbContext>(); // ☠️
+
+// What breaks:
+// - Change tracker accumulates ALL entities from ALL requests → unbounded memory growth
+// - Concurrent requests share the same context → race conditions, data corruption
+// - DbConnection held open forever → connection pool exhaustion
+// - Entity from Request A leaks into Request B → data breach risk
+// - DbContext is NOT thread-safe: concurrent SaveChanges → InvalidOperationException
+
+// CORRECT: scoped (one per request)
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString));
+
+// For background services (singleton lifetime) — use factory instead
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
+    options.UseSqlServer(connectionString));
+// Then: await using var db = await factory.CreateDbContextAsync();
+```
+
+---
+
+## Anti-Pattern 2: Lazy Loading in Web APIs
+
+Lazy loading is the N+1 problem waiting to happen in APIs:
+
+```csharp
+// WRONG: lazy loading enabled + navigation accessed in serialization
+// appsettings.json has LazyLoading: true (or UseLazyLoadingProxies in DI)
+
+[HttpGet("{id}")]
+public async Task<OrderDto> GetOrder(int id)
+{
+    var order = await db.Orders.FindAsync(id);
+
+    return new OrderDto
+    {
+        Id = order.Id,
+        // Each property access below fires a new DB query during JSON serialization!
+        CustomerName = order.Customer.Name,     // Query 2
+        CustomerEmail = order.Customer.Email,   // same query (cached in context)
+        Items = order.Items.Select(i => new ItemDto
+        {
+            ProductName = i.Product.Name,       // Query per item! (N items = N queries)
+            Quantity = i.Quantity
+        }).ToList()
+    };
+}
+// 100 items in the order = 102+ database queries for one API call
+
+// CORRECT: eager load or project up front
+[HttpGet("{id}")]
+public async Task<OrderDto> GetOrder(int id)
+{
+    var order = await db.Orders
+        .Where(o => o.Id == id)
+        .Select(o => new OrderDto
+        {
+            Id = o.Id,
+            CustomerName = o.Customer.Name,
+            CustomerEmail = o.Customer.Email,
+            Items = o.Items.Select(i => new ItemDto
+            {
+                ProductName = i.Product.Name,
+                Quantity = i.Quantity
+            }).ToList()
+        })
+        .FirstOrDefaultAsync();
+
+    return order ?? throw new NotFoundException();
+}
+// One SQL query, exactly the columns needed
+```
+
+---
+
+## Anti-Pattern 3: SaveChanges Inside a Loop
+
+```csharp
+// WRONG: one SaveChanges (and one transaction) per item
+foreach (var product in productsToUpdate)
+{
+    product.Price = product.Price * 1.05m;
+    await db.SaveChangesAsync(); // ← inside the loop: N round-trips, N transactions
+}
+
+// CORRECT: modify all, save once
+foreach (var product in productsToUpdate)
+{
+    product.Price = product.Price * 1.05m;
+    // No SaveChanges here — just track the change
+}
+await db.SaveChangesAsync(); // one transaction, one (batched) round-trip
+
+// EVEN BETTER: set-based update for bulk scenarios
+await db.Products
+    .Where(p => someCondition)
+    .ExecuteUpdateAsync(s => s
+        .SetProperty(p => p.Price, p => p.Price * 1.05m));
+// One SQL statement, zero entity loading
+```
+
+---
+
+## Anti-Pattern 4: Select * Then Filter in Memory
+
+```csharp
+// WRONG: fetch everything, filter in .NET
+var expensiveProducts = (await db.Products.ToListAsync())
+    .Where(p => p.Price > 100)
+    .ToList();
+// SQL: SELECT * FROM Products  (entire table!)
+// Then C# filters. If Products has 1 million rows — fetches them all.
+
+// CORRECT: filter in SQL
+var expensiveProducts = await db.Products
+    .Where(p => p.Price > 100)
+    .ToListAsync();
+// SQL: SELECT * FROM Products WHERE Price > 100
+```
+
+This anti-pattern often hides in subtle ways:
+
+```csharp
+// Also WRONG: ToList() breaks the IQueryable pipeline mid-way
+var orders = await db.Orders
+    .Include(o => o.Customer)
+    .ToListAsync();            // fetches ALL orders first
+
+var recent = orders
+    .Where(o => o.CreatedAt > DateTime.UtcNow.AddDays(-7))
+    .OrderByDescending(o => o.CreatedAt)
+    .Take(10)
+    .ToList();                 // in memory — wasteful
+
+// CORRECT
+var recent = await db.Orders
+    .Include(o => o.Customer)
+    .Where(o => o.CreatedAt > DateTime.UtcNow.AddDays(-7))
+    .OrderByDescending(o => o.CreatedAt)
+    .Take(10)
+    .ToListAsync();            // one efficient query
+```
+
+---
+
+## Anti-Pattern 5: Blocking on Async Methods
+
+```csharp
+// WRONG: .Result and .Wait() on async EF Core methods
+var product = db.Products.FindAsync(1).Result;      // blocks thread, deadlock risk
+db.SaveChangesAsync().Wait();                        // blocks thread, deadlock risk
+
+// WRONG: synchronous EF in async context
+public async Task<Product?> GetProduct(int id)
+{
+    return db.Products.Find(id); // synchronous — blocks a thread pool thread during DB wait
+}
+
+// CORRECT: always await async EF methods
+var product = await db.Products.FindAsync(1);
+await db.SaveChangesAsync();
+
+public async Task<Product?> GetProduct(int id)
+{
+    return await db.Products.FindAsync(id);
+}
+```
+
+---
+
+## Anti-Pattern 6: Reusing DbContext Across Async Boundaries After Disposal
+
+```csharp
+// WRONG: returning IQueryable from a repository
+// The DbContext may be disposed by the time the caller iterates
+public IQueryable<Product> GetProducts()
+{
+    return db.Products.Where(p => p.IsActive);
+    // Caller does: foreach (var p in repo.GetProducts()) — may fail if scope ended
+}
+
+// WRONG: leaking DbContext from a using block
+DbContext leakyContext;
+using (var db = new AppDbContext(options))
+{
+    leakyContext = db;
+    var products = db.Products.ToList(); // OK — context alive
+}
+// Context disposed here
+leakyContext.Products.ToList(); // ObjectDisposedException
+
+// CORRECT: complete the query inside the scope
+public async Task<List<Product>> GetProductsAsync()
+{
+    return await db.Products.Where(p => p.IsActive).ToListAsync();
+    // Returns List<T> — fully materialized, no context dependency
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The "God Context" Anti-Pattern**
+
+A `DbContext` with 50+ `DbSet<T>` properties is an architectural anti-pattern even if it is scoped correctly. It creates:
+
+1. **Unbounded change tracker scope** — any service that receives the context can accidentally track and save unrelated entities
+2. **Long startup time** — more types in the model = longer model build time (though EF Core caches the compiled model)
+3. **Violation of bounded context** — in DDD terms, different aggregates should have different contexts
+
+**Fix**: split into multiple bounded `DbContext` classes, each responsible for a distinct domain area:
+
+```csharp
+// Instead of one AppDbContext with everything:
+public class OrderDbContext : DbContext    // Orders, OrderItems, Payments
+public class CatalogDbContext : DbContext  // Products, Categories, Inventory
+public class IdentityDbContext : DbContext // Users, Roles, Claims (often already separate)
+```
+
+Each bounded context can have its own connection string, migrations folder, and model. Cross-context queries use the application layer (load from each context, join in memory or via service calls) rather than SQL JOINs.
 </Callout>
+
+---
+
+<ComparisonTable
+  title="EF Core Anti-Patterns Summary"
+  headers={["Anti-Pattern", "Symptom", "Fix"]}
+  rows={[
+    ["DbContext as Singleton", "Memory leak, data corruption, concurrency errors", "Register as Scoped; use IDbContextFactory in singletons"],
+    ["Lazy Loading in APIs", "101+ queries per request, slow API responses", "Use eager loading (Include) or DTO projections"],
+    ["SaveChanges in loops", "N transactions, N round-trips, slow bulk ops", "Save once after loop; use ExecuteUpdateAsync for set ops"],
+    ["Select * then filter in memory", "Full table scans, huge memory usage", "Move Where/Take/OrderBy before ToListAsync()"],
+    ["Blocking on async (.Result)", "Thread starvation, deadlocks", "Always await async methods"],
+    ["God Context", "Tight coupling, large model, accidental saves", "Split into bounded DbContext classes"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="DbContext is thread-safe because EF Core uses async methods"
+  truth="async does not mean thread-safe. DbContext is explicitly documented as NOT thread-safe — even async operations must not overlap on the same DbContext instance. Multiple concurrent awaited calls on the same DbContext are a concurrency bug. EF Core 5+ detects concurrent operations and throws InvalidOperationException with the message 'A second operation was started on this context instance before a previous operation completed'. Use one DbContext per logical unit of work, never share across concurrent operations."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/ef-anti-patterns/challenge-1"
+  question="You inherit a codebase where DbContext is registered as a singleton. The app works fine in development but crashes under load in production with 'A second operation was started on this context' errors. What is the correct fix?"
+  options={[
+    "Add lock() statements around all DbContext operations to prevent concurrent access",
+    "Change the registration from AddSingleton to AddScoped and update background services to use IServiceScopeFactory",
+    "Use SemaphoreSlim to serialize all database access to one operation at a time",
+    "Disable async and use synchronous EF Core methods to avoid concurrency"
+  ]}
+  correctAnswer={1}
+  explanation="The correct fix is changing to AddScoped registration — this gives each HTTP request its own DbContext instance, eliminating concurrent access. Background services that need DbContext must then use IServiceScopeFactory to create a scope per unit of work. Lock() and SemaphoreSlim (Options A and C) would prevent the immediate crash but serialize all database access to a single thread — catastrophic for throughput and still wrong architecturally. Disabling async (Option D) would not fix thread-safety and would drastically reduce server throughput."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DbContext Lifetime and Configuration", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/" },
+    { label: "EF Core Performance", url: "https://learn.microsoft.com/en-us/ef/core/performance/" },
+    { label: "Efficient Querying", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying" },
+    { label: "Efficient Updating", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-updating" },
+  ]}
+/>

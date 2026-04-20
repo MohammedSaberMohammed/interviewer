@@ -1,24 +1,326 @@
 ---
-title: "Indexers"
+title: "Indexers: Collection-Like Syntax for Your Types"
 slug: "indexers"
 order: 9
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["indexers", "this keyword", "operator overloading", "collection syntax", "get", "set", "IEnumerable"]
+summary: "Indexers let your types use square-bracket syntax like arrays and dictionaries — enabling clean, expressive APIs for types that expose data by key or position."
+docsLinks:
+  - label: "Indexers (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/indexers/"
+  - label: "Using indexers"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/indexers/using-indexers"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is an Indexer?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An indexer lets you use `[]` (square bracket) syntax on instances of your class. It's declared with the keyword `this` instead of a property name:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class WordList
+{
+    private readonly List<string> _words = new();
+
+    // Indexer — accessed via instance[index]
+    public string this[int index]
+    {
+        get => _words[index];
+        set
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                throw new ArgumentException("Word cannot be empty");
+            _words[index] = value;
+        }
+    }
+
+    public int Count => _words.Count;
+    public void Add(string word) => _words.Add(word);
+}
+
+var list = new WordList();
+list.Add("apple");
+list.Add("banana");
+list.Add("cherry");
+
+Console.WriteLine(list[0]);  // "apple"   — calls get
+list[1] = "blueberry";      // calls set
+Console.WriteLine(list[1]);  // "blueberry"
+```
+
+---
+
+## String Keys — Dictionary-Like Access
+
+Indexers don't have to use integer indexes. Any type works:
+
+```csharp
+public class Configuration
+{
+    private readonly Dictionary<string, string> _values = new();
+
+    public string this[string key]
+    {
+        get => _values.TryGetValue(key, out var val) ? val : "";
+        set
+        {
+            if (string.IsNullOrEmpty(key)) throw new ArgumentException("Key required", nameof(key));
+            _values[key] = value;
+        }
+    }
+
+    public bool Contains(string key) => _values.ContainsKey(key);
+}
+
+var config = new Configuration();
+config["ConnectionString"] = "Server=localhost;Database=MyDb";
+config["LogLevel"] = "Information";
+
+Console.WriteLine(config["LogLevel"]);     // "Information"
+Console.WriteLine(config["Missing"]);      // "" — returns empty by our design
+Console.WriteLine(config.Contains("Missing")); // false
+```
+
+---
+
+## Multi-Parameter Indexers
+
+Indexers can take multiple parameters — useful for grid/matrix types:
+
+```csharp
+public class Matrix
+{
+    private readonly double[,] _data;
+    public int Rows { get; }
+    public int Cols { get; }
+
+    public Matrix(int rows, int cols)
+    {
+        Rows = rows;
+        Cols = cols;
+        _data = new double[rows, cols];
+    }
+
+    // Two-parameter indexer for row/column access
+    public double this[int row, int col]
+    {
+        get
+        {
+            ValidateBounds(row, col);
+            return _data[row, col];
+        }
+        set
+        {
+            ValidateBounds(row, col);
+            _data[row, col] = value;
+        }
+    }
+
+    private void ValidateBounds(int row, int col)
+    {
+        if (row < 0 || row >= Rows) throw new IndexOutOfRangeException($"Row {row} out of range [0, {Rows})");
+        if (col < 0 || col >= Cols) throw new IndexOutOfRangeException($"Col {col} out of range [0, {Cols})");
+    }
+
+    public override string ToString()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int r = 0; r < Rows; r++)
+        {
+            for (int c = 0; c < Cols; c++)
+                sb.Append($"{_data[r, c],8:F2}");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+}
+
+var m = new Matrix(3, 3);
+m[0, 0] = 1.0;
+m[1, 1] = 5.0;
+m[2, 2] = 9.0;
+
+Console.WriteLine(m[1, 1]); // 5.00
+Console.WriteLine(m);       // formatted 3x3 matrix
+```
+
+---
+
+## Indexers with Range and Index (C# 8+)
+
+.NET 8 `System.Index` and `System.Range` types work with indexers that support them:
+
+```csharp
+public class CircularBuffer<T>
+{
+    private readonly T[] _buffer;
+    private int _start;
+    private int _count;
+
+    public CircularBuffer(int capacity)
+        => _buffer = new T[capacity];
+
+    public int Count => _count;
+
+    // Standard int indexer
+    public T this[int index]
+    {
+        get
+        {
+            if (index < 0 || index >= _count) throw new IndexOutOfRangeException();
+            return _buffer[(_start + index) % _buffer.Length];
+        }
+    }
+
+    // Support for Index type (enables ^1, ^2 "from end" syntax)
+    public T this[Index index] => this[index.GetOffset(_count)];
+
+    // Support for Range (enables [1..^1] slice syntax)
+    public T[] this[Range range]
+    {
+        get
+        {
+            var (offset, length) = range.GetOffsetAndLength(_count);
+            var result = new T[length];
+            for (int i = 0; i < length; i++)
+                result[i] = this[offset + i];
+            return result;
+        }
+    }
+
+    public void Add(T item)
+    {
+        if (_count == _buffer.Length)
+            _start = (_start + 1) % _buffer.Length; // overwrite oldest
+        else
+            _count++;
+        _buffer[(_start + _count - 1) % _buffer.Length] = item;
+    }
+}
+
+var buf = new CircularBuffer<int>(5);
+for (int i = 1; i <= 5; i++) buf.Add(i);
+
+Console.WriteLine(buf[0]);    // 1 — first element
+Console.WriteLine(buf[^1]);   // 5 — last element (from end)
+var middle = buf[1..^1];      // [2, 3, 4] — slice
+```
+
+---
+
+<Callout type="info">
+**Indexers vs properties vs methods:** Use an indexer when your type conceptually represents a collection or mapping and `[]` syntax is natural for accessing elements. If the access is by a specific named key that has special meaning (not arbitrary), a regular property is clearer. If the retrieval has significant cost or side effects, a method (`GetItem(key)`) is more explicit than an indexer.
 </Callout>
+
+---
+
+## Read-Only Indexers
+
+Indexers can be read-only (get only), which is useful for lookup tables and read-only views:
+
+```csharp
+public class ReadOnlyConfig
+{
+    private static readonly Dictionary<string, string> _defaults = new()
+    {
+        ["timeout"]  = "30",
+        ["retries"]  = "3",
+        ["loglevel"] = "Warning"
+    };
+
+    // Read-only indexer — no set accessor
+    public string this[string key]
+        => _defaults.TryGetValue(key.ToLower(), out var val) ? val : "";
+}
+
+var config = new ReadOnlyConfig();
+Console.WriteLine(config["Timeout"]);  // "30" — case-insensitive lookup
+// config["Timeout"] = "60"; // COMPILE ERROR — no set accessor
+```
+
+---
+
+<Quiz
+  id="02-oop/indexers/quiz-1"
+  question="Can a class have multiple indexers with different parameter types?"
+  options={[
+    "No — a class can only have one indexer definition",
+    "Yes — as long as the parameter types or counts differ (same overloading rules as methods)",
+    "Yes — but only if one is read-only and one is read-write",
+    "No — indexers use 'this' which cannot be overloaded"
+  ]}
+  correctAnswer={1}
+  explanation="Indexers follow the same overloading rules as methods. You can define multiple indexers as long as they have different parameter signatures (different types, different number of parameters, or different parameter type combinations). For example, a class could have this[int index], this[string key], and this[int row, int col] all coexisting. The compiler picks the correct one based on the argument types at the call site, exactly like method overloading."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Indexers in Interface Definitions and Their Practical Use**
+
+Indexers can be declared in interfaces, enabling polymorphic collection-like access:
+
+```csharp
+// Interface with indexer — common in collection abstractions
+public interface IReadOnlyLookup<TKey, TValue>
+{
+    TValue this[TKey key] { get; }
+    bool ContainsKey(TKey key);
+}
+
+public interface ILookup<TKey, TValue> : IReadOnlyLookup<TKey, TValue>
+{
+    new TValue this[TKey key] { get; set; } // new to re-declare with set
+}
+
+// Real-world pattern: a settings layer that reads from multiple sources in priority order
+public class LayeredSettings : IReadOnlyLookup<string, string>
+{
+    private readonly Dictionary<string, string>[] _layers; // highest priority first
+
+    public LayeredSettings(params Dictionary<string, string>[] layers)
+        => _layers = layers;
+
+    public string this[string key]
+    {
+        get
+        {
+            foreach (var layer in _layers)
+                if (layer.TryGetValue(key, out var value))
+                    return value;
+            return "";
+        }
+    }
+
+    public bool ContainsKey(string key)
+        => _layers.Any(l => l.ContainsKey(key));
+}
+
+// Usage: environment overrides user settings, user overrides defaults
+var settings = new LayeredSettings(
+    new Dictionary<string, string> { ["LogLevel"] = "Warning" }, // env (highest priority)
+    new Dictionary<string, string> { ["LogLevel"] = "Info", ["Theme"] = "Dark" }, // user
+    new Dictionary<string, string> { ["LogLevel"] = "Debug", ["Theme"] = "Light", ["Timeout"] = "30" } // defaults
+);
+
+Console.WriteLine(settings["LogLevel"]); // "Warning" — env wins
+Console.WriteLine(settings["Theme"]);    // "Dark" — user wins (no env override)
+Console.WriteLine(settings["Timeout"]); // "30" — falls through to defaults
+```
+
+This layered lookup pattern shows why indexers exist beyond just wrapping arrays — they create natural API surfaces for data-access abstractions that feel intuitive to consume.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Indexers (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/indexers/" },
+    { label: "Using indexers", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/indexers/using-indexers" },
+    { label: "Indexers in interfaces", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/indexers/indexers-in-interfaces" },
+    { label: "System.Index and System.Range", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-8#indices-and-ranges" },
+  ]}
+/>

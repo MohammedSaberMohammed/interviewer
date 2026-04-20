@@ -1,24 +1,324 @@
 ---
-title: "Trees: BST, AVL, Red-Black in BCL"
+title: "Trees: BST, Red-Black Trees, and BCL Internals"
 slug: "trees"
 order: 8
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["BST", "red-black tree", "AVL tree", "SortedDictionary", "SortedSet", "tree traversal", "data structures"]
+summary: "Trees enforce ordered structure with O(log n) operations. The BCL uses red-black trees inside SortedDictionary<K,V> and SortedSet<T>. Understanding BST guarantees — and why self-balancing trees exist — explains when and why to reach for these collections."
+docsLinks:
+  - label: "SortedDictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sorteddictionary-2"
+  - label: "SortedSet<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedset-1"
+  - label: "SortedList<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedlist-2"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Binary Search Trees: The Core Concept
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **Binary Search Tree (BST)** maintains the invariant: for any node N, all values in the left subtree are less than N, and all values in the right subtree are greater. This allows O(log n) search, insert, and delete — when the tree is **balanced**.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+A balanced BST with 7 nodes (height = 2):
+
+         4
+        / \
+       2   6
+      / \ / \
+     1  3 5  7
+
+Search for 5:
+  4 < 5 → go right
+  6 > 5 → go left
+  5 == 5 → found!  (2 comparisons = O(log 7))
+```
+
+```csharp
+// Manual BST (illustrative — use BCL classes in production)
+class BstNode<T>
+{
+    public T Value;
+    public BstNode<T>? Left;
+    public BstNode<T>? Right;
+}
+
+// In-order traversal visits nodes in sorted order — O(n)
+IEnumerable<T> InOrder<T>(BstNode<T>? node)
+{
+    if (node == null) yield break;
+    foreach (var v in InOrder(node.Left))  yield return v;
+    yield return node.Value;
+    foreach (var v in InOrder(node.Right)) yield return v;
+}
+```
+
+---
+
+## The Degenerate Case: Why Balance Matters
+
+A naive BST degenerates to a linked list with **sorted input**:
+
+```
+Insert 1, 2, 3, 4, 5 into a naive BST:
+
+1
+ \
+  2
+   \
+    3
+     \
+      4
+       \
+        5
+```
+
+Search in this tree is O(n), not O(log n). **Self-balancing trees** (AVL, Red-Black) restructure on every insert/delete to maintain height ≈ log₂(n).
+
+---
+
+## Red-Black Trees: The BCL Standard
+
+`SortedDictionary<K,V>` and `SortedSet<T>` use **red-black trees** internally. A red-black tree maintains balance through two node colors and five invariants:
+
+1. Every node is red or black
+2. The root is always black
+3. Every leaf (nil) is black
+4. If a node is red, both children are black
+5. All paths from root to leaves have the same number of black nodes
+
+These invariants guarantee the tree height is at most **2 log₂(n+1)** — O(log n) for all operations.
+
+```csharp
+// SortedDictionary<K,V> — red-black tree; O(log n) all operations
+var sd = new SortedDictionary<string, int>
+{
+    ["banana"] = 2,
+    ["apple"]  = 1,
+    ["cherry"] = 3,
+};
+
+// Iteration is always in key-sorted order
+foreach (var kv in sd)
+    Console.WriteLine($"{kv.Key}: {kv.Value}");
+// apple: 1, banana: 2, cherry: 3
+
+// No range queries — you must iterate manually
+foreach (var kv in sd)
+    if (kv.Value >= 2) Console.WriteLine(kv.Key);
+
+// SortedSet<T> — red-black tree; uniqueness + order + range queries
+var ss = new SortedSet<int> { 5, 2, 8, 1, 9, 3 };
+SortedSet<int> range = ss.GetViewBetween(3, 8); // { 3, 5, 8 } — live view
+```
+
+---
+
+## Tree Traversal Patterns in C\#
+
+```csharp
+// Recursive pre-order traversal (root, left, right) — used for tree copy/serialization
+void PreOrder<T>(BstNode<T>? node, Action<T> visit)
+{
+    if (node == null) return;
+    visit(node.Value);        // process root first
+    PreOrder(node.Left, visit);
+    PreOrder(node.Right, visit);
+}
+
+// Iterative in-order with an explicit stack (avoids recursion limit for deep trees)
+IEnumerable<T> InOrderIterative<T>(BstNode<T>? root)
+{
+    var stack = new Stack<BstNode<T>>();
+    var current = root;
+
+    while (current != null || stack.Count > 0)
+    {
+        while (current != null)
+        {
+            stack.Push(current);
+            current = current.Left;  // go as far left as possible
+        }
+        current = stack.Pop();
+        yield return current.Value;  // visit node
+        current = current.Right;     // move to right subtree
+    }
+}
+
+// Level-order (BFS) traversal — visit nodes level by level
+IEnumerable<T> LevelOrder<T>(BstNode<T>? root)
+{
+    if (root == null) yield break;
+    var queue = new Queue<BstNode<T>>();
+    queue.Enqueue(root);
+
+    while (queue.TryDequeue(out var node))
+    {
+        yield return node.Value;
+        if (node.Left  != null) queue.Enqueue(node.Left);
+        if (node.Right != null) queue.Enqueue(node.Right);
+    }
+}
+```
+
+---
+
+## BCL Tree-Backed Collections: Practical Usage
+
+```csharp
+// SortedDictionary: when you need ordered key-value pairs with frequent mutations
+var scoreboard = new SortedDictionary<int, string>(Comparer<int>.Create((a, b) => b.CompareTo(a))); // descending
+
+scoreboard[95] = "Alice";
+scoreboard[87] = "Bob";
+scoreboard[92] = "Charlie";
+
+// Always iterates in reverse score order (highest first)
+foreach (var (score, name) in scoreboard)
+    Console.WriteLine($"{name}: {score}");
+
+// SortedList<K,V>: ordered pairs backed by two arrays — better for read-heavy, less insert
+// Memory: SortedList uses ~1/2 the memory of SortedDictionary for same data
+// But Insert is O(n) vs O(log n) for SortedDictionary
+var sl = new SortedList<string, int>
+{
+    ["apple"]  = 1,
+    ["banana"] = 2,
+    ["cherry"] = 3,
+};
+
+// SortedList supports index-based access (unlike SortedDictionary)
+Console.WriteLine(sl.Keys[0]);    // "apple"
+Console.WriteLine(sl.Values[2]);  // 3
+int idx = sl.IndexOfKey("banana"); // 1 — O(log n)
+```
+
+---
+
+## Interval Tree Pattern (Manual Implementation)
+
+For problems requiring range queries (overlapping intervals, calendar events), there's no BCL interval tree — you build one from a sorted structure:
+
+```csharp
+// Simple sorted collection for non-overlapping interval lookup
+class IntervalMap<T>
+{
+    // Key = interval start, Value = (end, data)
+    private readonly SortedList<int, (int end, T data)> _intervals = new();
+
+    public void Add(int start, int end, T data)
+        => _intervals[start] = (end, data);
+
+    // Find which interval contains 'point' — O(log n) to find candidate, O(k) to scan
+    public T? FindContaining(int point)
+    {
+        // Find the rightmost interval starting at or before 'point'
+        int lo = 0, hi = _intervals.Count - 1, result = -1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) / 2;
+            if (_intervals.Keys[mid] <= point) { result = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (result == -1) return default;
+        var (end, data) = _intervals.Values[result];
+        return end >= point ? data : default;
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Collection", "Structure", "Lookup", "Insert / Remove", "Ordered", "Range Query"]}
+  rows={[
+    ["Dictionary\<K,V\>", "Hash table", "O(1) avg", "O(1) amortized", "No", "No"],
+    ["SortedDictionary\<K,V\>", "Red-black tree", "O(log n)", "O(log n)", "Yes", "Manual iteration"],
+    ["SortedList\<K,V\>", "Two sorted arrays", "O(log n)", "O(n) shift", "Yes", "Index-based O(log n)"],
+    ["SortedSet\<T\>", "Red-black tree", "O(log n)", "O(log n)", "Yes", "GetViewBetween O(log n)"],
+    ["ImmutableSortedSet\<T\>", "AVL tree", "O(log n)", "O(log n) new instance", "Yes", "Limited"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/trees/challenge-1"
+  title="Choose the Right Sorted Collection"
+  description="You maintain a leaderboard: player scores are updated frequently and you need to display the top 10 in rank order. What's the best BCL collection?"
+  code={`// Option A: List<(int score, string name)> + Sort on every read
+var listA = new List<(int, string)>();
+listA.Add((95, "Alice"));
+listA.Sort((a, b) => b.Item1.CompareTo(a.Item1)); // re-sort each read
+
+// Option B: SortedSet<(int score, string name)> with descending comparer
+var setB = new SortedSet<(int score, string name)>(
+    Comparer<(int, string)>.Create((a, b) =>
+        a.score != b.score ? b.score.CompareTo(a.score)
+                           : a.name.CompareTo(b.name)));
+setB.Add((95, "Alice"));
+var topB = setB.Take(10);
+
+// Option C: SortedDictionary\<int, string\> (score → name)
+var dictC = new SortedDictionary\<int, string\>(Comparer\<int\>.Create((a,b) => b.CompareTo(a)));
+dictC[95] = "Alice"; // loses players with identical scores!
+var topC = dictC.Take(10);`}
+  options={[
+    "Option A — sort is fast enough for small leaderboards",
+    "Option B — SortedSet maintains order automatically; composite key handles score ties",
+    "Option C — SortedDictionary is purpose-built for ordered key-value pairs",
+    "Option C, but with a List<string> value to handle ties"
+  ]}
+  correctAnswer={1}
+  explanation="Option B is best. SortedSet maintains descending order automatically — insert is O(log n) and Take(10) is O(10) = O(1). The composite key (score, name) ensures uniqueness even with tied scores. Option A re-sorts the entire list on every read — O(n log n) per read. Option C silently overwrites players with the same score (dictionary keys must be unique) — a correctness bug, not just a performance issue. SortedDictionary<int, List<string>> could fix correctness but adds complexity vs the SortedSet approach."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: BCL Has No General-Purpose Tree Node API — and That's Fine**
+
+The BCL exposes tree-backed collections (`SortedSet`, `SortedDictionary`) but not the tree nodes themselves. There's no way to get a reference to a node and do O(1) re-links. This is by design:
+
+1. Red-black tree rebalancing after insert/delete touches 2-3 nodes on the path to the root — exposing node references would make invariant maintenance nearly impossible.
+2. The common reasons developers want node references (LRU caches, priority updates) are better served by `LinkedList<T>` + `Dictionary<K, LinkedListNode<T>>` or by using a dedicated library (like `SortedDictionary` with lazy deletion).
+
+When you need a trie (prefix tree for autocomplete), a segment tree (range queries), or a Fenwick tree (prefix sums), you implement them yourself using arrays — arrays beat pointer-based trees on cache performance for most in-memory workloads, and .NET's lack of cache-oblivious tree primitives means array-based implementations are almost always faster in practice.
+
+```csharp
+// Fenwick tree (Binary Indexed Tree) for O(log n) prefix sums — array-based
+class FenwickTree
+{
+    private readonly int[] _tree;
+    public FenwickTree(int n) => _tree = new int[n + 1];
+
+    public void Update(int i, int delta) // 1-based
+    {
+        for (++i; i < _tree.Length; i += i & -i)
+            _tree[i] += delta;
+    }
+
+    public int Query(int i) // prefix sum [0..i]
+    {
+        int sum = 0;
+        for (++i; i > 0; i -= i & -i)
+            sum += _tree[i];
+        return sum;
+    }
+}
+```
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "SortedDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sorteddictionary-2" },
+    { label: "SortedSet\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedset-1" },
+    { label: "SortedList\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedlist-2" },
+    { label: "ImmutableSortedDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutablesorteddictionary-2" },
+  ]}
+/>

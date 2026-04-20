@@ -3,22 +3,305 @@ title: "Liskov Substitution Principle"
 slug: "liskov-substitution"
 order: 3
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["SOLID", "LSP", "inheritance", "behavioral subtyping", "contracts", "polymorphism"]
+summary: "Subtypes must be substitutable for their base types without breaking program correctness — learn behavioral subtyping, the Rectangle/Square problem, and how contracts enforce LSP."
+docsLinks:
+  - label: "Inheritance (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance"
+  - label: "Polymorphism (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism"
+  - label: "Abstract and sealed classes (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/abstract-and-sealed-classes-and-class-members"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Liskov Substitution Principle?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Barbara Liskov's formal definition (1987): *if S is a subtype of T, then objects of type T may be replaced with objects of type S without altering any of the desirable properties of the program.*
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+In plain terms: **you should be able to use a subclass anywhere the base class is expected, and the program should still behave correctly.**
+
+This goes beyond just compiling. It is about *behavioral contracts* — the promises a type makes to its callers. A subtype must honor every promise the base type makes.
+
+---
+
+## The Rectangle / Square Problem
+
+This is the canonical LSP example, and it appears in almost every senior C# interview:
+
+```csharp
+// BAD: Square inherits from Rectangle but violates its behavioral contract
+
+public class Rectangle
+{
+    public virtual int Width { get; set; }
+    public virtual int Height { get; set; }
+
+    public int Area() => Width * Height;
+}
+
+public class Square : Rectangle
+{
+    // A square must keep Width == Height at all times
+    public override int Width
+    {
+        get => base.Width;
+        set { base.Width = value; base.Height = value; }
+    }
+
+    public override int Height
+    {
+        get => base.Height;
+        set { base.Width = value; base.Height = value; }
+    }
+}
+
+// This method works fine for Rectangle but BREAKS with Square
+static void DoubleWidth(Rectangle rect)
+{
+    int originalHeight = rect.Height;
+    rect.Width = rect.Width * 2;
+
+    // For Rectangle: Area doubles. For Square: Area quadruples!
+    // The caller's assumption about Rectangle is violated.
+    Console.WriteLine($"Expected area: {rect.Width * originalHeight}");
+    Console.WriteLine($"Actual area:   {rect.Area()}");
+}
+
+var rect = new Rectangle { Width = 4, Height = 3 };
+DoubleWidth(rect);
+// Expected area: 24, Actual area: 24  -- correct
+
+var square = new Square { Width = 4 };
+DoubleWidth(square);
+// Expected area: 32, Actual area: 64  -- LSP violated!
+```
+
+The issue: `Rectangle` implicitly promises "setting Width does not affect Height." `Square` breaks that promise. The caller cannot substitute `Square` for `Rectangle` safely.
+
+---
+
+## The Fix: Reconsider the Hierarchy
+
+```csharp
+// GOOD: Separate hierarchies based on true behavioral contracts
+
+public interface IShape
+{
+    int Area();
+}
+
+// Immutable — mutation-based contract violations are impossible
+public class Rectangle : IShape
+{
+    public int Width { get; }
+    public int Height { get; }
+
+    public Rectangle(int width, int height)
+    {
+        Width = width;
+        Height = height;
+    }
+
+    public int Area() => Width * Height;
+
+    public Rectangle WithWidth(int newWidth) => new Rectangle(newWidth, Height);
+}
+
+public class Square : IShape
+{
+    public int Side { get; }
+
+    public Square(int side) => Side = side;
+
+    public int Area() => Side * Side;
+}
+
+// Now substitution is safe — both honor IShape's contract
+static void PrintArea(IShape shape)
+{
+    Console.WriteLine($"Area: {shape.Area()}");
+}
+
+PrintArea(new Rectangle(4, 3)); // Area: 12
+PrintArea(new Square(4));       // Area: 16
+```
+
+Making the types **immutable** eliminates the mutation-based contract violation entirely. `IShape` only promises `Area()` — a contract both can honor.
+
+---
+
+## Behavioral Contracts: What LSP Really Checks
+
+LSP violations show up as three distinct patterns. Watch for these in code review:
+
+```csharp
+// PATTERN 1: Throwing where the base type doesn't
+public abstract class FileProcessor
+{
+    // Contract: Process() handles the file — never throws NotSupportedException
+    public abstract void Process(string filePath);
+}
+
+public class ReadOnlyFileProcessor : FileProcessor
+{
+    public override void Process(string filePath)
+    {
+        // BAD: Callers of FileProcessor don't expect NotSupportedException
+        throw new NotSupportedException("This processor is read-only");
+    }
+}
+
+// PATTERN 2: Strengthening preconditions (demanding more from callers)
+public class DiscountCalculator
+{
+    // Base accepts any non-negative amount
+    public virtual decimal Calculate(decimal amount)
+    {
+        if (amount < 0) throw new ArgumentException("Amount must be non-negative");
+        return amount * 0.1m;
+    }
+}
+
+public class PremiumDiscountCalculator : DiscountCalculator
+{
+    public override decimal Calculate(decimal amount)
+    {
+        // BAD: now requires amount > 100 — callers don't know about this restriction
+        if (amount <= 100) throw new ArgumentException("Premium discount requires amount > 100");
+        return amount * 0.2m;
+    }
+}
+
+// PATTERN 3: Weakening postconditions (guaranteeing less than the base promises)
+public abstract class DataRepository
+{
+    // Contract: always returns a non-null list (may be empty)
+    public abstract List<Record> GetAll();
+}
+
+public class CachedRepository : DataRepository
+{
+    private readonly Cache _cache = new Cache();
+
+    public override List<Record>? GetAll()
+    {
+        // BAD: Returns null when cache is cold — base type promised non-null!
+        return _cache.IsPopulated ? _cache.Items : null;
+    }
+}
+```
+
+**The rule:**
+- Preconditions can only be *weakened* (accept more, not less)
+- Postconditions can only be *strengthened* (guarantee more, not less)
+- Invariants must be preserved
+
+---
+
+<Callout type="senior">
+**Senior Insight: LSP and Design by Contract**
+
+LSP connects directly to Bertrand Meyer's Design by Contract (DbC). Every public method has implicit promises:
+
+- **Preconditions** — what must be true before the method runs
+- **Postconditions** — what the method guarantees on return
+- **Invariants** — what is always true about the object's state
+
+The practical audit you can do in code review: read the base class's XML doc comments and guard clauses, then verify each override does not silently add new restrictions or remove guarantees.
+
+A quick red flag: any subclass override that contains `throw new NotImplementedException()` or `throw new NotSupportedException()`. This almost always signals the inheritance hierarchy was a mistake — the subtype is not a true behavioral subtype.
+
+.NET's own BCL makes this mistake visible in `Stream`. `MemoryStream` overrides many methods that `Stream` declares abstract, but `NullStream` (the internal stream returned by `Stream.Null`) returns zeros and does nothing — which is actually fine because `Stream`'s contract says "reads return bytes, writes are accepted" and `NullStream` honors both. Compare with a hypothetical `ReadOnlyStream` that throws on `Write()` — that would violate LSP for code that accepted a `Stream` and called `Write()` without checking `CanWrite`.
+
+The `CanRead`, `CanWrite`, `CanSeek` properties on `Stream` are actually a documented way to cope with LSP violations that existed before anyone thought carefully about the contract. Modern API design would use separate `IReadableStream` and `IWritableStream` interfaces instead.
 </Callout>
+
+---
+
+<MythBuster
+  myth="LSP just means 'use inheritance properly'"
+  reality="LSP is specifically about behavioral substitutability, not just syntactic or type-check correctness. A Square can compile as a Rectangle subtype and pass all type checks, but still violates LSP because it breaks the behavioral contract callers rely on. LSP requires that every assumption a caller makes about the base type remains valid when using any subtype — including assumptions about which exceptions are thrown, which properties are independent, and what side effects occur."
+/>
+
+---
+
+## Code Challenge: Spot the LSP Violation
+
+<CodeChallenge
+  id="06-solid/liskov-substitution/challenge-1"
+  title="Which Override Violates LSP?"
+  description="ReadOnlyList inherits from List<T>. Which override is an LSP violation and why?"
+  code={`public class ReadOnlyList<T> : List<T>
+{
+    // Option A
+    public override void Add(T item)
+    {
+        throw new NotSupportedException("This list is read-only");
+    }
+
+    // Option B
+    public override int IndexOf(T item)
+    {
+        return base.IndexOf(item); // same behavior
+    }
+
+    // Option C
+    public override bool Contains(T item)
+    {
+        return base.Contains(item); // delegates to base
+    }
+}`}
+  options={[
+    "Option A — throws where callers of List<T> don't expect it",
+    "Option B — changes how IndexOf works",
+    "Option C — Contains should not delegate to base",
+    "None — all overrides are fine"
+  ]}
+  correctAnswer={0}
+  explanation="Option A violates LSP. List<T>.Add() has an implicit postcondition: after calling Add(item), Count increases by 1 and the item is retrievable. ReadOnlyList breaks this guarantee by throwing instead. Any code that received a ReadOnlyList<T> typed as List<T> and called Add() would get a surprise NotSupportedException. This is why .NET's own ReadOnlyCollection<T> wraps List<T> via composition rather than inheriting from it — it implements IReadOnlyList<T>, not IList<T>."
+/>
+
+---
+
+<Quiz
+  id="06-solid/liskov-substitution/quiz-1"
+  questions={[
+    {
+      question: "A subclass override strengthens a precondition (demands more from callers than the base). What does this do to LSP?",
+      options: [
+        "It is fine — being more strict is always safer",
+        "It violates LSP — callers built around the base type's contract will pass valid arguments the subclass rejects",
+        "It only violates LSP if the base class is abstract",
+        "Strengthening preconditions improves LSP compliance"
+      ],
+      correctAnswer: 1,
+      explanation: "LSP requires that preconditions can only be weakened in subtypes (accept more, not less). If a subclass strengthens a precondition — e.g., requires amount > 100 when the base only requires amount >= 0 — then callers who built code around the base type's contract will pass values that are valid to them but rejected by the subclass. This breaks substitutability."
+    },
+    {
+      question: "What is the correct fix when a Square/Rectangle LSP violation is discovered in production code?",
+      options: [
+        "Add type checks: if (rect is Square) handle differently",
+        "Mark the base class sealed to prevent bad subtypes",
+        "Redesign the hierarchy — use a shared interface or make types immutable",
+        "Use the Visitor pattern to dispatch by type"
+      ],
+      correctAnswer: 2,
+      explanation: "Adding `if (rect is Square)` type checks is exactly the anti-pattern LSP warns against — it means callers cannot substitute freely and must know about every subtype. The real fix is redesigning the hierarchy: use a shared interface (IShape with Area()), make the types immutable so mutation-based contract violations are impossible, or accept that Square is not a behavioral subtype of Rectangle."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Inheritance (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance" },
+    { label: "Polymorphism (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism" },
+    { label: "Abstract and sealed classes (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/abstract-and-sealed-classes-and-class-members" },
+    { label: "IReadOnlyList\<T\> — LSP-safe read-only abstraction in the BCL", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlylist-1" },
+  ]}
+/>

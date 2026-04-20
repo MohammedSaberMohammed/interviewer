@@ -3,22 +3,301 @@ title: "Open/Closed Principle"
 slug: "open-closed"
 order: 2
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["SOLID", "OCP", "open-closed", "strategy pattern", "polymorphism", "design principles"]
+summary: "Software entities should be open for extension but closed for modification — learn to use abstraction, polymorphism, and the Strategy pattern to add behavior without touching existing code."
+docsLinks:
+  - label: "Strategy design pattern — .NET architecture guidance"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles"
+  - label: "Interfaces (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces"
+  - label: "Polymorphism (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Open/Closed Principle?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Bertrand Meyer's original formulation: **software entities (classes, modules, functions) should be open for extension but closed for modification.**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Open for extension** — you can add new behavior
+- **Closed for modification** — adding new behavior does not require changing existing, tested code
+
+The mechanism that enables this is **abstraction**: define a stable interface/abstract type, then add new behavior by creating new implementations rather than editing existing ones.
+
+---
+
+## The Classic Violation: The Switch Statement Trap
+
+A dead giveaway for OCP violations is a `switch` (or long `if/else if`) statement that you must extend every time a new case is added:
+
+```csharp
+// BAD: Every new discount type requires editing this class
+public class OrderPricer
+{
+    public decimal CalculateDiscount(Order order, string customerType)
+    {
+        switch (customerType)
+        {
+            case "Regular":
+                return 0m;
+            case "Premium":
+                return order.Subtotal * 0.10m;
+            case "VIP":
+                return order.Subtotal * 0.20m;
+            case "Employee":
+                return order.Subtotal * 0.30m;
+            // Every new customer type means opening this file again
+            // and touching code that already works for all the other cases
+            default:
+                return 0m;
+        }
+    }
+}
+```
+
+The problem: when you add `"Partner"` or `"Influencer"` pricing, you must open `OrderPricer`, risk breaking the existing cases, re-run all tests, and redeploy — even though the logic for Regular, Premium, VIP, and Employee customers hasn't changed.
+
+---
+
+## The Refactored Version: Strategy Pattern
+
+```csharp
+// GOOD: Define the abstraction once — it never changes
+public interface IDiscountStrategy
+{
+    decimal CalculateDiscount(Order order);
+}
+
+// Each strategy is a separate, independently testable class
+public class NoDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) => 0m;
+}
+
+public class PremiumDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) => order.Subtotal * 0.10m;
+}
+
+public class VipDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) => order.Subtotal * 0.20m;
+}
+
+public class EmployeeDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) => order.Subtotal * 0.30m;
+}
+
+// OrderPricer never changes — it depends on the abstraction
+public class OrderPricer
+{
+    private readonly IDiscountStrategy _discountStrategy;
+
+    public OrderPricer(IDiscountStrategy discountStrategy)
+        => _discountStrategy = discountStrategy;
+
+    public decimal CalculateTotal(Order order)
+    {
+        var discount = _discountStrategy.CalculateDiscount(order);
+        return order.Subtotal - discount;
+    }
+}
+
+// Adding "Partner" pricing? Create a new class. Touch nothing else.
+public class PartnerDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) =>
+        order.Subtotal > 1000m ? order.Subtotal * 0.15m : order.Subtotal * 0.05m;
+}
+
+// Usage:
+var pricer = new OrderPricer(new VipDiscount());
+decimal total = pricer.CalculateTotal(order);
+```
+
+Adding `PartnerDiscount` required **zero modifications** to `OrderPricer`, `NoDiscount`, or any other existing class.
+
+---
+
+## OCP with Abstract Classes
+
+Sometimes you want to share implementation details across extensions. Use an abstract base class:
+
+```csharp
+// A report exporter that supports different output formats
+public abstract class ReportExporter
+{
+    // Template method — the algorithm skeleton is closed for modification
+    public byte[] Export(ReportData data)
+    {
+        var validated = Validate(data);      // shared pre-processing
+        var formatted = FormatContent(validated); // overridden per format
+        return AddMetadata(formatted);       // shared post-processing
+    }
+
+    private ReportData Validate(ReportData data)
+    {
+        if (data is null) throw new ArgumentNullException(nameof(data));
+        return data;
+    }
+
+    // Open for extension: subclasses define the format
+    protected abstract byte[] FormatContent(ReportData data);
+
+    private byte[] AddMetadata(byte[] content)
+    {
+        // e.g., append checksum, timestamp header
+        return content;
+    }
+}
+
+public class PdfReportExporter : ReportExporter
+{
+    protected override byte[] FormatContent(ReportData data)
+    {
+        // PDF generation logic
+        return Array.Empty<byte>();
+    }
+}
+
+public class ExcelReportExporter : ReportExporter
+{
+    protected override byte[] FormatContent(ReportData data)
+    {
+        // Excel generation logic
+        return Array.Empty<byte>();
+    }
+}
+
+// Adding CSV? Just create CsvReportExporter. Export() logic never changes.
+```
+
+---
+
+<ComparisonTable
+  title="When to Use Interface vs. Abstract Class for OCP"
+  headers={["Scenario", "Interface", "Abstract Class"]}
+  rows={[
+    ["No shared implementation", "Yes — pure abstraction", "Overkill"],
+    ["Shared pre/post processing (Template Method)", "No — interfaces can't share code", "Yes — perfect fit"],
+    ["Multiple inheritance of behavior needed", "Yes — a class can implement many", "No — single inheritance only"],
+    ["Default implementations acceptable", "Yes — use default interface methods (C# 8+)", "Yes — default virtual methods"],
+    ["Enforcing constructor logic in base", "No", "Yes — abstract class can have constructors"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="OCP means you can never change a class"
+  reality="OCP means you should not need to change stable, working code to add new behavior. Bug fixes, security patches, and refactoring are legitimate reasons to modify any class. The principle targets the specific pattern of 'open the same file every time a new variant is added.' If your abstraction boundary is wrong, fixing the abstraction is also a legitimate modification."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: OCP and the Cost of Abstractions**
+
+OCP sounds great in theory, but premature abstraction is a real problem. Creating an `IDiscountStrategy` before you have even two discount types is **speculative generality** — you're paying the complexity cost of an abstraction for a problem you don't yet have.
+
+The pragmatic approach senior engineers use is the **Rule of Three**:
+1. First time — just write it inline
+2. Second time — notice the duplication, tolerate it
+3. Third time — now you have enough examples to design the right abstraction
+
+In ASP.NET Core, OCP shows up throughout the framework:
+- **Middleware pipeline** — add new request handling behavior by registering middleware, never by modifying `HttpContext`
+- **Model binding** — add a custom `IModelBinder` for a new type without touching `DefaultModelBinder`
+- **Authentication** — add a new scheme via `AddAuthentication().AddJwtBearer()` without modifying the auth middleware
+
+This is why the framework is so extensible: Microsoft designed it with OCP in mind at the framework level. Your application code should do the same for its own extension points.
 </Callout>
+
+---
+
+## Code Challenge: Apply the OCP
+
+<CodeChallenge
+  id="06-solid/open-closed/challenge-1"
+  title="Spot the OCP Violation"
+  description="This shipping calculator will need to support new carriers every quarter. Which design correctly applies OCP?"
+  code={`// Option A:
+public class ShippingCalculator
+{
+    public decimal Calculate(Order order, string carrier)
+    {
+        if (carrier == "FedEx") return order.Weight * 2.5m;
+        if (carrier == "UPS")   return order.Weight * 2.2m;
+        if (carrier == "USPS")  return order.Weight * 1.8m;
+        return 0m;
+    }
+}
+
+// Option B:
+public interface ICarrierRate
+{
+    decimal Calculate(Order order);
+}
+public class FedExRate : ICarrierRate
+{
+    public decimal Calculate(Order order) => order.Weight * 2.5m;
+}
+public class ShippingCalculator
+{
+    public decimal Calculate(Order order, ICarrierRate rate)
+        => rate.Calculate(order);
+}`}
+  options={[
+    "Option A — simpler, fewer files, easier to understand",
+    "Option B — closed for modification; new carriers are new classes only",
+    "Both are equivalent for this use case",
+    "Neither — use a database table for carrier rates instead"
+  ]}
+  correctAnswer={1}
+  explanation="Option B correctly applies OCP. When a new carrier is added, you create a new ICarrierRate implementation and never touch ShippingCalculator. Option A requires opening and editing ShippingCalculator every time a new carrier is added — violating OCP. Option A also makes unit testing harder: you must test all carrier logic through one method. Option B lets you test each carrier rate class independently."
+/>
+
+---
+
+<Quiz
+  id="06-solid/open-closed/quiz-1"
+  questions={[
+    {
+      question: "What design pattern most directly implements the Open/Closed Principle?",
+      options: [
+        "Singleton — ensures only one instance",
+        "Strategy — defines a family of algorithms behind an interface",
+        "Factory — creates objects without specifying concrete classes",
+        "Decorator — adds responsibilities to objects dynamically"
+      ],
+      correctAnswer: 1,
+      explanation: "The Strategy pattern is the most direct implementation of OCP: you define an interface (the stable abstraction), and each new algorithm/behavior is a new Strategy class. The context class (e.g., OrderPricer) never changes when you add new strategies. Decorator also supports OCP by wrapping existing behavior, but Strategy is the canonical example."
+    },
+    {
+      question: "In ASP.NET Core, which feature most clearly demonstrates OCP at the framework level?",
+      options: [
+        "appsettings.json — configuration files",
+        "Middleware pipeline — add behavior by registering middleware",
+        "Dependency injection container",
+        "Entity Framework migrations"
+      ],
+      correctAnswer: 1,
+      explanation: "The ASP.NET Core middleware pipeline is a textbook OCP implementation. You extend the HTTP request handling pipeline by registering new middleware (UseAuthentication(), UseRouting(), your own app.Use()...) without modifying any existing middleware. Each piece of middleware is isolated and the pipeline ordering is controlled by composition."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Interfaces (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces" },
+    { label: "Polymorphism (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism" },
+    { label: "ASP.NET Core middleware — extending the pipeline", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/" },
+    { label: "Architectural principles — open/closed", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles" },
+  ]}
+/>

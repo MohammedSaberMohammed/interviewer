@@ -1,24 +1,297 @@
 ---
-title: "How async/await Compiles (State Machine)"
+title: "How async/await Compiles: The State Machine"
 slug: "async-state-machine"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["async", "await", "state machine", "IAsyncStateMachine", "MoveNext", "compiler", "IL"]
+summary: "async/await is syntactic sugar over a compiler-generated state machine — understanding MoveNext() demystifies every async behavior you'll encounter."
+docsLinks:
+  - label: "Async in depth"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/async-in-depth"
+  - label: "Dissecting async methods in C#"
+    url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-understanding-the-costs-of-async-and-await"
+  - label: "IAsyncStateMachine interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.iasyncstatemachine"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Compiler Does the Heavy Lifting
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When you write an `async` method, the C# compiler transforms it into a **state machine struct** that implements `IAsyncStateMachine`. This struct tracks where execution is paused, holds all local variables, and knows how to resume when an awaited task completes.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Understanding this transformation explains:
+- Why `async` methods have overhead even when tasks complete synchronously
+- Why local variables survive across `await` points
+- Why exceptions from `async` methods are wrapped in `AggregateException`
+- How `ConfigureAwait(false)` hooks in
+
+---
+
+## A Simple Example — Before and After
+
+**Your code:**
+
+```csharp
+public async Task<string> GetMessageAsync(int id)
+{
+    var user = await _db.GetUserAsync(id);
+    var message = await _messageService.GetLatestAsync(user.Email);
+    return $"Hello {user.Name}: {message}";
+}
+```
+
+**What the compiler generates (simplified — actual IL is more complex):**
+
+```csharp
+// The compiler turns GetMessageAsync into a "kickoff" method
+// that creates and starts the state machine:
+public Task<string> GetMessageAsync(int id)
+{
+    var stateMachine = new GetMessageAsync_StateMachine();
+    stateMachine.__this = this;
+    stateMachine.__id = id;
+    stateMachine.__state = -1; // Initial state
+    stateMachine.__builder = AsyncTaskMethodBuilder<string>.Create();
+    stateMachine.__builder.Start(ref stateMachine); // Calls MoveNext() once
+    return stateMachine.__builder.Task;
+}
+
+// The actual work lives in the generated struct:
+private struct GetMessageAsync_StateMachine : IAsyncStateMachine
+{
+    // Captured locals and parameters become fields:
+    public int __state;
+    public AsyncTaskMethodBuilder<string> __builder;
+    public MyClass __this;
+    public int __id;
+
+    // Variables from the method body become fields:
+    private User user;
+    private string message;
+    private TaskAwaiter<User> __awaiter1;
+    private TaskAwaiter<string> __awaiter2;
+
+    public void MoveNext()
+    {
+        string result;
+        try
+        {
+            if (__state == -1)
+            {
+                // First call — start the operation
+                __awaiter1 = __this._db.GetUserAsync(__id).GetAwaiter();
+
+                if (!__awaiter1.IsCompleted)
+                {
+                    __state = 0;
+                    __builder.AwaitUnsafeOnCompleted(ref __awaiter1, ref this);
+                    return; // Yield — we'll be called again when done
+                }
+
+                goto state0Resume;
+            }
+            else if (__state == 0)
+            {
+                state0Resume:
+                user = __awaiter1.GetResult(); // Throws if the task faulted
+
+                __awaiter2 = __this._messageService.GetLatestAsync(user.Email).GetAwaiter();
+                if (!__awaiter2.IsCompleted)
+                {
+                    __state = 1;
+                    __builder.AwaitUnsafeOnCompleted(ref __awaiter2, ref this);
+                    return; // Yield again
+                }
+
+                goto state1Resume;
+            }
+            else // __state == 1
+            {
+                state1Resume:
+                message = __awaiter2.GetResult();
+                result = $"Hello {user.Name}: {message}";
+            }
+        }
+        catch (Exception ex)
+        {
+            __state = -2; // Terminal state
+            __builder.SetException(ex);
+            return;
+        }
+
+        __state = -2; // Terminal state
+        __builder.SetResult(result);
+    }
+
+    public void SetStateMachine(IAsyncStateMachine stateMachine)
+        => __builder.SetStateMachine(stateMachine);
+}
+```
+
+---
+
+## The Key Insight: MoveNext() Is Called Twice
+
+For this method with two `await`s, `MoveNext()` is called **up to three times**:
+
+1. **First call** (state = -1): Starts `GetUserAsync`. If not done, registers a continuation and returns.
+2. **Second call** (state = 0): `GetUserAsync` is done, gets result, starts `GetLatestAsync`. If not done, registers continuation and returns.
+3. **Third call** (state = 1): `GetLatestAsync` is done, gets result, constructs the return string, calls `SetResult`.
+
+If any awaited task is already complete when checked (`IsCompleted == true`), MoveNext does NOT yield — it falls through synchronously. This is the "fast path" optimization.
+
+---
+
+## The Struct vs Class Distinction
+
+In **Debug builds**, the state machine is a **class** (heap-allocated). In **Release builds**, it is a **struct** that the builder boxes onto the heap only when it actually needs to suspend. This is why:
+
+```csharp
+// This has near-zero overhead in release mode when the cache hits:
+public async ValueTask<int> GetAsync(string key)
+{
+    if (_cache.TryGetValue(key, out int value))
+        return value; // MoveNext runs synchronously, no Task object created
+
+    return await _db.QueryAsync<int>(key); // Only now does heap allocation occur
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The AsyncTaskMethodBuilder and PoolingAsyncValueTaskMethodBuilder**
+
+In .NET 6+, methods returning `ValueTask` use `PoolingAsyncValueTaskMethodBuilder`, which **pools the state machine box** across calls via a configurable object pool. This means frequently-called async methods can have zero per-call allocation even when they suspend.
+
+You can also opt into this for `Task`-returning methods:
+
+```csharp
+[AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+public async ValueTask<int> FrequentlyCalledAsync()
+{
+    return await SomeFastOperationAsync();
+}
+```
+
+This is how ASP.NET Core's Kestrel achieves extremely low allocation numbers per request — the I/O path uses pooled state machines throughout.
+
+In .NET 8, `IAsyncEnumerable<T>` state machines also participate in pooling by default when built with the right compiler features enabled.
 </Callout>
+
+---
+
+## What Happens to Exceptions?
+
+The state machine catches **all exceptions** from the method body and routes them through `SetException` on the builder. This is why:
+
+```csharp
+// This WORKS — exception captured in the returned Task
+Task<string> task = GetMessageAsync(99);
+try
+{
+    string result = await task; // Exception rethrown here
+}
+catch (UserNotFoundException ex)
+{
+    // Caught correctly
+}
+
+// This DOES NOT WORK — exception already lost!
+// (because MoveNext starts synchronously before GetMessageAsync returns)
+// Actually for async void, see lesson 14. For Task-returning, it's fine.
+
+// However, this pattern loses the stack trace depth:
+void CallerBad()
+{
+    Task t = GetMessageAsync(99);
+    t.Wait(); // Throws AggregateException wrapping the real exception!
+    // Inner exception: t.Exception.InnerException
+}
+
+// vs
+async Task CallerGood()
+{
+    await GetMessageAsync(99); // Rethrows the original exception — stack preserved
+}
+```
+
+---
+
+## Local Variables Across await Points
+
+Because locals become fields on the state machine, they survive suspension:
+
+```csharp
+public async Task ProcessOrderAsync(int orderId)
+{
+    // 'stopwatch' is a FIELD on the state machine — survives the await
+    var stopwatch = Stopwatch.StartNew();
+    var order = await _db.GetOrderAsync(orderId);
+
+    // Still accessible after await!
+    Console.WriteLine($"DB query took {stopwatch.ElapsedMilliseconds}ms");
+
+    await _processor.ProcessAsync(order);
+
+    Console.WriteLine($"Total time: {stopwatch.ElapsedMilliseconds}ms");
+}
+```
+
+<Callout type="warning">
+**Be careful about what you capture.** Every object you reference in an async method before an await becomes a field on the state machine. Holding large objects (like `byte[]` buffers or `DbDataReader`) alive across multiple awaits can significantly increase GC pressure because the state machine keeps them rooted.
+
+Prefer to narrow variable scope and null them out explicitly if they're large and no longer needed after an await point.
+</Callout>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/async-state-machine/challenge-1"
+  title="State Machine State Count"
+  description="How many times will MoveNext() be called if all awaited tasks are already completed (IsCompleted = true) when checked?"
+  code={`public async Task<int> ComputeAsync()
+{
+    int a = await Task.FromResult(1);
+    int b = await Task.FromResult(2);
+    int c = await Task.FromResult(3);
+    return a + b + c;
+}`}
+  options={[
+    "1 time — the whole method runs synchronously in one MoveNext call",
+    "3 times — once per await",
+    "4 times — once per await plus one final call",
+    "0 times — Task.FromResult doesn't trigger MoveNext"
+  ]}
+  correctAnswer={0}
+  explanation="When IsCompleted is true on all awaiters, MoveNext() never yields — it falls through all the state transitions in a single synchronous call. The state machine is still created and MoveNext() is still called, but it completes in one shot. This is the 'hot path' optimization: if you await tasks that are already done (Task.FromResult, cached ValueTask, etc.), async/await adds only the overhead of the state machine setup, not actual thread suspension."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/async-state-machine/quiz-1"
+  question="Why do local variables in async methods survive across await suspension points?"
+  options={[
+    "The thread stack is saved and restored by the OS",
+    "The C# compiler promotes them to fields on the generated state machine struct/class",
+    "They are stored in thread-local storage",
+    "The CLR uses fibers to preserve the stack"
+  ]}
+  correctAnswer={1}
+  explanation="When the compiler transforms an async method, any variable that is live across an await point is 'lifted' to a field on the generated IAsyncStateMachine struct. This is the same mechanism as iterator state machines (yield return). The thread stack itself is not preserved — after yielding, the original thread is completely free to do other work. When MoveNext() is called again, all state is recovered from the struct fields."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async in depth (.NET docs)", url: "https://learn.microsoft.com/en-us/dotnet/standard/async-in-depth" },
+    { label: "IAsyncStateMachine interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.iasyncstatemachine" },
+    { label: "AsyncTaskMethodBuilder", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.asynctaskmethodbuilder" },
+    { label: "Task parallel library and async", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/task-based-asynchronous-programming" },
+  ]}
+/>

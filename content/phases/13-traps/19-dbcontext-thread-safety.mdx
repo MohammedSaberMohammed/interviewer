@@ -3,22 +3,244 @@ title: "DbContext Thread Safety"
 slug: "dbcontext-thread-safety"
 order: 19
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["EF Core", "DbContext", "thread safety", "async", "parallel", "concurrency", "DI"]
+summary: "DbContext is not thread-safe — running parallel queries on the same context instance throws, corrupts change tracker state, or silently produces wrong results."
+docsLinks:
+  - label: "DbContext thread safety"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#avoiding-dbcontext-threading-issues"
+  - label: "IDbContextFactory<TContext>"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-a-dbcontext-factory"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — multiple async operations on the same DbContext instance
+public class ReportService
+{
+    private readonly AppDbContext _db;
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    public ReportService(AppDbContext db) { _db = db; }
+
+    public async Task<ReportData> GenerateReportAsync()
+    {
+        // Running two queries "in parallel" on the same DbContext:
+        var ordersTask   = _db.Orders.Where(o => o.Date >= DateTime.UtcNow.AddDays(-30))
+                                      .ToListAsync();
+        var customersTask = _db.Customers.Where(c => c.IsActive)
+                                          .ToListAsync();
+
+        // THE PROBLEM: Both tasks share _db — parallel execution is not supported!
+        await Task.WhenAll(ordersTask, customersTask);
+        // Throws: InvalidOperationException:
+        // "A second operation was started on this context instance before a previous operation completed."
+        // OR: silently corrupts the internal state
+    }
+}
+```
+
+**Second form: shared DbContext in a singleton**
+
+```csharp
+// Also wrong — singleton holds a scoped DbContext
+public class CachedProductService
+{
+    private readonly AppDbContext _db; // Captured once at construction
+
+    public CachedProductService(AppDbContext db) { _db = db; }
+    // db is scoped — will be disposed after first request, then _db is a zombie context
+}
+```
+
+<Callout type="trap">
+`DbContext` is designed to be used by **one thread at a time** for the duration of a single unit of work (typically one HTTP request). Using the same instance concurrently from multiple threads or across multiple async operations running in parallel will throw or corrupt internal state with no reliable error in all cases.
 </Callout>
+
+---
+
+## Why DbContext Is Not Thread-Safe
+
+```csharp
+// DbContext has substantial non-thread-safe internal state:
+// 1. ChangeTracker — tracks entity state (Added, Modified, Deleted)
+// 2. Internal query pipeline state
+// 3. Connection management (a single DbConnection per context)
+// 4. Materialization buffers
+
+// Running two queries simultaneously = two DataReaders on one connection
+// Most database providers do NOT support MARS (Multiple Active Result Sets) by default
+// Even with MARS: the ChangeTracker processes results from both queries interleaved → corruption
+
+// The error:
+// "A second operation was started on this context instance before a previous
+//  asynchronous operation completed. Use 'await' to ensure that any asynchronous
+//  operations have completed before calling another method on this context."
+```
+
+---
+
+## The Fix
+
+**Option 1: Sequential queries (if parallel is not truly needed)**
+
+```csharp
+// CORRECT — sequential async operations on a single context
+public async Task<ReportData> GenerateReportAsync()
+{
+    var orders = await _db.Orders
+        .Where(o => o.Date >= DateTime.UtcNow.AddDays(-30))
+        .ToListAsync(); // Awaited fully before next query
+
+    var customers = await _db.Customers
+        .Where(c => c.IsActive)
+        .ToListAsync(); // Sequential — no conflict
+
+    return new ReportData(orders, customers);
+}
+```
+
+**Option 2: IDbContextFactory for genuine parallelism**
+
+```csharp
+// Register in Program.cs:
+builder.Services.AddDbContextFactory<AppDbContext>(
+    opts => opts.UseSqlServer(connectionString));
+
+// Service using factory for parallel work:
+public class ReportService
+{
+    private readonly IDbContextFactory<AppDbContext> _factory;
+
+    public ReportService(IDbContextFactory<AppDbContext> factory) { _factory = factory; }
+
+    public async Task<ReportData> GenerateReportAsync()
+    {
+        // Each query gets its OWN context — no sharing!
+        var ordersTask = Task.Run(async () =>
+        {
+            await using var db = await _factory.CreateDbContextAsync();
+            return await db.Orders
+                .Where(o => o.Date >= DateTime.UtcNow.AddDays(-30))
+                .ToListAsync();
+        });
+
+        var customersTask = Task.Run(async () =>
+        {
+            await using var db = await _factory.CreateDbContextAsync();
+            return await db.Customers
+                .Where(c => c.IsActive)
+                .ToListAsync();
+        });
+
+        // True parallel — different context instances
+        var (orders, customers) = await Task.WhenAll(ordersTask, customersTask)
+            .ContinueWith(t => (t.Result[0] as List<Order>, t.Result[1] as List<Customer>));
+
+        return new ReportData(orders, customers);
+    }
+}
+```
+
+**Option 3: Combine into a single query (often best)**
+
+```csharp
+// Avoid the problem entirely — one query, one round-trip
+public async Task<(List<Order> orders, List<Customer> customers)> GetReportDataAsync()
+{
+    var orders    = await _db.Orders.Where(o => o.Date >= cutoff).ToListAsync();
+    var customers = await _db.Customers.Where(c => c.IsActive).ToListAsync();
+    return (orders, customers);
+    // Or use a view/stored procedure that returns both result sets
+}
+```
+
+---
+
+<MythBuster
+  myth="async/await parallelizes automatically — awaiting two queries runs them in parallel on the database"
+  truth="'await query1; await query2' is sequential — one completes, then the other starts. 'Task.WhenAll(query1, query2)' attempts true concurrency, which requires separate DbContext instances. On a single DbContext, WhenAll throws."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/dbcontext-thread-safety/challenge-1"
+  title="Which pattern is safe?"
+  description="Which code correctly runs two database queries without DbContext threading issues?"
+  code={`// Option A
+var t1 = _db.Products.ToListAsync();
+var t2 = _db.Orders.ToListAsync();
+await Task.WhenAll(t1, t2);
+
+// Option B
+var products = await _db.Products.ToListAsync();
+var orders   = await _db.Orders.ToListAsync();
+
+// Option C
+var t1 = Task.Run(() => _db.Products.ToList());
+var t2 = Task.Run(() => _db.Orders.ToList());
+Task.WaitAll(t1, t2);
+
+// Option D
+var t1 = Task.Run(async () => { using var db = _factory.CreateDbContext(); return await db.Products.ToListAsync(); });
+var t2 = Task.Run(async () => { using var db = _factory.CreateDbContext(); return await db.Orders.ToListAsync(); });
+await Task.WhenAll(t1, t2);`}
+  options={[
+    "Option A — starting tasks before awaiting is safe",
+    "Option B — sequential awaits on one context is always safe",
+    "Option C — Task.Run moves to thread pool, avoiding context issues",
+    "Option D — each query uses its own DbContext created from IDbContextFactory"
+  ]}
+  correctAnswer={1}
+  explanation="Option B is always safe — sequential awaits on a single DbContext context are correct. Option A throws: starting both ToListAsync() calls before awaiting creates two simultaneous operations on _db. Option C is worse: Task.Run with synchronous ToList() attempts real thread-parallel access to _db — guaranteed corruption. Option D is correct for true parallelism — each task creates its own context via the factory, so there is no sharing."
+/>
+
+---
+
+## Change Tracker Cross-Request Contamination
+
+```csharp
+// Another DbContext danger: sharing context across requests
+// (e.g., wrong lifetime registration)
+
+// Wrong registration (singleton = shared across ALL requests):
+builder.Services.AddSingleton<AppDbContext>(); // WRONG
+
+// Correct:
+builder.Services.AddDbContext<AppDbContext>(...); // Scoped by default — one per request
+
+// With a singleton context:
+// Request 1 loads User { Id=1, Name="Alice" }, marks it Unchanged in ChangeTracker
+// Request 2 updates User { Id=1, Name="Bob" }, SaveChanges → updates DB
+// Request 1 still has the stale cached entity — reads "Alice" from ChangeTracker
+// (EF Core returns tracked entity without re-querying, even if DB has changed)
+```
+
+---
+
+<Callout type="senior">
+**The intermittent data corruption nobody could reproduce**
+
+A high-traffic API had a singleton-scoped DbContext (a mistake in DI registration). Under normal load, requests were mostly sequential and there were no issues. Under load testing at 50 concurrent users, the application began intermittently returning the wrong user's data in authenticated endpoints.
+
+The root cause: the singleton DbContext's ChangeTracker was accumulating entities from multiple requests. When one request called `SaveChanges`, it sometimes committed entities from another request's unsaved changes. An order placed by User A was occasionally saved with User B's billing address.
+
+This was a data integrity failure discovered in load testing — a stroke of luck. In production systems, this type of bug can be extremely difficult to reproduce and can cause serious business/legal consequences.
+
+**EF Core now emits a warning at startup if DbContext is registered as Singleton** (since EF Core 6). Do not suppress this warning.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Avoiding DbContext threading issues", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#avoiding-dbcontext-threading-issues" },
+    { label: "IDbContextFactory\<TContext\>", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-a-dbcontext-factory" },
+    { label: "DbContext lifetime in DI", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#dbcontext-in-dependency-injection-for-aspnet-core" },
+    { label: "Parallel queries with EF Core", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-a-dbcontext-factory" },
+  ]}
+/>

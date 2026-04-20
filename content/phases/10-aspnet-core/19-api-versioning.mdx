@@ -1,24 +1,282 @@
 ---
-title: "API Versioning"
+title: "API Versioning: URL, Header, Query String"
 slug: "api-versioning"
 order: 19
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["API versioning", "Asp.Versioning", "URL versioning", "header versioning", "query versioning", "asp.net core"]
+summary: "API versioning lets you evolve your API without breaking existing clients. The Asp.Versioning library supports URL, header, and query string strategies — plus per-endpoint deprecation."
+docsLinks:
+  - label: "ASP.NET API versioning"
+    url: "https://github.com/dotnet/aspnet-api-versioning"
+  - label: "API versioning with Minimal APIs"
+    url: "https://github.com/dotnet/aspnet-api-versioning/wiki/New-Services-Quick-Start#aspnet-core"
+  - label: "API versioning in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/web-api/advanced/conventions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Three Versioning Strategies
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+<ComparisonTable
+  headers={["Strategy", "Example", "Pros", "Cons"]}
+  rows={[
+    ["URL segment", "/api/v1/products", "Explicit, bookmarkable, easy to cache", "URLs change when version changes; not RESTful purists' choice"],
+    ["Query string", "/api/products?api-version=1.0", "Non-breaking URL, easy to test in browser", "Pollutes URLs, easy to forget, harder to cache correctly"],
+    ["Header", "api-version: 1.0", "Clean URLs, truly RESTful", "Not testable in browser; requires tooling or Postman"],
+    ["Media type", "Accept: application/json;v=1.0", "Truly content-negotiation based", "Complex, rarely used in practice"],
+  ]}
+/>
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Setup with Asp.Versioning
+
+```bash
+dotnet add package Asp.Versioning.Mvc         # Controllers
+dotnet add package Asp.Versioning.Mvc.ApiExplorer # OpenAPI support
+# Or for Minimal APIs:
+dotnet add package Asp.Versioning.Http
+```
+
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddApiVersioning(options =>
+{
+    options.DefaultApiVersion = new ApiVersion(1, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true; // 1.0 if no version specified
+    options.ReportApiVersions = true; // Adds api-supported-versions and api-deprecated-versions headers
+    options.ApiVersionReader = ApiVersionReader.Combine(
+        new UrlSegmentApiVersionReader(),   // /api/v1/...
+        new HeaderApiVersionReader("api-version"),       // Header: api-version: 1.0
+        new QueryStringApiVersionReader("api-version")  // ?api-version=1.0
+    );
+})
+.AddApiExplorer(options =>
+{
+    options.GroupNameFormat = "'v'VVV"; // "v1", "v1.1", "v2"
+    options.SubstituteApiVersionInUrl = true; // Replace {version} in route templates
+});
+
+builder.Services.AddControllers();
+
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+```
+
+---
+
+## Versioned Controllers
+
+```csharp
+// Version 1.0 controller
+[ApiController]
+[ApiVersion("1.0")]
+[Route("api/v{version:apiVersion}/products")]
+public class ProductsV1Controller : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetAll()
+    {
+        return Ok(new[] { new { id = 1, name = "Product A" } });
+    }
+
+    [HttpGet("{id:int}")]
+    public IActionResult GetById(int id)
+    {
+        return Ok(new { id, name = "Product A" });
+    }
+}
+
+// Version 2.0 controller — same route, different version
+[ApiController]
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/products")]
+public class ProductsV2Controller : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetAll()
+    {
+        // V2 includes pagination and additional fields
+        return Ok(new
+        {
+            items = new[] { new { id = 1, name = "Product A", category = "Electronics", sku = "EL001" } },
+            total = 1,
+            page = 1,
+            pageSize = 20
+        });
+    }
+}
+
+// Single controller with multiple versions — use [MapToApiVersion]
+[ApiController]
+[ApiVersion("1.0")]
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/orders")]
+public class OrdersController : ControllerBase
+{
+    [HttpGet]
+    [MapToApiVersion("1.0")]
+    public IActionResult GetAllV1() => Ok(new { message = "V1 response" });
+
+    [HttpGet]
+    [MapToApiVersion("2.0")]
+    public IActionResult GetAllV2() => Ok(new { message = "V2 response", extra = "data" });
+}
+```
+
+---
+
+## Deprecating API Versions
+
+```csharp
+[ApiController]
+[ApiVersion("1.0", Deprecated = true)] // Mark V1 as deprecated
+[ApiVersion("2.0")]
+[Route("api/v{version:apiVersion}/customers")]
+public class CustomersController : ControllerBase
+{
+    [HttpGet]
+    [MapToApiVersion("1.0")]
+    public IActionResult GetV1()
+    {
+        // Optionally add deprecation warning in response
+        Response.Headers.Append("Sunset", "Sat, 31 Dec 2025 23:59:59 GMT");
+        Response.Headers.Append("Deprecation", "true");
+        Response.Headers.Append("Link", "</api/v2/customers>; rel=\"successor-version\"");
+        return Ok();
+    }
+
+    [HttpGet]
+    [MapToApiVersion("2.0")]
+    public IActionResult GetV2() => Ok();
+}
+// With ReportApiVersions = true, response headers will include:
+// api-supported-versions: 2.0
+// api-deprecated-versions: 1.0
+```
+
+---
+
+## Versioning with Minimal APIs
+
+```csharp
+// Minimal API versioning requires Asp.Versioning.Http
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddApiVersioning(options =>
+{
+    options.DefaultApiVersion = new ApiVersion(1, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true;
+    options.ApiVersionReader = new UrlSegmentApiVersionReader();
+});
+
+var app = builder.Build();
+
+var apiVersionSet = app.NewApiVersionSet()
+    .HasApiVersion(new ApiVersion(1, 0))
+    .HasApiVersion(new ApiVersion(2, 0))
+    .ReportApiVersions()
+    .Build();
+
+// V1 endpoints
+var v1 = app.MapGroup("/api/v{version:apiVersion}")
+    .WithApiVersionSet(apiVersionSet)
+    .MapToApiVersion(1, 0);
+
+v1.MapGet("/products", () => new[] { "Product A", "Product B" })
+    .WithName("GetProductsV1");
+
+// V2 endpoints
+var v2 = app.MapGroup("/api/v{version:apiVersion}")
+    .WithApiVersionSet(apiVersionSet)
+    .MapToApiVersion(2, 0);
+
+v2.MapGet("/products", () => new
+{
+    items = new[] { "Product A", "Product B" },
+    total = 2,
+    page = 1
+})
+.WithName("GetProductsV2");
+
+app.Run();
+```
+
+---
+
+## Version Negotiation and Error Responses
+
+When a client requests an unsupported version, the API returns a Problem Details response:
+
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.4",
+  "title": "Unsupported API version",
+  "status": 400,
+  "detail": "The HTTP resource that matches the request URI 'https://api.myapp.com/api/v99/products' does not support the API version '99'.",
+  "instance": "https://api.myapp.com/api/v99/products"
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Versioning Strategy for Long-Lived APIs**
+
+The choice of versioning strategy affects your team's workflow and API consumers:
+
+**URL versioning** is the most common in practice because:
+- CDN and proxy caching works correctly (different URLs cache independently)
+- Easy to route in API gateways (Nginx, Kong, Azure API Management)
+- Developers can test in browser or curl without extra headers
+- Easy to deprecate by returning 410 Gone from old URL prefix
+
+**Sunset Header** (RFC 8594) is the standard way to communicate deprecation timelines:
+```csharp
+// In middleware or filter — add to deprecated version responses
+context.Response.Headers.Append("Sunset", "Sun, 01 Jun 2025 00:00:00 GMT");
+context.Response.Headers.Append("Deprecation", "@1735689600"); // Unix timestamp
+context.Response.Headers.Append("Link", $"</api/v2{requestPath}>; rel=\"successor-version\"");
+```
+
+For internal microservices, **header versioning** is cleaner — there's no URL contamination and services can route based on headers. For public APIs that are bookmarked and shared, **URL versioning** wins on predictability.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/api-versioning/quiz-1"
+  question="You configure AssumeDefaultVersionWhenUnspecified = true with DefaultApiVersion = 1.0. A client calls /api/products without specifying a version. What happens?"
+  options={[
+    "The request is rejected with a 400 because no version was specified",
+    "The request is routed to version 1.0 endpoints automatically",
+    "The request is routed to the highest available version",
+    "The request returns a 300 Multiple Choices response listing available versions"
+  ]}
+  correctAnswer={1}
+  explanation="AssumeDefaultVersionWhenUnspecified = true means that when no version is specified in the URL, header, or query string, the default version (DefaultApiVersion = 1.0) is assumed. The request is treated as though the client requested version 1.0. This provides backward compatibility for existing clients that are not yet version-aware."
+/>
+
+---
+
+<MythBuster
+  myth="You should version every API from day one, even for internal-only microservices"
+  truth="Over-engineering versioning for internal services that you control both sides of adds complexity with little benefit. Version your API when: (1) you have external consumers you cannot force to update simultaneously, (2) you need to maintain multiple concurrent versions, or (3) you're building a public API. Internal services that deploy together can use coordinated deployments instead of versioning."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Asp.Versioning on GitHub", url: "https://github.com/dotnet/aspnet-api-versioning" },
+    { label: "API versioning quick start", url: "https://github.com/dotnet/aspnet-api-versioning/wiki/New-Services-Quick-Start" },
+    { label: "RFC 8594: Sunset header", url: "https://datatracker.ietf.org/doc/html/rfc8594" },
+    { label: "API versioning in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/web-api/advanced/conventions" },
+  ]}
+/>

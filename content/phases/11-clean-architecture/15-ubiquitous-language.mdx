@@ -1,24 +1,229 @@
 ---
-title: "Ubiquitous Language"
+title: "Ubiquitous Language: Naming in Code & Event Storming"
 slug: "ubiquitous-language"
 order: 15
-difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "advanced"
+readingTime: 14
+status: "published"
+tags: ["ubiquitous language", "DDD", "event storming", "naming", "domain-driven design", "bounded context", "domain language"]
+summary: "Ubiquitous language means using the domain expert's exact words in code — class names, method names, variable names. When code and conversation speak the same language, bugs hide less."
+docsLinks:
+  - label: ".NET Microservices Architecture — Domain model"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model"
+  - label: "eShopOnContainers — naming conventions"
+    url: "https://github.com/dotnet-architecture/eShopOnContainers"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Ubiquitous Language?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Ubiquitous language is a shared vocabulary — developed collaboratively between developers and domain experts — that is used **consistently** in:
+- Conversations with business stakeholders
+- Requirements documents and user stories
+- Code: class names, method names, variable names, event names
+- Database table and column names
+- API endpoint paths and payload field names
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The key insight: when the code speaks the same language as the business, bugs become easier to spot and requirements easier to implement. When they diverge, there's a **translation tax** on every conversation.
+
+---
+
+## The Translation Tax
+
+```csharp
+// BAD: developer-speak that doesn't match the business domain
+public class UserRecord      // business says "Customer"
+{
+    public int UserType { get; set; }     // business says "Account Tier" (Gold, Silver, Basic)
+    public bool IsEnabled { get; set; }   // business says "Active"
+    public DateTime CreatedDate { get; set; } // business says "Registration Date"
+
+    public void ProcessOrder(UserOrder o) // business says "Place Order" or "Submit Order"
+    {
+        if (UserType == 2)               // what does 2 mean?! business says "Gold Member"
+            o.ApplyGoldDiscount();       // business says "Honor Tier Benefit"
+    }
+}
+
+// GOOD: code uses the business's exact language
+public class Customer
+{
+    public AccountTier Tier { get; private set; }   // Gold, Silver, Basic
+    public CustomerStatus Status { get; private set; } // Active, Suspended, Closed
+    public DateTime RegisteredAt { get; private set; }
+
+    public void PlaceOrder(Order order)
+    {
+        if (Tier == AccountTier.Gold)
+            order.ApplyTierBenefit(TierBenefit.GoldDiscount);
+    }
+}
+
+public enum AccountTier { Basic, Silver, Gold }
+public enum CustomerStatus { Active, Suspended, Closed }
+```
+
+In the second version, a product manager reading the code sees their own words. A bug reported as "Gold customers aren't getting their tier benefit" maps directly to `if (Tier == AccountTier.Gold)`.
+
+---
+
+## Language in Every Layer
+
+Ubiquitous language must penetrate all layers — not just the domain:
+
+```csharp
+// Commands — verb phrase from the business action
+public record PlaceOrderCommand(Guid CustomerId, /* ... */);  // not "CreateOrderRequest"
+public record ConfirmOrderCommand(Guid OrderId);              // not "UpdateOrderStatusCommand"
+public record CancelOrderCommand(Guid OrderId, string Reason); // not "DeleteOrderCommand"
+
+// Queries — describe what you're asking for
+public record GetOrdersByCustomerQuery(Guid CustomerId);      // not "FetchUserTransactions"
+public record GetActiveSubscriptionsQuery();                  // not "GetEnabledSubscriptionRecords"
+
+// Events — past tense, domain significance
+public record OrderPlacedEvent(OrderId OrderId, CustomerId CustomerId);
+public record OrderConfirmedEvent(OrderId OrderId, Money Total);
+public record SubscriptionUpgradedEvent(SubscriptionId Id, AccountTier NewTier);
+
+// Exceptions — business rule violation language
+throw new DomainException("Cannot confirm an order that has already been cancelled.");
+throw new DomainException("Gold tier benefit cannot be applied twice to the same order.");
+
+// REST API paths — domain language visible in URLs
+// POST /orders                   → Place order
+// POST /orders/{id}/confirm      → Confirm order
+// POST /orders/{id}/cancel       → Cancel order
+// GET  /customers/{id}/orders    → Get orders for customer
+```
+
+---
+
+## Language Anti-Patterns to Avoid
+
+<ComparisonTable
+  headers={["Anti-Pattern", "Example", "Better Alternative"]}
+  rows={[
+    ["Numeric status codes", "Status = 2 (means 'Confirmed')", "Status = OrderStatus.Confirmed (enum)"],
+    ["Generic CRUD verbs", "UpdateOrder(), SaveOrder()", "ConfirmOrder(), CancelOrder(), AddLine()"],
+    ["Developer jargon", "UserEntity, DataRecord, DTO suffix everywhere", "Customer, Order, Invoice (no suffix needed in domain)"],
+    ["Ambiguous pronouns in comments", "// processes it", "// confirms the order and raises OrderConfirmedEvent"],
+    ["Cross-context naming leaks", "Order uses 'UserId' (Billing context term)", "Order uses 'CustomerId' (Ordering context term)"],
+    ["Abbreviations", "CustTypCd, ADDR_LN1", "CustomerType, AddressLine1"],
+  ]}
+/>
+
+---
+
+## Event Storming: Discovering the Language
+
+**Event Storming** (Alberto Brandolini) is a collaborative workshop technique for discovering the domain language by starting with **domain events** — things that happened:
+
+```
+The Event Storming process:
+
+1. Domain Events (orange sticky): past-tense facts
+   "OrderPlaced" | "PaymentFailed" | "ItemOutOfStock" | "CustomerRegistered"
+
+2. Commands (blue sticky): actions that trigger events
+   "PlaceOrder" → "OrderPlaced"
+   "ProcessPayment" → "PaymentProcessed" or "PaymentFailed"
+
+3. Aggregates (yellow sticky): things that handle commands and emit events
+   [Order] handles PlaceOrder → emits OrderPlaced
+   [Payment] handles ProcessPayment → emits PaymentProcessed / PaymentFailed
+
+4. Read Models / Projections (green sticky): information needed to make decisions
+   "Customer's order history" is needed before PlaceOrder
+   "Inventory level" is needed before ConfirmOrder
+
+5. External Systems (pink sticky): third-party inputs
+   [Payment Gateway] → PaymentProcessed
+   [Inventory System] → InventoryReserved
+
+6. Bounded Contexts (big pink paper): group related events/commands/aggregates
+```
+
+The vocabulary that emerges from event storming becomes your ubiquitous language. Every sticky note title becomes a potential class name, method name, or event type.
+
+---
+
+## Translating Event Storming into Code
+
+```csharp
+// From event storming session:
+// Command: "PlaceOrder"
+// Events: "OrderPlaced", "OrderLineAdded"
+// Aggregate: "Order"
+// Read model: "Customer's pending orders"
+
+// → These become:
+public record PlaceOrderCommand(Guid CustomerId, IReadOnlyList<OrderLineRequest> Lines);
+
+public sealed class Order : AggregateRoot<OrderId>
+{
+    public void AddLine(Product product, int quantity)
+    {
+        // domain logic...
+        Raise(new OrderLineAddedEvent(Id, product.Id, quantity));
+    }
+
+    public static Order Place(CustomerId customerId, Address address)
+    {
+        var order = new Order { /* ... */ };
+        order.Raise(new OrderPlacedEvent(order.Id, customerId));
+        return order;
+    }
+}
+
+public record OrderPlacedEvent(OrderId OrderId, CustomerId CustomerId) : DomainEvent;
+public record OrderLineAddedEvent(OrderId OrderId, ProductId ProductId, int Quantity) : DomainEvent;
+
+// Read model — from "Customer's pending orders" sticky
+public record PendingOrderSummary(Guid OrderId, DateTime PlacedAt, decimal Total, int LineCount);
+```
+
+---
+
+<Callout type="senior">
+**Ubiquitous Language Erodes — You Have to Actively Maintain It**
+
+The ubiquitous language is not set once at the start of a project. It evolves as your understanding of the domain deepens. Business experts refine their vocabulary; domain concepts split or merge; context boundaries become clearer.
+
+The danger: code accumulates the stale vocabulary of old conversations. You end up with `ProcessTransaction()` (what the first developer thought the business meant), `HandlePaymentEvent()` (what the second developer called it), and `ExecuteSettlement()` (the actual term the payment team uses). Three synonyms, three concepts, impossible to reason about.
+
+Maintain the language actively:
+- During sprint reviews, notice when stakeholders use terms not in the code — add them.
+- During code review, flag class/method names that no domain expert would recognize.
+- Keep a **glossary** (could be a wiki page) of key terms and their precise meanings — especially for terms that mean different things in different bounded contexts.
+
+The clearest signal you've achieved ubiquitous language: when a product manager can read a handler's `public async Task Handle(ConfirmOrderCommand cmd, CancellationToken ct)` and explain in business terms what it does.
 </Callout>
+
+---
+
+## Quiz
+
+<Quiz
+  id="11-clean-architecture/ubiquitous-language/quiz-1"
+  question="A domain expert says 'When a customer suspends their account, we freeze all their pending orders.' Which code structure best reflects this in ubiquitous language?"
+  options={[
+    "A CustomerService.UpdateStatus(customerId, 0) method that sets IsEnabled=false and iterates Orders to set Status=3",
+    "A Customer.Suspend() method that raises AccountSuspendedEvent; an OrderFreezeHandler that listens and calls order.Freeze() on each pending order",
+    "A StatusController.Patch() endpoint that accepts { isActive: false } and calls a BatchUpdateService",
+    "A CustomerRepository.SetSuspended(customerId) method that runs a SQL UPDATE"
+  ]}
+  correctAnswer={1}
+  explanation="Option B uses the domain's exact language: Customer.Suspend() (the business verb), AccountSuspendedEvent (past tense, meaningful event name), OrderFreezeHandler (describes what it does in domain terms), order.Freeze() (the business action on an order). The other options use developer vocabulary (UpdateStatus, isActive, BatchUpdateService) that requires translation to/from business language in every conversation."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: ".NET Microservices Architecture — Microservice domain model", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model" },
+    { label: "eShopOnContainers — domain naming examples", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+    { label: "Architect microservice domain model boundaries", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries" },
+  ]}
+/>

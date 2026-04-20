@@ -3,22 +3,217 @@ title: "LINQ Multiple Enumeration"
 slug: "linq-multiple-enumeration"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["LINQ", "IEnumerable", "deferred execution", "performance", "side effects", "ReSharper"]
+summary: "Enumerating an IEnumerable<T> twice executes the query twice — hitting the database, reading the file, or running side-effectful code a second time."
+docsLinks:
+  - label: "Deferred execution in LINQ"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq/classification-of-standard-query-operators-by-manner-of-execution"
+  - label: "IEnumerable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — enumerating a LINQ query twice
+IEnumerable<Order> expensiveQuery = dbContext.Orders
+    .Where(o => o.Total > 1000)
+    .OrderByDescending(o => o.CreatedAt);
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+// First enumeration:
+if (!expensiveQuery.Any()) // DATABASE HIT #1 — runs the full query!
+{
+    return NotFound();
+}
+
+// Second enumeration:
+var orders = expensiveQuery.ToList(); // DATABASE HIT #2 — runs the full query AGAIN!
+
+// Total: 2 round-trips to the database instead of 1
+// For a slow query, this doubles the latency and load
+```
+
+The same trap with side effects:
+
+```csharp
+int count = 0;
+IEnumerable<int> query = Enumerable.Range(1, 5).Select(x =>
+{
+    count++; // Side effect in the projection
+    return x * 2;
+});
+
+int total = query.Sum();   // Enumerates once — count = 5
+int first = query.First(); // Enumerates again — count = 10 now!
+
+Console.WriteLine(count); // 10 — projection ran twice!
+```
+
+<Callout type="trap">
+LINQ queries with deferred execution (`IEnumerable<T>`) re-execute from scratch every time they are enumerated. Two calls to `.Any()` + `.ToList()` hit the database twice. A side-effectful projection runs twice. ReSharper and Rider flag this as "Possible multiple enumeration of IEnumerable."
 </Callout>
+
+---
+
+## Why It Happens
+
+LINQ operators like `Where`, `Select`, `OrderBy` return lazy iterators — they store the query definition but do not execute it:
+
+```csharp
+// This line does NOT query the database:
+IEnumerable<Order> query = dbContext.Orders.Where(o => o.Total > 1000);
+
+// Each of these DOES query the database:
+bool any   = query.Any();      // SELECT TOP 1...
+int count  = query.Count();    // SELECT COUNT(*)...
+var list   = query.ToList();   // SELECT * FROM Orders WHERE...
+
+// Three statements = three round-trips to the database!
+```
+
+---
+
+## The Fix
+
+**Materialize once with `.ToList()` or `.ToArray()`:**
+
+```csharp
+// CORRECT — enumerate exactly once
+List<Order> orders = dbContext.Orders
+    .Where(o => o.Total > 1000)
+    .OrderByDescending(o => o.CreatedAt)
+    .ToList(); // ONE database hit — results cached in memory
+
+if (!orders.Any()) // No DB hit — checks the in-memory List
+{
+    return NotFound();
+}
+
+// Work with the in-memory list:
+var total = orders.Sum(o => o.Total); // No DB hit
+var first = orders[0]; // No DB hit
+```
+
+**When you truly want lazy evaluation (large streams):**
+
+```csharp
+// For large datasets: enumerate once with foreach, don't call multiple terminal operators
+IEnumerable<Order> query = dbContext.Orders.Where(o => o.Total > 1000);
+
+bool foundAny = false;
+decimal sum = 0;
+
+foreach (var order in query) // Single enumeration
+{
+    foundAny = true;
+    sum += order.Total;
+}
+```
+
+**For IQueryable specifically: compose the query, then call ONE terminal operator:**
+
+```csharp
+// Build up query conditions:
+IQueryable<Order> query = dbContext.Orders.AsQueryable();
+
+if (minTotal.HasValue)
+    query = query.Where(o => o.Total >= minTotal.Value);
+
+if (customerId.HasValue)
+    query = query.Where(o => o.CustomerId == customerId.Value);
+
+// ONE execution at the end:
+var results = await query.ToListAsync(); // Single SQL query with all conditions
+```
+
+---
+
+<MythBuster
+  myth="IEnumerable caches results after the first enumeration"
+  truth="IEnumerable<T> has no built-in caching. Every enumeration re-executes the full query from the source. Only materialized collections (List<T>, T[], etc.) hold results in memory."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/linq-multiple-enumeration/challenge-1"
+  title="How many times does the database get queried?"
+  description="Count the number of SQL queries executed by this code."
+  code={`IQueryable<Product> query = dbContext.Products
+    .Where(p => p.IsActive);
+
+var count    = query.Count();
+var hasCheap = query.Any(p => p.Price < 10);
+var items    = query.ToList();`}
+  options={[
+    "1 — LINQ is lazy, it batches all calls into one query",
+    "2 — Count and Any are combined, ToList is separate",
+    "3 — each terminal operator triggers a separate database round-trip",
+    "0 — IQueryable is fully lazy until explicitly materialized with ToList"
+  ]}
+  correctAnswer={2}
+  explanation="3 database queries. Count() executes 'SELECT COUNT(*) FROM Products WHERE IsActive = 1'. Any() executes 'SELECT TOP 1 * FROM Products WHERE IsActive = 1 AND Price < 10'. ToList() executes 'SELECT * FROM Products WHERE IsActive = 1'. Each terminal LINQ operator triggers a separate round-trip. Fix: call ToList() once and then use LINQ on the in-memory list."
+/>
+
+---
+
+## ReSharper / Rider Warning
+
+```csharp
+// ReSharper shows: "Possible multiple enumeration of IEnumerable"
+// This is one of the most valuable warnings in the Rider IDE
+
+void Process(IEnumerable<string> items) // <-- the type itself is a signal
+{
+    var count = items.Count(); // Warning here
+    foreach (var item in items) // Warning here — second enumeration
+    {
+        Console.WriteLine(item);
+    }
+}
+
+// Fix: materialize at the boundary where you accept the enumerable
+void Process(IEnumerable<string> items)
+{
+    var list = items.ToList(); // Single enumeration — clear intent
+    var count = list.Count;
+    foreach (var item in list) { Console.WriteLine(item); }
+}
+```
+
+---
+
+<Callout type="senior">
+**The subtle side-effect variant in real code**
+
+A logging middleware in a web API had this pattern:
+
+```csharp
+var requests = _context.Requests.Where(r => r.Status == "Pending");
+
+_logger.LogInformation("Processing {Count} pending requests", requests.Count());
+
+foreach (var req in requests) // Second enumeration
+{
+    await ProcessAsync(req);
+}
+```
+
+During a period of high load, the query ran twice per cycle. Worse, between `Count()` and the `foreach`, new records could arrive — so the count logged was sometimes lower than the actual number processed. After switching to `var requests = await _context.Requests.Where(...).ToListAsync()`, both the double-query and the race condition were eliminated.
+
+**Sign you might have this bug:** your profiler shows identical SQL queries executing back-to-back within the same request.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Classification of query operators by execution", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq/classification-of-standard-query-operators-by-manner-of-execution" },
+    { label: "IEnumerable\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1" },
+    { label: "Enumerable.ToList", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.enumerable.tolist" },
+  ]}
+/>

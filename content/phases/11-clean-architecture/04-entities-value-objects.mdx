@@ -1,24 +1,309 @@
 ---
-title: "Entities & Value Objects"
+title: "Entities vs Value Objects: Identity, Equality & Immutability"
 slug: "entities-value-objects"
 order: 4
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["entities", "value objects", "DDD", "domain-driven design", "identity", "equality", "immutability", "strongly typed IDs"]
+summary: "Entities have identity and mutable state. Value Objects have no identity — equality is structural. Getting this distinction right shapes your entire domain model."
+docsLinks:
+  - label: ".NET Microservices Architecture — Domain model layer"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model"
+  - label: "Implement value objects (.NET Microservices)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Core Distinction
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+In Domain-Driven Design (DDD), every object in your domain model is one of two things:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Entity**: distinguished by identity. Two entities are equal only if they have the same identifier — even if all their other properties differ. Entities are mutable.
+- **Value Object**: distinguished by value. Two value objects are equal if all their properties are equal — there is no identity. Value objects are immutable.
+
+The question to ask: "If I replace this instance with another instance that has the same data, does it matter which one I have?"
+- For a `Customer`, yes — it matters which specific customer you have (they owe different amounts, have different order histories).
+- For a `Money(100, "USD")`, no — any `Money(100, "USD")` is interchangeable with any other.
+
+---
+
+## Entities: Identity-Based Equality
+
+```csharp
+// Domain/Common/Entity.cs — base class for all entities
+public abstract class Entity<TId>
+    where TId : notnull
+{
+    public TId Id { get; protected set; } = default!;
+
+    private readonly List<IDomainEvent> _domainEvents = new();
+    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
+    protected void AddDomainEvent(IDomainEvent domainEvent)
+        => _domainEvents.Add(domainEvent);
+
+    public void ClearDomainEvents() => _domainEvents.Clear();
+
+    public override bool Equals(object? obj)
+    {
+        if (obj is not Entity<TId> other) return false;
+        if (ReferenceEquals(this, other)) return true;
+        if (GetType() != other.GetType()) return false;
+        return EqualityComparer<TId>.Default.Equals(Id, other.Id);
+    }
+
+    public override int GetHashCode()
+        => HashCode.Combine(GetType(), Id);
+
+    public static bool operator ==(Entity<TId>? left, Entity<TId>? right)
+        => left?.Equals(right) ?? right is null;
+
+    public static bool operator !=(Entity<TId>? left, Entity<TId>? right)
+        => !(left == right);
+}
+
+// Domain/Entities/Customer.cs
+public class Customer : Entity<CustomerId>
+{
+    public Name Name { get; private set; }
+    public Email Email { get; private set; }
+    public Address? ShippingAddress { get; private set; }
+
+    private Customer() { } // EF Core constructor
+
+    public static Customer Register(Name name, Email email)
+        => new() { Id = CustomerId.New(), Name = name, Email = email };
+
+    public void UpdateShippingAddress(Address address)
+        => ShippingAddress = address;
+
+    public void ChangeName(Name newName)
+    {
+        if (newName == Name) return;
+        Name = newName;
+        AddDomainEvent(new CustomerNameChangedEvent(Id, newName));
+    }
+}
+```
+
+Two `Customer` instances with the same `Id` are equal regardless of their `Name` or `Email`. Two `Customer` instances with different `Id`s are not equal even if every other field matches.
+
+---
+
+## Value Objects: Structural Equality
+
+```csharp
+// Domain/Common/ValueObject.cs — base class for all value objects
+public abstract class ValueObject
+{
+    protected abstract IEnumerable<object?> GetEqualityComponents();
+
+    public override bool Equals(object? obj)
+    {
+        if (obj is null || obj.GetType() != GetType()) return false;
+        return GetEqualityComponents()
+            .SequenceEqual(((ValueObject)obj).GetEqualityComponents());
+    }
+
+    public override int GetHashCode()
+        => GetEqualityComponents()
+            .Aggregate(default(HashCode), (hash, component) =>
+            {
+                hash.Add(component);
+                return hash;
+            })
+            .ToHashCode();
+
+    public static bool operator ==(ValueObject? left, ValueObject? right)
+        => left?.Equals(right) ?? right is null;
+
+    public static bool operator !=(ValueObject? left, ValueObject? right)
+        => !(left == right);
+}
+
+// Domain/ValueObjects/Money.cs
+public sealed class Money : ValueObject
+{
+    public decimal Amount { get; }
+    public string Currency { get; }
+
+    public Money(decimal amount, string currency)
+    {
+        if (amount < 0) throw new DomainException("Money amount cannot be negative.");
+        if (string.IsNullOrWhiteSpace(currency) || currency.Length != 3)
+            throw new DomainException("Currency must be a 3-letter ISO code.");
+        Amount = amount;
+        Currency = currency.ToUpperInvariant();
+    }
+
+    public static Money Zero => new(0, "USD");
+
+    public Money Add(Money other)
+    {
+        if (Currency != other.Currency)
+            throw new DomainException($"Cannot add {Currency} and {other.Currency}.");
+        return new Money(Amount + other.Amount, Currency);
+    }
+
+    public Money Multiply(int factor)
+        => new(Amount * factor, Currency);
+
+    public static Money operator +(Money a, Money b) => a.Add(b);
+    public static Money operator *(Money a, int factor) => a.Multiply(factor);
+
+    protected override IEnumerable<object?> GetEqualityComponents()
+    {
+        yield return Amount;
+        yield return Currency;
+    }
+
+    public override string ToString() => $"{Amount:F2} {Currency}";
+}
+
+// Domain/ValueObjects/Email.cs
+public sealed class Email : ValueObject
+{
+    public string Value { get; }
+
+    public Email(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !value.Contains('@'))
+            throw new DomainException($"'{value}' is not a valid email address.");
+        Value = value.ToLowerInvariant();
+    }
+
+    protected override IEnumerable<object?> GetEqualityComponents()
+    {
+        yield return Value;
+    }
+
+    public static implicit operator string(Email email) => email.Value;
+    public override string ToString() => Value;
+}
+```
+
+---
+
+## Strongly Typed IDs as Value Objects
+
+One of the best uses of value objects in modern C# is **strongly typed IDs** — wrapping `Guid` in a type-safe wrapper to prevent mixing up IDs:
+
+```csharp
+// Domain/Ids/CustomerId.cs
+public sealed record CustomerId(Guid Value)
+{
+    public static CustomerId New() => new(Guid.NewGuid());
+    public static CustomerId Empty => new(Guid.Empty);
+    public override string ToString() => Value.ToString();
+}
+
+// Domain/Ids/OrderId.cs
+public sealed record OrderId(Guid Value)
+{
+    public static OrderId New() => new(Guid.NewGuid());
+    public override string ToString() => Value.ToString();
+}
+
+// Now the compiler prevents this mistake:
+void Process(CustomerId customerId, OrderId orderId) { }
+
+CustomerId cid = CustomerId.New();
+OrderId oid = OrderId.New();
+
+Process(oid, cid); // COMPILE ERROR — cannot swap them
+Process(cid, oid); // correct
+```
+
+Using C# `record` gives you structural equality for free — the record equality is based on the `Value` property, which is exactly what you want for an ID value object.
+
+---
+
+## C# Records for Value Objects
+
+C# 9+ `record` types are a natural fit for value objects:
+
+```csharp
+// Using records — structural equality built in
+public sealed record Address(
+    string Street,
+    string City,
+    string PostalCode,
+    string Country)
+{
+    // Validate in constructor
+    public Address : this(Street, City, PostalCode, Country)
+    {
+        if (string.IsNullOrWhiteSpace(Street))
+            throw new DomainException("Street is required.");
+        if (Country.Length != 2)
+            throw new DomainException("Country must be a 2-letter ISO code.");
+    }
+
+    // Non-destructive mutation via 'with' expression
+    public Address WithCity(string city) => this with { City = city };
+}
+
+// Usage
+var addr1 = new Address("123 Main St", "Springfield", "12345", "US");
+var addr2 = new Address("123 Main St", "Springfield", "12345", "US");
+
+Console.WriteLine(addr1 == addr2); // True — structural equality from record
+var updated = addr1 with { City = "Shelbyville" }; // new immutable instance
+```
+
+<Callout type="trap">
+**Trap: Record Inheritance in Value Objects**
+
+Records use structural equality, but if you inherit from a record, equality includes the runtime type. Two instances of different derived record types with the same property values will NOT be equal. This can break value object equality semantics if you build an inheritance hierarchy of record value objects. Prefer sealed records or the explicit `ValueObject` base class approach for hierarchical domain models.
 </Callout>
+
+---
+
+## Comparison
+
+<ComparisonTable
+  headers={["Aspect", "Entity", "Value Object"]}
+  rows={[
+    ["Identity", "Has an explicit ID (Guid, int, strongly-typed wrapper)", "No identity — is identified by its values"],
+    ["Equality", "Same ID = same entity, regardless of other fields", "Same property values = same value object"],
+    ["Mutability", "Mutable — state changes over time", "Immutable — 'change' creates a new instance"],
+    ["Lifecycle", "Has a lifecycle (created, modified, deleted)", "No lifecycle — just a snapshot of data"],
+    ["Examples", "Customer, Order, Product, Employee", "Money, Email, Address, DateRange, Percentage"],
+    ["C# base class", "Entity\<TId\> (custom base)", "ValueObject (custom) or sealed record"],
+    ["DDD rule", "Only access through Aggregate Root", "Can be passed around freely"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**The Value Object Anti-Pattern: Primitive Obsession**
+
+The single biggest missed opportunity in most enterprise codebases is using primitives where value objects belong. Consider:
+
+```csharp
+// Primitive obsession — every method needs validation in caller
+void Transfer(Guid fromAccountId, Guid toAccountId, decimal amount, string currency) { }
+
+// vs. value objects — validation is in the type
+void Transfer(AccountId from, AccountId to, Money amount) { }
+```
+
+With primitives, you write `if (amount < 0)` in every method that touches amounts. With a `Money` value object, the invariant is enforced once in the constructor — and `Money` can never be in an invalid state.
+
+The same applies to `Email`, `PhoneNumber`, `PostalCode`, `Percentage`, `DateRange`, `Url`, `IpAddress`. Every time you accept `string email`, you're trusting the caller validated it. Every time you accept `Email email`, the type system guarantees it.
+
+Start extracting value objects whenever you see: multiple fields that always travel together (amount + currency), primitives with business rules (email must contain @), or parameters that could accidentally be swapped (`Guid from, Guid to`).
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Implement value objects (.NET Microservices Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/implement-value-objects" },
+    { label: ".NET Microservices Architecture — Domain model layer", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model" },
+    { label: "Records (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+  ]}
+/>

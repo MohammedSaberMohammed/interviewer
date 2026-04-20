@@ -1,24 +1,249 @@
 ---
-title: "Raw SQL & FromSql"
+title: "Raw SQL: FromSqlRaw, ExecuteSqlRaw, SqlQuery<T>, and Dapper"
 slug: "raw-sql"
 order: 8
-difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 15
+status: "published"
+tags: ["raw sql", "fromsqlraw", "executesqlraw", "sqlquery", "dapper", "sql injection", "ef core"]
+summary: "Sometimes LINQ cannot express the SQL you need. EF Core provides safe raw SQL APIs for queries and commands — and Dapper sits alongside it for complex read scenarios."
+docsLinks:
+  - label: "Raw SQL Queries"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/raw-sql"
+  - label: "ExecuteSqlRaw and ExecuteSqlInterpolated"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/execute-insert-update-delete"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## When to Use Raw SQL
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+LINQ to SQL covers 90% of data access needs. You reach for raw SQL when:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- Query uses database-specific features (CTEs, window functions, PIVOT, NOLOCK hints)
+- Performance-critical query that the LINQ translator generates poorly
+- Calling stored procedures
+- Batch operations not expressible in LINQ
+- Legacy stored procedures you must integrate with
+
+---
+
+## FromSqlRaw: Querying Entities
+
+`FromSqlRaw` executes a raw SELECT and materializes the results as tracked entities:
+
+```csharp
+// Basic usage — parameters by position
+var products = await db.Products
+    .FromSqlRaw("SELECT * FROM Products WHERE Price > {0}", minPrice)
+    .ToListAsync();
+
+// IMPORTANT: {0} is a parameterized placeholder — NOT string interpolation!
+// EF sends: SELECT * FROM Products WHERE Price > @p0  with @p0 = minPrice value
+// This is SQL injection safe.
+
+// Composing with LINQ after FromSqlRaw
+var products = await db.Products
+    .FromSqlRaw("SELECT * FROM Products WHERE CategoryId = {0}", categoryId)
+    .Where(p => p.IsActive)         // appended as additional WHERE clause
+    .OrderBy(p => p.Name)           // ORDER BY added
+    .Take(20)                        // TOP(20) added
+    .ToListAsync();
+// SQL: SELECT TOP(20) * FROM (SELECT * FROM Products WHERE CategoryId = @p0)
+//      AS sub WHERE IsActive = 1 ORDER BY Name
+
+// FromSqlInterpolated — safer syntax using C# interpolation (auto-parameterized)
+var products = await db.Products
+    .FromSqlInterpolated(\$"SELECT * FROM Products WHERE Price > {minPrice}")
+    .ToListAsync();
+// Equivalent to FromSqlRaw with parameters — NOT string concatenation
+```
+
+**Requirements for `FromSqlRaw`:**
+- The SQL must return all columns that EF Core expects for the entity type
+- The result must be composable (no ORDER BY in the raw SQL unless it is the outermost)
+- Cannot be used with keyless entity types unless using `SqlQuery<T>` (EF Core 7+)
+
+---
+
+## SqlQuery: Ad-hoc Type Results (EF Core 7+)
+
+When you need raw SQL results that are not mapped entity types:
+
+```csharp
+// EF Core 7+ — SqlQuery<T> for arbitrary scalar types
+var salaries = await db.Database
+    .SqlQuery<decimal>(\$"SELECT Salary FROM Employees WHERE DepartmentId = {deptId}")
+    .ToListAsync();
+
+// For complex projections — define a simple DTO (no DbSet needed)
+public record OrderSummary(int Id, string CustomerName, decimal Total, int ItemCount);
+
+var summaries = await db.Database
+    .SqlQuery<OrderSummary>(\$"""
+        SELECT o.Id, c.Name AS CustomerName, o.Total,
+               COUNT(oi.Id) AS ItemCount
+        FROM Orders o
+        JOIN Customers c ON c.Id = o.CustomerId
+        LEFT JOIN OrderItems oi ON oi.OrderId = o.Id
+        WHERE o.CreatedAt >= {fromDate}
+        GROUP BY o.Id, c.Name, o.Total
+        ORDER BY o.Total DESC
+        """)
+    .ToListAsync();
+// Results are not tracked (no DbSet, no change tracker)
+```
+
+---
+
+## ExecuteSqlRaw: Commands (INSERT, UPDATE, DELETE)
+
+For data modification without materializing entities:
+
+```csharp
+// Direct UPDATE — no entity loading, no change tracking
+int rowsAffected = await db.Database.ExecuteSqlRawAsync(
+    "UPDATE Products SET Price = Price * {0} WHERE CategoryId = {1}",
+    priceMultiplier, categoryId);
+
+// Interpolated version (recommended for readability)
+int rowsAffected = await db.Database.ExecuteSqlInterpolatedAsync(
+    \$"UPDATE Products SET Price = Price * {priceMultiplier} WHERE CategoryId = {categoryId}");
+
+// Calling stored procedures
+await db.Database.ExecuteSqlRawAsync(
+    "EXEC ArchiveOldOrders @CutoffDate = {0}, @TargetTable = {1}",
+    cutoffDate, "ArchivedOrders");
+```
+
+<Callout type="trap">
+**SQL Injection: Never Concatenate Strings**
+
+The only way to get SQL injection with EF Core raw SQL APIs is to concatenate user input directly into the SQL string:
+
+```csharp
+// DANGEROUS — SQL injection vulnerability
+string userInput = "'; DROP TABLE Products; --";
+var result = await db.Products
+    .FromSqlRaw(\$"SELECT * FROM Products WHERE Name = '{userInput}'")
+    .ToListAsync();
+
+// SAFE — always use parameterized placeholders
+var result = await db.Products
+    .FromSqlRaw("SELECT * FROM Products WHERE Name = {0}", userInput)
+    .ToListAsync();
+// Or use FromSqlInterpolated:
+var result = await db.Products
+    .FromSqlInterpolated(\$"SELECT * FROM Products WHERE Name = {userInput}")
+    .ToListAsync();
+```
+
+`FromSqlInterpolated` uses `FormattableString` — the C# compiler captures the interpolation values as separate parameters, not string concatenation. EF passes them as `SqlParameter` objects. This looks identical to vulnerable code but is safe.
 </Callout>
+
+---
+
+## Dapper Alongside EF Core
+
+Dapper is a micro-ORM that complements EF Core for complex read scenarios. They share the same `DbConnection`:
+
+```csharp
+// Register Dapper queries using the same connection EF Core manages
+public class OrderReportService
+{
+    private readonly AppDbContext _db;
+
+    public OrderReportService(AppDbContext db) => _db = db;
+
+    public async Task<IEnumerable<MonthlyRevenue>> GetMonthlyRevenueAsync(int year)
+    {
+        // Open the same connection EF Core uses
+        var connection = _db.Database.GetDbConnection();
+
+        return await connection.QueryAsync<MonthlyRevenue>(
+            sql: """
+                SELECT MONTH(CreatedAt) AS Month,
+                       SUM(Total) AS Revenue,
+                       COUNT(*) AS OrderCount
+                FROM Orders
+                WHERE YEAR(CreatedAt) = @Year AND Status = @Status
+                GROUP BY MONTH(CreatedAt)
+                ORDER BY Month
+                """,
+            param: new { Year = year, Status = OrderStatus.Completed });
+    }
+}
+```
+
+**When to use Dapper vs EF Core raw SQL:**
+
+| Use EF Core raw SQL | Use Dapper |
+|---|---|
+| Result maps to a tracked entity | Complex multi-join projections |
+| Want LINQ composition on top | Multi-mapping (split result sets) |
+| Simple scalar queries | High-performance bulk reads |
+| Already using EF, small SQL | Need stored proc with OUTPUT params |
+
+---
+
+<Callout type="senior">
+**Senior Insight: Keyless Entity Types for Recurring Raw SQL Patterns**
+
+If you repeatedly query the same complex SQL shape, register it as a keyless entity type to get LINQ composition without a primary key:
+
+```csharp
+// Define the result shape
+public class ProductSalesSummary
+{
+    public int ProductId { get; set; }
+    public string ProductName { get; set; } = "";
+    public decimal TotalRevenue { get; set; }
+    public int UnitsSold { get; set; }
+}
+
+// Register in OnModelCreating
+modelBuilder.Entity<ProductSalesSummary>().HasNoKey().ToView(null);
+// ToView(null) means it has no backing table — only raw SQL or views
+
+// Usage
+var summaries = await db.Set<ProductSalesSummary>()
+    .FromSqlRaw("SELECT ProductId, ProductName, SUM(Total) AS TotalRevenue, ...")
+    .Where(s => s.TotalRevenue > 1000)  // LINQ composition works!
+    .OrderByDescending(s => s.TotalRevenue)
+    .ToListAsync();
+```
+
+This pattern is excellent for database views — map the view as a keyless entity type and query it with full LINQ support.
+</Callout>
+
+---
+
+<MythBuster
+  myth="FromSqlInterpolated is vulnerable to SQL injection because it uses C# string interpolation"
+  truth="FromSqlInterpolated takes a FormattableString, not a string. The C# compiler treats these differently — interpolated values are captured as typed parameters and passed to the database driver as SqlParameter objects, never concatenated into the SQL text. The API was explicitly designed to look like interpolation while being safe. If you accidentally pass a regular string (not FormattableString), you get a compile error."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/raw-sql/challenge-1"
+  question="You need to call a stored procedure that returns a result set matching your Order entity. Which EF Core API should you use?"
+  options={[
+    "db.Database.ExecuteSqlRawAsync() — it handles both commands and queries",
+    "db.Orders.FromSqlRaw(\"EXEC GetPendingOrders @CustomerId = {0}\", id)",
+    "db.Database.SqlQuery<Order>() — the correct API for stored proc results",
+    "You must use Dapper — EF Core cannot call stored procedures"
+  ]}
+  correctAnswer={1}
+  explanation="FromSqlRaw on the DbSet is the correct API when the stored procedure returns rows matching an entity type. The result is materialized as tracked Order entities and supports LINQ composition (Where, OrderBy, etc. can be appended). ExecuteSqlRawAsync returns only the affected row count — it does not return result sets. SqlQuery<T> works for non-entity types. EF Core fully supports stored procedures via both FromSqlRaw and ExecuteSqlRaw."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Raw SQL Queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/raw-sql" },
+    { label: "ExecuteSql Methods", url: "https://learn.microsoft.com/en-us/ef/core/saving/execute-insert-update-delete" },
+    { label: "Keyless Entity Types", url: "https://learn.microsoft.com/en-us/ef/core/modeling/keyless-entity-types" },
+  ]}
+/>

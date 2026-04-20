@@ -1,24 +1,226 @@
 ---
-title: "Dictionary Iteration & Modification"
+title: "Modifying a Dictionary While Iterating"
 slug: "dictionary-iteration-modification"
 order: 9
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 8
+status: "published"
+tags: ["Dictionary", "foreach", "InvalidOperationException", "collections", "iteration", "modification"]
+summary: "Adding or removing entries from a Dictionary<TKey,TValue> during a foreach throws InvalidOperationException — but the patterns that trigger it aren't always obvious."
+docsLinks:
+  - label: "Dictionary<TKey,TValue> — remarks on thread safety and modification"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2"
+  - label: "InvalidOperationException"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.invalidoperationexception"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — modifying during iteration
+var scores = new Dictionary<string, int>
+{
+    ["Alice"] = 95,
+    ["Bob"]   = 42,
+    ["Carol"] = 78,
+};
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+foreach (var kvp in scores)
+{
+    if (kvp.Value < 50)
+    {
+        scores.Remove(kvp.Key); // InvalidOperationException!
+        // "Collection was modified; enumeration operation may not execute."
+    }
+}
+```
+
+**The less obvious version — calling a method that modifies:**
+
+```csharp
+var cache = new Dictionary<string, string>();
+
+foreach (var key in cache.Keys) // Enumerating Keys view
+{
+    if (IsExpired(key))
+    {
+        Refresh(key, cache); // This method calls cache[key] = newValue — THROW!
+    }
+}
+
+void Refresh(string key, Dictionary<string, string> cache)
+{
+    cache[key] = FetchFresh(key); // Modifies the dictionary — invalidates the enumerator
+}
+```
+
+<Callout type="trap">
+`Dictionary<TKey,TValue>` tracks a "version" counter that increments on every structural modification (add, remove, or clear). The enumerator checks this counter on each `MoveNext()` call and throws `InvalidOperationException` if the version has changed since enumeration started. Assigning to an existing key (`dict[key] = value`) counts as a structural modification.
 </Callout>
+
+---
+
+## Why It Happens
+
+```csharp
+// Simplified internal view of Dictionary's enumerator:
+// _version is incremented on Add, Remove, Clear, and value assignment via indexer
+
+struct Enumerator
+{
+    private int _version;
+    private Dictionary<TKey, TValue> _dict;
+
+    public bool MoveNext()
+    {
+        if (_version != _dict._version) // Version mismatch → throw
+            throw new InvalidOperationException("Collection was modified...");
+        // ...advance...
+    }
+}
+
+// These all increment _version:
+dict.Add("key", "value");  // +1
+dict.Remove("key");        // +1
+dict.Clear();              // +1
+dict["key"] = "value";    // +1 (even for existing key!)
+
+// This does NOT increment _version (safe during iteration — but rarely useful):
+// Updating Value through the enumerator's current value is not possible for structs
+```
+
+---
+
+## The Fix
+
+**Option 1: Collect keys to remove, then remove after iteration**
+
+```csharp
+// CORRECT — two-phase approach
+var scores = new Dictionary<string, int> { ["Alice"] = 95, ["Bob"] = 42, ["Carol"] = 78 };
+
+// Phase 1: identify what to remove
+var toRemove = scores.Where(kvp => kvp.Value < 50)
+                     .Select(kvp => kvp.Key)
+                     .ToList(); // Materialize before modifying
+
+// Phase 2: modify the dictionary
+foreach (var key in toRemove)
+{
+    scores.Remove(key);
+}
+```
+
+**Option 2: Rebuild the dictionary with LINQ**
+
+```csharp
+// Clean and functional — creates a new dictionary
+scores = scores
+    .Where(kvp => kvp.Value >= 50)
+    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+```
+
+**Option 3: For concurrent scenarios, use ConcurrentDictionary**
+
+```csharp
+using System.Collections.Concurrent;
+
+var cache = new ConcurrentDictionary<string, string>();
+
+// ConcurrentDictionary's enumerator takes a snapshot — safe to modify during iteration
+foreach (var kvp in cache)
+{
+    if (IsExpired(kvp.Key))
+    {
+        cache.TryRemove(kvp.Key, out _); // Safe — snapshot enumerator
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="Only adding new keys during iteration throws — removing or updating existing keys is safe"
+  truth="Any structural modification throws: adding, removing, clearing, AND assigning to an existing key via the indexer. The version counter increments on all of these. Only reading via the indexer or TryGetValue is safe during iteration."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/dictionary-iteration-modification/challenge-1"
+  title="Which line throws InvalidOperationException?"
+  description="Identify which operation inside the foreach causes the exception."
+  code={`var dict = new Dictionary<string, int>
+{
+    ["a"] = 1, ["b"] = 2, ["c"] = 3
+};
+
+foreach (var kvp in dict)
+{
+    Console.WriteLine(kvp.Key);    // line A
+    int val = dict[kvp.Key];       // line B
+    dict[kvp.Key] = val * 2;       // line C
+    Console.WriteLine(kvp.Value);  // line D
+}`}
+  options={[
+    "Line A — you cannot read Key during iteration",
+    "Line B — calling the indexer for reading modifies the version counter",
+    "Line C — assigning via indexer to an existing key modifies the version counter",
+    "Line D — kvp.Value is stale after C and throws"
+  ]}
+  correctAnswer={2}
+  explanation="Line C throws. Assigning via the indexer (dict[key] = value) modifies the dictionary's internal version counter even when the key already exists. When the foreach loop calls MoveNext() for the next element, it detects the version change and throws InvalidOperationException. Lines A, B, and D are all read operations that do not modify the version counter."
+/>
+
+---
+
+## The Keys/Values Snapshot Workaround
+
+```csharp
+// Iterate over a snapshot of keys — dictionary can be modified during iteration
+// WARNING: Only safe if you are NOT removing keys you haven't visited yet
+foreach (var key in scores.Keys.ToList()) // .ToList() creates a snapshot
+{
+    if (scores[key] < 50)
+    {
+        scores.Remove(key); // Safe — iterating over the snapshot, not the live Keys view
+    }
+}
+
+// WRONG — Keys without ToList() is a live view:
+foreach (var key in scores.Keys) // Live view — throws on Remove
+{
+    scores.Remove(key); // InvalidOperationException
+}
+```
+
+---
+
+<Callout type="senior">
+**The async version of this trap**
+
+In async code, the same dictionary can be accessed from multiple continuations if you await inside a loop:
+
+```csharp
+// THIS IS A BUG — awaiting inside a loop over a shared dict
+foreach (var kvp in sharedCache)
+{
+    var fresh = await FetchAsync(kvp.Key); // Yields thread — another request may modify cache!
+    sharedCache[kvp.Key] = fresh;          // May throw if cache was modified
+}
+```
+
+For shared mutable state with concurrent access, use `ConcurrentDictionary` or protect with `SemaphoreSlim`. The `ImmutableDictionary<TKey,TValue>` from `System.Collections.Immutable` is another option — snapshot semantics by design, completely thread-safe for reads, modifications produce new instances.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2" },
+    { label: "ConcurrentDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2" },
+    { label: "ImmutableDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutabledictionary-2" },
+  ]}
+/>

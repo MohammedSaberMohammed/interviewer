@@ -1,24 +1,270 @@
 ---
-title: "Singleton"
+title: "Singleton — One Instance to Rule Them All"
 slug: "singleton"
 order: 1
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["singleton", "creational", "thread-safety", "lazy", "dependency injection"]
+summary: "Singleton guarantees one instance per process — but naive implementations have subtle thread-safety bugs, and DI containers often make the pattern obsolete."
+docsLinks:
+  - label: "Singleton pattern (Microsoft Docs)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/singleton"
+  - label: "Lazy<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.lazy-1"
+  - label: "ServiceLifetime.Singleton in DI"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#singleton"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem Singleton Solves
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Some objects are expensive to create, must coordinate global state, or conceptually exist once per application: a configuration manager, a thread pool, a logging sink, a device driver abstraction. Without a pattern, callers pass these objects everywhere or use global variables — both are painful.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The Singleton pattern ensures a class has **exactly one instance** and provides a global access point to it.
+
+---
+
+## The Naive (Broken) Implementation
+
+```csharp
+// DO NOT USE in multi-threaded code
+public class ConfigManager
+{
+    private static ConfigManager? _instance;
+
+    private ConfigManager() { } // prevent external construction
+
+    public static ConfigManager Instance
+    {
+        get
+        {
+            if (_instance == null)                  // Thread A checks: null ✓
+            {
+                _instance = new ConfigManager();    // Thread B also sees null → two instances!
+            }
+            return _instance;
+        }
+    }
+}
+```
+
+This is broken under concurrent access. Two threads can both pass the null check before either assigns the instance.
+
+---
+
+## Thread-Safe Implementations
+
+### Option 1: Lock-based (classic)
+
+```csharp
+public class ConfigManager
+{
+    private static ConfigManager? _instance;
+    private static readonly object _lock = new object();
+
+    private ConfigManager() { }
+
+    public static ConfigManager Instance
+    {
+        get
+        {
+            if (_instance == null)           // First check (no lock — fast path)
+            {
+                lock (_lock)
+                {
+                    if (_instance == null)   // Second check (inside lock — safe)
+                    {
+                        _instance = new ConfigManager();
+                    }
+                }
+            }
+            return _instance;
+        }
+    }
+}
+```
+
+This is the **double-checked locking** pattern. The outer check avoids acquiring the lock on every call after initialization. The inner check guards against concurrent initializers.
+
+### Option 2: Static field initializer (simplest — preferred)
+
+```csharp
+public class ConfigManager
+{
+    // CLR guarantees type initializers run exactly once, thread-safely
+    private static readonly ConfigManager _instance = new ConfigManager();
+
+    private ConfigManager() { }
+
+    public static ConfigManager Instance => _instance;
+}
+```
+
+The CLR itself ensures the static field is initialized once. This is simpler and correct, but the instance is created eagerly (when the type is first accessed).
+
+### Option 3: Lazy\<T\> (lazy + thread-safe)
+
+```csharp
+public class ConfigManager
+{
+    private static readonly Lazy<ConfigManager> _lazy =
+        new Lazy<ConfigManager>(() => new ConfigManager(), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private ConfigManager()
+    {
+        // Simulate expensive initialization
+        Thread.Sleep(100);
+    }
+
+    public static ConfigManager Instance => _lazy.Value;
+
+    public string GetSetting(string key) => "value";
+}
+
+// Usage
+var cfg = ConfigManager.Instance;
+```
+
+`Lazy<T>` with `LazyThreadSafetyMode.ExecutionAndPublication` (the default) guarantees one initialization even under concurrent access, using a lock internally.
+
+---
+
+<ComparisonTable
+  title="Singleton Implementations"
+  headers={["Approach", "Thread-Safe", "Lazy", "Simplicity"]}
+  rows={[
+    ["Naive (null check only)", "No", "Yes", "High"],
+    ["Double-checked lock", "Yes", "Yes", "Medium"],
+    ["Static field initializer", "Yes", "No (eager)", "Highest"],
+    ["Lazy\<T\>", "Yes", "Yes", "High"],
+  ]}
+/>
+
+---
+
+## The DI Container Alternative
+
+In modern .NET applications with dependency injection, you rarely write Singleton by hand. Instead, you register your service with a singleton lifetime:
+
+```csharp
+// Program.cs / Startup.cs
+builder.Services.AddSingleton<IConfigManager, ConfigManager>();
+
+// The DI container creates exactly one instance and shares it with all consumers
+// No locks, no static state — the container manages lifetime
+
+public class MyService
+{
+    private readonly IConfigManager _config;
+
+    // Constructor injection — one instance shared by all MyService instances
+    public MyService(IConfigManager config) => _config = config;
+}
+```
+
+This approach has big advantages: the singleton is testable (swap to a mock in tests), it respects the composition root, and the container handles thread-safety.
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/singleton/challenge-1"
+  title="Spot the Thread-Safety Bug"
+  description="This singleton is used in a high-throughput ASP.NET Core app. What is the subtle issue?"
+  code={`public class RequestCounter
+{
+    private static RequestCounter? _instance;
+    private int _count = 0;
+
+    private RequestCounter() { }
+
+    public static RequestCounter Instance
+    {
+        get
+        {
+            _instance ??= new RequestCounter();
+            return _instance;
+        }
+    }
+
+    public void Increment() => _count++;
+    public int Count => _count;
+}`}
+  options={[
+    "No bug — ??= is atomic in C#",
+    "Two threads can create separate instances via the ??= operator",
+    "_count++ is not atomic — reads/increments/writes are three separate ops",
+    "Both B and C are real bugs"
+  ]}
+  correctAnswer={3}
+  explanation="There are two bugs. First, ??= (null-coalescing assignment) is NOT atomic — two threads can both evaluate _instance as null and both create an instance. Second, _count++ is a read-modify-write that is not atomic; use Interlocked.Increment(ref _count) for thread-safe counting. In practice, use a DI singleton + Interlocked, or use a concurrent type."
+/>
+
+---
+
+<Callout type="senior">
+**When Singleton Is the Wrong Answer**
+
+Singleton introduces hidden global state — making code harder to test and reason about. Watch for these anti-patterns:
+
+- **Service Locator disguised as Singleton**: `ConfigManager.Instance.Get("key")` is a service locator. Inject `IConfigManager` instead.
+- **Singleton holding mutable state with no synchronization**: Multiple threads reading/writing shared fields leads to races. Either make it immutable after construction or use concurrent types.
+- **Singleton across AppDomains or processes**: A CLR singleton is one per AppDomain, not one per machine. If you need distributed uniqueness, you need a distributed lock or a database.
+- **Static lifetime in DI scoped context**: A singleton consuming a scoped service (e.g., `DbContext`) is a "captive dependency" — the scoped service outlives its intended lifetime. ASP.NET Core's DI container detects this and throws at startup.
+
+**The modern rule**: prefer registering with `AddSingleton<T>()` in the DI container over implementing the pattern manually. Reserve manual Singleton for code outside of a DI context.
 </Callout>
+
+---
+
+## Real .NET BCL Example
+
+`HttpClient` is meant to be used as a singleton (or via `IHttpClientFactory`). Creating one per request exhausts socket connections:
+
+```csharp
+// WRONG — socket exhaustion under load
+app.MapGet("/weather", async () =>
+{
+    using var client = new HttpClient(); // new instance every request!
+    return await client.GetStringAsync("https://api.example.com/weather");
+});
+
+// RIGHT — singleton HttpClient (or IHttpClientFactory)
+var _client = new HttpClient(); // one instance shared by all requests
+
+app.MapGet("/weather", async () =>
+    await _client.GetStringAsync("https://api.example.com/weather"));
+
+// BEST — IHttpClientFactory manages lifetime and connection pooling
+builder.Services.AddHttpClient("weather", c =>
+    c.BaseAddress = new Uri("https://api.example.com/"));
+```
+
+The BCL's `System.Text.RegularExpressions.Regex` also caches compiled regex instances as singletons internally — calling `Regex.IsMatch(input, pattern)` reuses a cached compiled instance rather than recompiling on each call.
+
+---
+
+<Quiz
+  id="07-design-patterns/singleton/quiz-1"
+  question="Which ASP.NET Core DI issue is caused by injecting a Scoped service into a Singleton service?"
+  options={[
+    "The scoped service is never disposed",
+    "A captive dependency — the scoped service lives longer than intended and may share state across requests",
+    "The singleton is recreated on each request",
+    "There is no issue — DI handles this automatically"
+  ]}
+  correctAnswer={1}
+  explanation="A 'captive dependency' occurs when a longer-lived service (Singleton) holds a reference to a shorter-lived service (Scoped). The Scoped service, which should be unique per request, instead lives for the lifetime of the Singleton — potentially sharing state across multiple requests. ASP.NET Core's DI validates this at startup and throws an InvalidOperationException."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Lazy\<T\> — thread-safe lazy initialization", url: "https://learn.microsoft.com/en-us/dotnet/api/system.lazy-1" },
+    { label: "Dependency injection in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection" },
+    { label: "Service lifetimes (Singleton/Scoped/Transient)", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#service-lifetimes" },
+    { label: "IHttpClientFactory guidelines", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/http/httpclient-guidelines" },
+  ]}
+/>

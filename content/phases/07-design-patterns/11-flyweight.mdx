@@ -1,24 +1,253 @@
 ---
-title: "Flyweight"
+title: "Flyweight — Sharing Fine-Grained Objects"
 slug: "flyweight"
 order: 11
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["flyweight", "structural", "memory optimization", "string interning", "object pooling", "intrinsic state"]
+summary: "Flyweight drastically reduces memory usage by sharing common state across many objects — the principle behind string interning, font caches, and object pools."
+docsLinks:
+  - label: "String.Intern — string interning in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern"
+  - label: "ArrayPool<T> — object pooling"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypoolarray-pool-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Memory Explosion from Fine-Grained Objects
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A text editor renders millions of characters. If each character object stores its font, size, color, style, AND its character value, memory usage explodes. Yet most characters share the same font/size/color — it's only the character value and position that differ per character.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Flyweight splits state into:
+- **Intrinsic state** — shared, immutable, stored in the flyweight
+- **Extrinsic state** — unique per context, stored by the client or passed in
+
+---
+
+## Structure
+
+```csharp
+// Flyweight — stores only intrinsic (shared) state
+public class CharacterFormat // lightweight, shareable
+{
+    public string FontName { get; }
+    public int    FontSize { get; }
+    public string Color    { get; }
+    public bool   IsBold   { get; }
+
+    public CharacterFormat(string fontName, int fontSize, string color, bool isBold)
+    {
+        FontName = fontName;
+        FontSize = fontSize;
+        Color    = color;
+        IsBold   = isBold;
+    }
+
+    // Intrinsic state — same format object shared by thousands of characters
+}
+
+// Flyweight Factory — the key to sharing
+public class CharacterFormatFactory
+{
+    private readonly Dictionary<string, CharacterFormat> _pool = new();
+
+    public CharacterFormat GetFormat(string fontName, int fontSize, string color, bool isBold)
+    {
+        string key = $"{fontName}|{fontSize}|{color}|{isBold}";
+        if (!_pool.TryGetValue(key, out var format))
+        {
+            format = new CharacterFormat(fontName, fontSize, color, isBold);
+            _pool[key] = format;
+        }
+        return format; // return shared instance
+    }
+
+    public int PoolSize => _pool.Count;
+}
+
+// Context — stores extrinsic state (char value, position) + reference to flyweight
+public class CharacterContext
+{
+    public char             Character { get; } // extrinsic — unique per position
+    public int              X         { get; } // extrinsic
+    public int              Y         { get; } // extrinsic
+    public CharacterFormat  Format    { get; } // flyweight — SHARED reference
+
+    public CharacterContext(char ch, int x, int y, CharacterFormat format)
+    {
+        Character = ch; X = x; Y = y; Format = format;
+    }
+
+    public void Render() =>
+        Console.WriteLine($"'{Character}' at ({X},{Y}) in {Format.FontName}/{Format.FontSize}pt/{Format.Color}");
+}
+
+// Usage — 10,000 characters, but only a few Format objects
+var factory = new CharacterFormatFactory();
+var document = new List<CharacterContext>();
+
+string text = "Hello World! ".PadRight(10_000, 'x');
+var bodyFormat    = factory.GetFormat("Arial", 12, "Black", false);
+var headingFormat = factory.GetFormat("Arial", 24, "Black", true);
+
+for (int i = 0; i < text.Length; i++)
+{
+    var format = i < 13 ? headingFormat : bodyFormat; // shared format
+    document.Add(new CharacterContext(text[i], i % 80, i / 80, format));
+}
+
+Console.WriteLine($"Characters: {document.Count}");
+Console.WriteLine($"Format objects: {factory.PoolSize}"); // 2, not 10,000!
+```
+
+---
+
+## Real .NET Example: String Interning
+
+String interning IS the Flyweight pattern for strings. The CLR maintains an intern pool where string literals with the same value share a single reference:
+
+```csharp
+// String literals are interned automatically
+string a = "hello";
+string b = "hello";
+Console.WriteLine(object.ReferenceEquals(a, b)); // True — same object!
+
+// Runtime strings are NOT interned by default
+string c = new string(new[] { 'h', 'e', 'l', 'l', 'o' });
+Console.WriteLine(object.ReferenceEquals(a, c)); // False — different objects
+
+// Explicit interning
+string d = string.Intern(c);
+Console.WriteLine(object.ReferenceEquals(a, d)); // True — now same object
+
+// Use case: high-cardinality strings that repeat (e.g., country codes, currency codes)
+string[] countryCodes = { "US", "UK", "DE", "FR" };
+// If reading 1M records, intern to avoid 1M separate string allocations for repeated codes
+string interned = string.Intern(rawCode);
+```
+
+---
+
+## Real .NET Example: `ArrayPool<T>`
+
+`ArrayPool<T>` is a Flyweight/Object Pool for arrays — avoiding repeated allocations:
+
+```csharp
+using System.Buffers;
+
+// Rent a buffer — get a shared array (may be larger than requested)
+byte[] buffer = ArrayPool<byte>.Shared.Rent(4096);
+
+try
+{
+    // Use the buffer — it's pre-allocated, no GC pressure
+    int bytesRead = await stream.ReadAsync(buffer.AsMemory(0, 4096));
+    Process(buffer.AsSpan(0, bytesRead));
+}
+finally
+{
+    // Return to pool — NOT the GC, the pool reuses it
+    ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+}
+
+// In hot paths (serialization, network I/O), this eliminates millions of allocations
+```
+
+---
+
+<ComparisonTable
+  title="Flyweight vs Object Pool vs Singleton"
+  headers={["Pattern", "Sharing", "Mutability", "Identity", "Use When"]}
+  rows={[
+    ["Flyweight", "By intrinsic state key", "Intrinsic state immutable", "Multiple instances", "Many objects share common data"],
+    ["Object Pool", "By availability", "Mutable — returned and reused", "Borrowed then returned", "Expensive-to-create objects (connections, buffers)"],
+    ["Singleton", "One for all", "Can be mutable (careful!)", "One instance total", "True global state or coordinator"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/flyweight/challenge-1"
+  title="Identify Intrinsic vs Extrinsic State"
+  description="A game renders 50,000 trees in a forest. Each tree has: TreeType (Oak/Pine/Birch), Color, Texture, X position, Y position, Height (varies per tree). Which are intrinsic and which are extrinsic?"
+  code={`public class Tree
+{
+    public string TreeType { get; }  // "Oak", "Pine", "Birch"
+    public string Color    { get; }  // "Green", "Brown"
+    public byte[] Texture  { get; }  // 1MB texture data per type
+    public int    X        { get; }  // world position
+    public int    Y        { get; }  // world position
+    public float  Height   { get; }  // varies: 5.0 - 20.0 meters
+}`}
+  options={[
+    "Intrinsic: TreeType, Color, Texture. Extrinsic: X, Y, Height",
+    "Intrinsic: X, Y. Extrinsic: TreeType, Color, Texture, Height",
+    "Intrinsic: TreeType only. Extrinsic: Color, Texture, X, Y, Height",
+    "All state is intrinsic — share one Tree object for all 50,000 trees"
+  ]}
+  correctAnswer={0}
+  explanation="Intrinsic state is shared and immutable: TreeType, Color, and Texture (especially the 1MB texture!) are the same for all Oak trees. These go in the flyweight. Extrinsic state is unique per tree instance: X, Y (position), and Height (each tree has a different height). The flyweight stores only intrinsic state; the caller passes extrinsic state when calling Render(x, y, height). With 3 tree types, you need only 3 TreeType flyweights instead of 50,000 objects each with 1MB textures."
+/>
+
+---
+
+<Callout type="senior">
+**Flyweight in Modern .NET — `frozen collections` and `MemoryMarshal`**
+
+.NET 8 introduced `FrozenDictionary<TKey, TValue>` and `FrozenSet<T>` — optimized read-only collections that share their data structure like flyweights:
+
+```csharp
+using System.Collections.Frozen;
+
+// FrozenDictionary — created once, read many times (no locking needed)
+// Internally shares optimized hash tables; faster lookup than regular Dictionary
+FrozenDictionary<string, int> countryCodes = new Dictionary<string, int>
+{
+    ["US"] = 1, ["UK"] = 44, ["DE"] = 49, ["FR"] = 33
+}.ToFrozenDictionary();
+
+// Safe to share across threads — no lock needed
+int dialCode = countryCodes["US"]; // thread-safe, allocation-free
+
+// RecyclableMemoryStream — Flyweight for MemoryStream buffers
+// Uses ArrayPool to reuse buffers, avoiding LOH allocations
+using var ms = new RecyclableMemoryStream(manager);
+await data.SerializeToAsync(ms);
+```
+
+**Interview insight**: When asked about Flyweight, go beyond the GoF definition. Connect it to:
+1. String interning (`string.Intern`)
+2. `ArrayPool<T>` / `MemoryPool<T>`
+3. `RecyclableMemoryStream` (Microsoft.IO.RecyclableMemoryStream)
+4. Font/glyph caches in UI frameworks
+5. EF Core's compiled query cache (queries are "flyweights" shared across executions)
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/flyweight/quiz-1"
+  question="What is the key requirement for state to qualify as 'intrinsic' in the Flyweight pattern?"
+  options={[
+    "It must be a primitive type (int, char, bool)",
+    "It must be immutable and independent of the flyweight's context",
+    "It must be stored in a static field",
+    "It must be initialized in the constructor"
+  ]}
+  correctAnswer={1}
+  explanation="Intrinsic state must be (1) immutable — the flyweight is shared, so mutating it would affect all contexts using it; and (2) context-independent — it doesn't vary based on where the flyweight is used. Type, font, or color qualify; position and size don't (they vary per use site). The state doesn't need to be primitive — a 1MB texture byte[] is intrinsic if it's the same for all Oak trees."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "String.Intern Method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern" },
+    { label: "ArrayPool\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypoolarray-pool-1" },
+    { label: "FrozenDictionary\<TKey,TValue\> (.NET 8)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozendictionary-2" },
+    { label: "MemoryPool\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.memorypool-1" },
+  ]}
+/>

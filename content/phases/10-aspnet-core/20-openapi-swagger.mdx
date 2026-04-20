@@ -1,24 +1,369 @@
 ---
-title: "OpenAPI & Swagger"
+title: "OpenAPI & Swagger: Swashbuckle, NSwag, .NET 9 Built-in"
 slug: "openapi-swagger"
 order: 20
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["OpenAPI", "Swagger", "Swashbuckle", "NSwag", "API documentation", "asp.net core", ".NET 9"]
+summary: "OpenAPI is the industry standard for API contracts. ASP.NET Core supports it through Swashbuckle, NSwag, and (in .NET 9) a built-in generator. Know how to generate accurate specs and extend them for your domain."
+docsLinks:
+  - label: "Get started with Swashbuckle and ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/tutorials/getting-started-with-swashbuckle"
+  - label: "Get started with NSwag and ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/tutorials/getting-started-with-nswag"
+  - label: "OpenAPI support in ASP.NET Core (.NET 9)"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/aspnetcore-openapi"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## OpenAPI vs Swagger
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+- **OpenAPI** — the specification standard (formerly Swagger Spec), now at v3.x
+- **Swagger** — the original tooling ecosystem from SmartBear; often used loosely to mean OpenAPI
+- **Swashbuckle** — the most popular .NET library that generates OpenAPI specs from ASP.NET Core apps
+- **NSwag** — alternative that both generates specs AND generates client code
+- **Microsoft.AspNetCore.OpenApi** — the .NET 9 built-in generator (lightweight, no UI)
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Swashbuckle Setup (Most Common)
+
+```bash
+dotnet add package Swashbuckle.AspNetCore
+```
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddEndpointsApiExplorer(); // Required for Minimal APIs
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "My API",
+        Version = "v1",
+        Description = "A description of my API",
+        Contact = new OpenApiContact
+        {
+            Name = "API Team",
+            Email = "api@myapp.com",
+            Url = new Uri("https://myapp.com/support")
+        },
+        License = new OpenApiLicense
+        {
+            Name = "MIT",
+            Url = new Uri("https://opensource.org/licenses/MIT")
+        }
+    });
+
+    // Include XML comments from the build
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    options.IncludeXmlComments(xmlPath);
+
+    // JWT Bearer auth scheme in Swagger UI
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter your JWT token in the field below."
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+
+    // Use fully qualified type names to avoid schema conflicts
+    options.CustomSchemaIds(type => type.FullName?.Replace("+", "."));
+});
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger(options =>
+    {
+        options.RouteTemplate = "api-docs/{documentName}/swagger.json";
+    });
+
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/api-docs/v1/swagger.json", "My API V1");
+        options.RoutePrefix = "docs"; // Serve at /docs instead of /swagger
+        options.DocumentTitle = "My API Documentation";
+        options.DefaultModelsExpandDepth(-1); // Hide models section by default
+        options.DisplayRequestDuration();
+    });
+}
+```
+
+---
+
+## Enriching OpenAPI Documentation
+
+```csharp
+/// <summary>
+/// Gets a product by its unique identifier.
+/// </summary>
+/// <param name="id">The product's integer ID.</param>
+/// <returns>The product if found.</returns>
+/// <response code="200">Returns the product.</response>
+/// <response code="404">Product not found.</response>
+[HttpGet("{id:int}")]
+[ProducesResponseType<ProductDto>(StatusCodes.Status200OK)]
+[ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+[Produces("application/json")]
+public async Task<ActionResult<ProductDto>> GetById(int id)
+{
+    var product = await _service.GetByIdAsync(id);
+    return product is null ? NotFound() : Ok(product);
+}
+
+/// <summary>
+/// Creates a new product.
+/// </summary>
+/// <remarks>
+/// Sample request:
+///
+///     POST /api/products
+///     {
+///        "name": "Widget Pro",
+///        "price": 29.99,
+///        "categoryId": 5
+///     }
+///
+/// </remarks>
+[HttpPost]
+[ProducesResponseType<ProductDto>(StatusCodes.Status201Created)]
+[ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
+public async Task<IActionResult> Create([FromBody] CreateProductRequest request)
+{
+    var product = await _service.CreateAsync(request);
+    return CreatedAtAction(nameof(GetById), new { id = product.Id }, product);
+}
+
+// Mark sensitive properties to exclude from schema
+public class UserDto
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+
+    [JsonIgnore]          // Exclude from JSON serialization AND OpenAPI schema
+    public string HashedPassword { get; set; } = string.Empty;
+}
+```
+
+---
+
+## Minimal API OpenAPI Metadata
+
+```csharp
+// Minimal APIs get OpenAPI metadata via extension methods
+app.MapGet("/products", async (IProductService svc) => await svc.GetAllAsync())
+    .WithName("GetAllProducts")
+    .WithSummary("List all products")
+    .WithDescription("Returns a paginated list of all available products.")
+    .WithTags("Products")
+    .Produces<List<ProductDto>>(200)
+    .Produces<ProblemDetails>(500)
+    .RequireAuthorization()
+    .WithOpenApi(op =>
+    {
+        // Fine-grained OpenAPI operation customization
+        op.Parameters[0].Description = "Page number (1-based)";
+        op.Deprecated = false;
+        return op;
+    });
+
+app.MapPost("/products", async (CreateProductRequest request, IProductService svc) =>
+{
+    var product = await svc.CreateAsync(request);
+    return TypedResults.Created($"/products/{product.Id}", product);
+})
+.WithOpenApi()
+.Accepts<CreateProductRequest>("application/json");
+```
+
+---
+
+## NSwag: Spec Generation + Client Code Generation
+
+```bash
+dotnet add package NSwag.AspNetCore
+```
+
+```csharp
+// NSwag in Program.cs
+builder.Services.AddOpenApiDocument(config =>
+{
+    config.Title = "My API";
+    config.Version = "v1";
+    config.Description = "REST API documentation";
+    config.DocumentProcessors.Add(new SecurityDefinitionAppender("JWT",
+        new OpenApiSecurityScheme
+        {
+            Type = OpenApiSecuritySchemeType.ApiKey,
+            Name = "Authorization",
+            In = OpenApiSecurityApiKeyLocation.Header,
+            Description = "JWT Authorization header: Bearer {token}"
+        }));
+});
+
+app.UseOpenApi();    // Serves OpenAPI spec at /swagger/{documentName}/swagger.json
+app.UseSwaggerUi(); // Serves Swagger UI
+app.UseReDoc();     // Alternative UI (cleaner for consumers)
+```
+
+**Generate a TypeScript client from the spec:**
+
+```bash
+# Install NSwag CLI
+dotnet tool install NSwag.ConsoleCore -g
+
+# Generate TypeScript/Axios client from running API
+nswag openapi2tsclient \
+  /input:http://localhost:5000/swagger/v1/swagger.json \
+  /output:./client/api-client.ts \
+  /template:Axios
+
+# Or generate a C# client
+nswag openapi2csclient \
+  /input:https://api.myapp.com/swagger/v1/swagger.json \
+  /namespace:MyApp.ApiClient \
+  /output:./generated/ApiClient.cs
+```
+
+---
+
+## .NET 9 Built-in OpenAPI
+
+.NET 9 introduced `Microsoft.AspNetCore.OpenApi` — a lightweight, source-generator-powered OpenAPI document generator:
+
+```csharp
+// .NET 9 — no external package needed
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddOpenApi(); // Built-in OpenAPI generator
+
+var app = builder.Build();
+
+// Serve at /openapi/v1.json
+app.MapOpenApi();
+
+// Still need Swagger UI separately (Scalar is a popular alternative)
+// dotnet add package Scalar.AspNetCore
+app.MapScalarApiReference(); // /scalar/v1
+
+app.MapGet("/products", () => new[] { "Product A" })
+    .WithName("GetProducts")
+    .WithDescription("Returns all products.");
+
+app.Run();
+```
+
+---
+
+<ComparisonTable
+  headers={["Tool", "Spec Generation", "UI", "Client Gen", "Performance", "Best For"]}
+  rows={[
+    ["Swashbuckle", "Yes", "Swagger UI built-in", "No (use NSwagStudio)", "Good", "Most ASP.NET Core apps, most documentation"],
+    ["NSwag", "Yes", "Swagger UI + ReDoc", "Yes (TS, C#)", "Slightly slower", "Apps that need auto-generated clients"],
+    ["MS OpenAPI (.NET 9)", "Yes", "No (add Scalar separately)", "No", "Best (source gen)", "New .NET 9 projects wanting minimal deps"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Operation Filters for Cross-Cutting OpenAPI Concerns**
+
+Instead of repeating security requirements and error response types on every endpoint, use `IOperationFilter`:
+
+```csharp
+// Automatically add 401 and 403 responses to all [Authorize] endpoints
+public class AuthorizeOperationFilter : IOperationFilter
+{
+    public void Apply(OpenApiOperation operation, OperationFilterContext context)
+    {
+        var hasAuthorize = context.MethodInfo
+            .GetCustomAttributes<AuthorizeAttribute>(true)
+            .Any() || context.MethodInfo.DeclaringType?
+            .GetCustomAttributes<AuthorizeAttribute>(true).Any() == true;
+
+        if (!hasAuthorize) return;
+
+        operation.Responses.TryAdd("401", new OpenApiResponse { Description = "Unauthorized" });
+        operation.Responses.TryAdd("403", new OpenApiResponse { Description = "Forbidden" });
+
+        operation.Security = new List<OpenApiSecurityRequirement>
+        {
+            new()
+            {
+                [new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference
+                    {
+                        Id = "Bearer",
+                        Type = ReferenceType.SecurityScheme
+                    }
+                }] = Array.Empty<string>()
+            }
+        };
+    }
+}
+
+// Register
+options.OperationFilter<AuthorizeOperationFilter>();
+```
+
+Also consider `IDocumentFilter` for global document customization (removing internal endpoints, adding tags groups) and `ISchemaFilter` for schema-level customization (adding examples, restricting enum values).
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/openapi-swagger/quiz-1"
+  question="You add [ProducesResponseType<ProductDto>(200)] to a controller action. What does this affect?"
+  options={[
+    "It changes the runtime serialization of the response to match ProductDto",
+    "It adds type information to the OpenAPI specification for the 200 response, enabling accurate client generation and Swagger UI schema display",
+    "It validates that the returned object matches ProductDto at runtime",
+    "It registers ProductDto as a DI service for injection"
+  ]}
+  correctAnswer={1}
+  explanation="[ProducesResponseType] is metadata — it has no effect on runtime behavior. It tells OpenAPI generators (Swashbuckle, NSwag, the .NET 9 built-in) that this action returns a ProductDto with HTTP 200. This produces accurate schema in the spec file, which Swagger UI uses to display response shapes and code generators use to create typed client models."
+/>
+
+---
+
+<MythBuster
+  myth="OpenAPI documentation should only be enabled in development environments"
+  truth="OpenAPI specs are valuable in all environments for API gateways, monitoring tools, contract testing, and consumer teams. The security concern is the Swagger UI (interactive testing) — not the spec itself. A best practice: serve the spec in all environments (behind auth if needed), but only enable the Swagger UI in non-production. Many teams also generate static HTML documentation from the spec for public-facing API portals."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Get started with Swashbuckle and ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/tutorials/getting-started-with-swashbuckle" },
+    { label: "Get started with NSwag and ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/tutorials/getting-started-with-nswag" },
+    { label: "OpenAPI support in ASP.NET Core (.NET 9)", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/openapi/aspnetcore-openapi" },
+    { label: "OpenAPI Specification 3.0", url: "https://swagger.io/specification/" },
+  ]}
+/>

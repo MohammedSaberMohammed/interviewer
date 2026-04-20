@@ -1,24 +1,298 @@
 ---
-title: "Dictionary<K,V> Internals"
+title: "Dictionary<K,V> Internals: Hash Tables Demystified"
 slug: "dictionary-internals"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["Dictionary", "hash table", "hash code", "load factor", "collision", "performance", "internals"]
+summary: "Dictionary<K,V> is a hash table under the hood. Understanding its bucket array, load factor, and collision resolution tells you exactly when it's O(1) and when it degrades — and how to keep it fast."
+docsLinks:
+  - label: "Dictionary<TKey,TValue> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2"
+  - label: "IEqualityComparer<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iequalitycomparer-1"
+  - label: "EqualityComparer<T>.Default"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.equalitycomparer-1.default"
+  - label: "System.HashCode struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.hashcode"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What's Inside a Dictionary\<K,V\>?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`Dictionary<K,V>` in .NET is an **open-addressing hash table with chaining**. The core fields (simplified from the actual source):
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Simplified view of Dictionary<TKey,TValue> internals
+private int[] _buckets;      // index into _entries[] for each bucket (-1 = empty)
+private Entry[] _entries;    // flat array of all stored entries
+private int _count;          // number of active entries
+private int _freeList;       // head of free-list for removed entries
+private int _version;        // incremented on mutation (invalidates enumerators)
+
+private struct Entry
+{
+    public uint   HashCode;  // stored hash code (avoids recomputing on resize)
+    public int    Next;      // index of next entry in same bucket chain (-1 = end)
+    public TKey   Key;
+    public TValue Value;
+}
+```
+
+**Lookup path for `dict[key]`:**
+1. Call `key.GetHashCode()` → hash
+2. `bucketIndex = hash % _buckets.Length`
+3. Walk the chain from `_buckets[bucketIndex]` through `Entry.Next` until `Entry.Key == key`
+4. If not found → throw `KeyNotFoundException`
+
+---
+
+## The Bucket Model, Step by Step
+
+```csharp
+var dict = new Dictionary<string, int>(capacity: 4);
+// Internal: _buckets = [-1, -1, -1, -1, -1, -1, -1] (next prime ≥ 4 = 7)
+// _entries = new Entry[7]
+
+dict["apple"]  = 1; // hash("apple")  % 7 = 3  → _buckets[3] = entry[0]
+dict["banana"] = 2; // hash("banana") % 7 = 5  → _buckets[5] = entry[1]
+dict["cherry"] = 3; // hash("cherry") % 7 = 3  → COLLISION!
+                    // → entry[2].Next = _buckets[3] = 0, _buckets[3] = 2
+                    // chain: _buckets[3]→entry[2]→entry[0]→-1
+
+// Lookup "cherry":
+// hash("cherry") % 7 = 3
+// _buckets[3] = 2 → entry[2].Key == "cherry" ✓ → return entry[2].Value
+```
+
+This chaining means worst-case lookup is **O(n)** if all keys hash to the same bucket. Good hash functions keep this at **amortized O(1)**.
+
+---
+
+## Load Factor and Automatic Resize
+
+The **load factor** is `Count / Capacity`. .NET's `Dictionary<K,V>` resizes when it would exceed a load factor of **~0.72** (approximately 72 entries per 100 buckets).
+
+```csharp
+// Watch resize happen
+var dict = new Dictionary<int, int>();
+int prevCap = dict.EnsureCapacity(0);
+for (int i = 0; i < 30; i++)
+{
+    dict[i] = i;
+    int cap = dict.EnsureCapacity(0); // returns current capacity
+    if (cap != prevCap)
+    {
+        Console.WriteLine($"Count={dict.Count}, resized to {cap}");
+        prevCap = cap;
+    }
+}
+// Count=3,  resized to 7
+// Count=6,  resized to 17  (next prime after 7*2)
+// Count=13, resized to 31
+// Count=25, resized to 67
+
+// Pre-allocate to avoid resizes
+var fast = new Dictionary<string, int>(capacity: 1000);
+// Picks a prime bucket count ≥ 1000: 1021
+```
+
+**Resize cost:** When the dictionary grows, it allocates a new `_entries[]` and `_buckets[]` (sized to the next prime), and re-inserts every existing entry using the new modulus. This is O(n) but happens infrequently enough to preserve amortized O(1) `Add`.
+
+---
+
+## GetHashCode: The Performance Linchpin
+
+A dictionary is only as fast as its hash function. Two keys are **equal** if and only if they have the same hash code AND `Equals` returns true.
+
+```csharp
+// Good: string uses a fast, well-distributed Marvin32 hash (randomized per process)
+var d1 = new Dictionary<string, int>();
+
+// Pitfall: mutable types used as keys
+var point = new Point(1, 2);
+var d2 = new Dictionary<Point, string>();
+d2[point] = "origin";
+point.X = 99;                    // mutated! now hash is different
+d2.TryGetValue(point, out _);    // false — can't find it anymore!
+
+// Correct: use immutable keys, or records (auto-generates correct GetHashCode)
+record ImmutablePoint(int X, int Y); // value-based equality + stable hash
+
+// Custom GetHashCode for a struct — use System.HashCode
+public struct OrderKey : IEquatable<OrderKey>
+{
+    public int CustomerId;
+    public int OrderId;
+
+    public override int GetHashCode()
+        => HashCode.Combine(CustomerId, OrderId);
+
+    public bool Equals(OrderKey other)
+        => CustomerId == other.CustomerId && OrderId == other.OrderId;
+
+    public override bool Equals(object? obj)
+        => obj is OrderKey ok && Equals(ok);
+}
+```
+
+---
+
+## Custom Equality Comparers
+
+Pass a custom `IEqualityComparer<K>` to control hashing and equality:
+
+```csharp
+// Case-insensitive string dictionary
+var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+config["ApiKey"] = "secret";
+Console.WriteLine(config["apikey"]); // "secret" — case-insensitive lookup
+
+// Custom comparer for a complex type
+class ProductBySkuComparer : IEqualityComparer<Product>
+{
+    public bool Equals(Product? x, Product? y)
+        => string.Equals(x?.Sku, y?.Sku, StringComparison.Ordinal);
+
+    public int GetHashCode(Product obj)
+        => obj.Sku?.GetHashCode(StringComparison.Ordinal) ?? 0;
+}
+
+var catalog = new Dictionary<Product, decimal>(new ProductBySkuComparer());
+```
+
+---
+
+## HashDoS: Why String Hash Codes Are Randomized
+
+Before .NET Core, string `GetHashCode()` was **deterministic** across processes. Attackers could craft request parameters that all landed in the same bucket, degrading a web server's dictionary lookups from O(1) to O(n) — a denial-of-service attack (HashDoS).
+
+Since .NET Core 1.0, **string hash codes are randomized per process** using a random seed (Marvin32 algorithm). This means:
+- `"hello".GetHashCode()` returns a **different value** in each process run
+- You cannot rely on string hash codes across processes or serialize them
+- Use `StringComparer.Ordinal.GetHashCode(s)` or `string.GetHashCode(StringComparison.Ordinal)` for deterministic hashing when needed
+
+```csharp
+// This is WRONG — hash codes change between runs:
+var hashToWord = new Dictionary<int, string>();
+hashToWord["hello".GetHashCode()] = "hello"; // don't persist hash codes!
+
+// For deterministic hashing:
+int stableHash = string.GetHashCode("hello", StringComparison.Ordinal);
+```
+
+---
+
+<Callout type="trap">
+**Trap: Dictionary Enumeration Order Is NOT Insertion Order**
+
+`Dictionary<K,V>` does not preserve insertion order. The iteration order reflects the internal bucket layout, which can change after any resize.
+
+```csharp
+var d = new Dictionary<int, string>
+{
+    [3] = "three",
+    [1] = "one",
+    [2] = "two"
+};
+
+foreach (var kv in d)
+    Console.WriteLine(kv.Key); // output order is implementation-defined
+
+// If you need insertion order: use OrderedDictionary (non-generic)
+// or maintain a separate List<K> of keys alongside your Dictionary.
+// In .NET 8+, OrderedDictionary<TKey,TValue> (generic) is available!
+```
 </Callout>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/dictionary-internals/challenge-1"
+  title="Hash Collision Cascade"
+  description="A colleague writes a custom GetHashCode that always returns 42. What happens to Dictionary performance and why?"
+  code={`public class BadKey
+{
+    public int Id { get; init; }
+
+    // WRONG: constant hash code
+    public override int GetHashCode() => 42;
+
+    public override bool Equals(object? obj)
+        => obj is BadKey other && Id == other.Id;
+}
+
+var dict = new Dictionary\<BadKey, string\>();
+for (int i = 0; i < 1000; i++)
+    dict[new BadKey { Id = i }] = \$"value-{i}";
+
+// How long does this take vs a good hash?
+var key = new BadKey { Id = 500 };
+string? val = dict.GetValueOrDefault(key);`}
+  options={[
+    "Lookup is still O(1) because Dictionary handles collisions gracefully",
+    "Lookup degrades to O(n) — all 1,000 entries chain in one bucket, requiring a linear scan",
+    "Dictionary throws InvalidOperationException when all keys hash the same",
+    "Lookup is O(log n) because Dictionary falls back to a binary search on collision"
+  ]}
+  correctAnswer={1}
+  explanation="With GetHashCode() always returning 42, every key lands in the same bucket (42 % prime). The bucket chain grows to 1,000 nodes. Each lookup must walk the entire chain, calling Equals on each entry — O(n) per lookup, O(n²) to build the dictionary. This is the exact behavior HashDoS attacks exploit. The fix: a well-distributed hash using HashCode.Combine that uses the Id field."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: TryGetValue Is Always Preferable to ContainsKey + Indexer**
+
+```csharp
+// SLOW: two lookups — ContainsKey hashes + walks chain, then indexer does it again
+if (dict.ContainsKey("key"))
+{
+    var value = dict["key"]; // second hash + bucket walk!
+}
+
+// FAST: single lookup
+if (dict.TryGetValue("key", out var value))
+{
+    // use value
+}
+
+// .NET 6+: GetValueOrDefault for concise null-return pattern
+string? result = dict.GetValueOrDefault("key");
+
+// .NET 6+: CollectionsMarshal.GetValueRefOrAddDefault for update-in-place
+// Avoids double-lookup when you need to increment a counter:
+ref int count = ref CollectionsMarshal.GetValueRefOrAddDefault(dict, "word", out _);
+count++; // increments in-place — no second lookup!
+```
+
+`CollectionsMarshal.GetValueRefOrAddDefault` is particularly powerful for frequency counters and histogram building — it performs a single lookup and returns a managed reference to the value slot, letting you mutate in-place without a second dictionary access.
+</Callout>
+
+---
+
+<ComparisonTable
+  headers={["Property", "Dictionary<K,V>", "SortedDictionary<K,V>", "SortedList<K,V>"]}
+  rows={[
+    ["Internal structure", "Hash table", "Red-black tree", "Two sorted arrays"],
+    ["Lookup", "O(1) avg", "O(log n)", "O(log n)"],
+    ["Insert", "O(1) amortized", "O(log n)", "O(n) shift"],
+    ["Ordered iteration", "No", "Yes (key order)", "Yes (key order)"],
+    ["Memory", "Moderate", "Higher (node objects)", "Lower (arrays)"],
+    ["Best for", "Fast lookup by key", "Ordered + dynamic", "Ordered + read-heavy"],
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dictionary\<TKey,TValue\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2" },
+    { label: "IEqualityComparer\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iequalitycomparer-1" },
+    { label: "System.HashCode struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.hashcode" },
+    { label: "CollectionsMarshal.GetValueRefOrAddDefault", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.collectionsmarshal.getvaluerefOradddefault" },
+    { label: "OrderedDictionary\<TKey,TValue\> (.NET 8)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ordereddictionary-2" },
+  ]}
+/>

@@ -3,22 +3,367 @@ title: "Dependency Inversion Principle"
 slug: "dependency-inversion"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["SOLID", "DIP", "dependency injection", "IoC", "abstractions", "testability"]
+summary: "High-level modules should not depend on low-level modules — both should depend on abstractions. Learn DIP, the difference between DIP and DI, and how ASP.NET Core's IoC container wires it all together."
+docsLinks:
+  - label: "Dependency injection in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection"
+  - label: "Dependency injection in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection"
+  - label: "Service lifetimes (Singleton, Scoped, Transient)"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#service-lifetimes"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Dependency Inversion Principle?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Robert C. Martin's two-part definition:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. **High-level modules should not depend on low-level modules. Both should depend on abstractions.**
+2. **Abstractions should not depend on details. Details (concrete implementations) should depend on abstractions.**
+
+Before DIP, the dependency arrow pointed downward: `OrderService` (high-level) directly instantiated `SqlOrderRepository` (low-level). After DIP, both depend on `IOrderRepository` (abstraction) — the arrow is *inverted*.
+
+---
+
+## The Violation: Direct Instantiation
+
+```csharp
+// BAD: High-level module directly depends on low-level concrete types
+
+public class SqlOrderRepository
+{
+    private readonly string _connectionString;
+
+    public SqlOrderRepository(string connectionString)
+        => _connectionString = connectionString;
+
+    public Order? GetById(int id)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        // ... SQL query ...
+        return null;
+    }
+
+    public void Save(Order order)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        // ... INSERT/UPDATE ...
+    }
+}
+
+public class EmailNotificationService
+{
+    public void SendOrderConfirmation(Order order)
+    {
+        using var smtp = new SmtpClient("smtp.myapp.com");
+        smtp.Send(new MailMessage("noreply@app.com", order.CustomerEmail,
+            "Order confirmed", $"Your order #{order.Id} is confirmed."));
+    }
+}
+
+// BAD: OrderService creates its own dependencies — tightly coupled
+public class OrderService
+{
+    // High-level business logic directly coupled to low-level details
+    private readonly SqlOrderRepository _repo =
+        new SqlOrderRepository("Server=prod-db;Database=Orders;...");
+
+    private readonly EmailNotificationService _email =
+        new EmailNotificationService();
+
+    public void PlaceOrder(Order order)
+    {
+        // Business logic
+        order.Status = OrderStatus.Confirmed;
+        order.PlacedAt = DateTime.UtcNow;
+
+        _repo.Save(order);
+        _email.SendOrderConfirmation(order);
+    }
+}
+
+// Problems:
+// - Can't unit test OrderService without hitting a real SQL database and SMTP server
+// - Can't swap SqlOrderRepository for a MongoDB implementation
+// - Can't swap EmailNotificationService for SendGrid without editing OrderService
+// - OrderService must know the SQL connection string — wrong responsibility
+```
+
+---
+
+## The Refactored Version: Depend on Abstractions
+
+```csharp
+// GOOD: Define abstractions that both sides depend on
+
+public interface IOrderRepository
+{
+    Order? GetById(int id);
+    void Save(Order order);
+}
+
+public interface INotificationService
+{
+    void SendOrderConfirmation(Order order);
+}
+
+// High-level module — depends only on abstractions, not implementations
+public class OrderService
+{
+    private readonly IOrderRepository _repo;
+    private readonly INotificationService _notification;
+
+    // Constructor injection — dependencies are pushed in from outside
+    public OrderService(IOrderRepository repo, INotificationService notification)
+    {
+        _repo = repo;
+        _notification = notification;
+    }
+
+    public void PlaceOrder(Order order)
+    {
+        order.Status = OrderStatus.Confirmed;
+        order.PlacedAt = DateTime.UtcNow;
+
+        _repo.Save(order);
+        _notification.SendOrderConfirmation(order);
+    }
+}
+
+// Low-level implementations depend on the abstractions they fulfill
+public class SqlOrderRepository : IOrderRepository
+{
+    private readonly string _connectionString;
+
+    public SqlOrderRepository(string connectionString)
+        => _connectionString = connectionString;
+
+    public Order? GetById(int id) { /* SQL */ return null; }
+    public void Save(Order order) { /* SQL */ }
+}
+
+public class MongoOrderRepository : IOrderRepository
+{
+    public Order? GetById(int id) { /* MongoDB */ return null; }
+    public void Save(Order order) { /* MongoDB */ }
+}
+
+public class SmtpNotificationService : INotificationService
+{
+    public void SendOrderConfirmation(Order order) { /* SMTP */ }
+}
+
+public class SendGridNotificationService : INotificationService
+{
+    public void SendOrderConfirmation(Order order) { /* SendGrid API */ }
+}
+```
+
+Now `OrderService` is **completely decoupled** from SQL, SMTP, or any other infrastructure detail.
+
+---
+
+## Wiring It Together: ASP.NET Core DI Container
+
+DIP tells you *what* to do. The DI container tells you *how to wire it up*:
+
+```csharp
+// Program.cs — the composition root
+var builder = WebApplication.CreateBuilder(args);
+
+// Register the abstractions → concrete implementations
+builder.Services.AddScoped<IOrderRepository, SqlOrderRepository>();
+builder.Services.AddScoped<INotificationService, SmtpNotificationService>();
+builder.Services.AddScoped<OrderService>();
+
+// At runtime, when OrderService is requested, the container:
+// 1. Creates SqlOrderRepository (injecting connection string from config)
+// 2. Creates SmtpNotificationService
+// 3. Creates OrderService, injecting both dependencies
+
+var app = builder.Build();
+```
+
+Switching from SQL to MongoDB requires **one line change** in `Program.cs`:
+
+```csharp
+// Before:
+builder.Services.AddScoped<IOrderRepository, SqlOrderRepository>();
+
+// After:
+builder.Services.AddScoped<IOrderRepository, MongoOrderRepository>();
+// OrderService never changes. Tests never change.
+```
+
+---
+
+## Unit Testing Without Infrastructure
+
+The payoff of DIP is painless unit testing:
+
+```csharp
+// In tests: use an in-memory fake — no SQL server needed
+public class InMemoryOrderRepository : IOrderRepository
+{
+    private readonly List<Order> _orders = new();
+
+    public Order? GetById(int id) => _orders.FirstOrDefault(o => o.Id == id);
+    public void Save(Order order)
+    {
+        _orders.RemoveAll(o => o.Id == order.Id);
+        _orders.Add(order);
+    }
+}
+
+public class FakeNotificationService : INotificationService
+{
+    public List<Order> SentConfirmations { get; } = new();
+    public void SendOrderConfirmation(Order order) => SentConfirmations.Add(order);
+}
+
+// Clean, fast unit test — no I/O, no network, no database
+[Fact]
+public void PlaceOrder_SetsStatusToConfirmed_AndSendsConfirmation()
+{
+    var repo = new InMemoryOrderRepository();
+    var notifications = new FakeNotificationService();
+    var service = new OrderService(repo, notifications);
+
+    var order = new Order { Id = 1, CustomerEmail = "test@example.com" };
+    service.PlaceOrder(order);
+
+    Assert.Equal(OrderStatus.Confirmed, order.Status);
+    Assert.Single(notifications.SentConfirmations);
+}
+```
+
+---
+
+<ComparisonTable
+  title="DIP vs. DI vs. IoC — What's the Difference?"
+  headers={["Term", "What It Is", "Example"]}
+  rows={[
+    ["Dependency Inversion Principle (DIP)", "Design principle: depend on abstractions, not concretions", "OrderService depends on IOrderRepository, not SqlOrderRepository"],
+    ["Dependency Injection (DI)", "Pattern to implement DIP: push dependencies in from outside", "Constructor injection: new OrderService(repo, notifications)"],
+    ["Inversion of Control (IoC)", "Broader pattern: the framework calls your code, not vice versa", "ASP.NET Core creates your controllers and injects dependencies"],
+    ["IoC Container", "Library that automates DI wiring and lifetime management", "builder.Services.AddScoped\<IOrderRepository, SqlOrderRepository\>()"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Where to Put the Composition Root**
+
+DIP solves coupling. But it creates a new question: where does the actual wiring happen? That place is called the **Composition Root** — the single location where all dependencies are assembled.
+
+In ASP.NET Core, the composition root is `Program.cs` (or `Startup.cs` in older versions). This is intentional: the binding between abstractions and concrete implementations is a configuration decision, not a business logic decision. The composition root should be the only place in your codebase where concrete types are referenced by name.
+
+A pattern some teams get wrong: calling `IServiceProvider.GetService<T>()` inside business logic classes — known as the **Service Locator** anti-pattern. This hides dependencies (they are not visible in the constructor signature), makes the class harder to test (you need a configured container, not just simple fakes), and defeats most of DIP's benefits. Prefer constructor injection always.
+
+Also: DIP does not mean "everything must have an interface." Simple value objects, DTOs, and utility types with no external dependencies do not need interfaces. The overhead of interface-for-everything creates noise without benefit. Apply DIP at architectural boundaries — where high-level policy meets low-level infrastructure (persistence, messaging, external APIs, file I/O).
 </Callout>
+
+---
+
+<MythBuster
+  myth="DIP means you should put an interface in front of every class"
+  reality="DIP targets architectural boundaries — where high-level business logic meets low-level infrastructure. A SqlOrderRepository warrants IOrderRepository because the implementation detail (SQL) should be swappable. An Order domain entity, a Money value object, or an OrderValidator with no external dependencies do not need interfaces. Over-interfacing creates indirection without decoupling — you end up with IOrderValidator that has exactly one implementation and no variation ever planned."
+/>
+
+---
+
+## Code Challenge: Identify the DIP Violation
+
+<CodeChallenge
+  id="06-solid/dependency-inversion/challenge-1"
+  title="Which Code Follows DIP?"
+  description="ReportGenerator needs to write reports. Which version correctly applies DIP?"
+  code={`// Version A
+public class ReportGenerator
+{
+    private readonly FileReportWriter _writer = new FileReportWriter("C:/reports/");
+
+    public void Generate(ReportData data)
+    {
+        var content = BuildContent(data);
+        _writer.Write(content);
+    }
+
+    private string BuildContent(ReportData data) => data.ToString();
+}
+
+// Version B
+public interface IReportWriter
+{
+    void Write(string content);
+}
+
+public class ReportGenerator
+{
+    private readonly IReportWriter _writer;
+
+    public ReportGenerator(IReportWriter writer) => _writer = writer;
+
+    public void Generate(ReportData data)
+    {
+        var content = BuildContent(data);
+        _writer.Write(content);
+    }
+
+    private string BuildContent(ReportData data) => data.ToString();
+}`}
+  options={[
+    "Version A — simpler, fewer types, easier to read",
+    "Version B — depends on IReportWriter abstraction, not the concrete file writer",
+    "Both are equivalent — the logic is the same",
+    "Neither — ReportGenerator should not write at all"
+  ]}
+  correctAnswer={1}
+  explanation="Version B correctly applies DIP. ReportGenerator depends on IReportWriter (an abstraction), not FileReportWriter (a detail). This means you can inject a FileReportWriter in production, an S3ReportWriter for cloud, or an InMemoryReportWriter in tests — without touching ReportGenerator. Version A hardcodes a file path and the concrete writer type, making it impossible to test without the filesystem and impossible to extend without modifying ReportGenerator."
+/>
+
+---
+
+<Quiz
+  id="06-solid/dependency-inversion/quiz-1"
+  questions={[
+    {
+      question: "What is the Service Locator anti-pattern, and why does it undermine DIP?",
+      options: [
+        "Registering too many services in the DI container",
+        "Calling IServiceProvider.GetService<T>() inside business logic to pull dependencies",
+        "Using Singleton lifetime for services that should be Scoped",
+        "Having an interface with only one implementation"
+      ],
+      correctAnswer: 1,
+      explanation: "Service Locator is calling IServiceProvider.GetService\<T\>() or a similar mechanism inside business logic classes to retrieve their own dependencies. It undermines DIP because: (1) dependencies are hidden — the constructor signature doesn't reveal what the class needs, (2) testing requires a fully configured container instead of simple fakes, and (3) the class still controls its dependency resolution — the inversion of control is lost. Constructor injection is always preferred."
+    },
+    {
+      question: "In ASP.NET Core, where should the binding between IOrderRepository and SqlOrderRepository be written?",
+      options: [
+        "Inside the OrderService constructor",
+        "In a static initializer on SqlOrderRepository",
+        "In Program.cs (the Composition Root)",
+        "In the OrderController action method"
+      ],
+      correctAnswer: 2,
+      explanation: "The Composition Root — Program.cs in ASP.NET Core — is the single location where abstractions are bound to concrete implementations. This keeps concrete type names out of business logic. Business logic classes (OrderService, controllers) only know about interfaces. The composition root is the only place that knows both sides."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dependency injection in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection" },
+    { label: "Dependency injection in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection" },
+    { label: "Service lifetimes — Singleton, Scoped, Transient", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#service-lifetimes" },
+    { label: "Architectural principles — dependency inversion", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles#dependency-inversion" },
+  ]}
+/>

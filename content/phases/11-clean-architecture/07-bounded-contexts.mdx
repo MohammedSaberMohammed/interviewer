@@ -1,24 +1,256 @@
 ---
-title: "Bounded Contexts"
+title: "Bounded Contexts: Context Mapping & Shared Kernel"
 slug: "bounded-contexts"
 order: 7
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 17
+status: "published"
+tags: ["bounded contexts", "DDD", "context mapping", "shared kernel", "anti-corruption layer", "microservices", "ubiquitous language"]
+summary: "A bounded context is the boundary within which a domain model applies. Different contexts can use the same word ('Customer') to mean different things — and that's correct."
+docsLinks:
+  - label: ".NET Microservices Architecture — Bounded contexts"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries"
+  - label: "eShopOnContainers — multiple bounded contexts"
+    url: "https://github.com/dotnet-architecture/eShopOnContainers"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Bounded Context?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **bounded context** is a linguistic boundary inside which a particular domain model applies and within which every term has a single, unambiguous meaning. The boundary is explicit — typically a service, module, or project boundary.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The same word can mean different things in different bounded contexts:
+
+- **"Customer"** in the Sales context: a prospect who placed an order, has a name and shipping address.
+- **"Customer"** in the Support context: a person with a ticket history, a service level agreement, and a support tier.
+- **"Customer"** in the Billing context: a billing account, a payment method, and an invoice history.
+
+These are genuinely different models. Forcing them into a single `Customer` entity creates a god object with dozens of nullable fields, most of which are irrelevant to any given context.
+
+---
+
+## Context Map: How Contexts Relate
+
+A **context map** documents how bounded contexts integrate with each other. The main relationship patterns:
+
+```
+[ Ordering Context ] ──Partnership──→ [ Catalog Context ]
+[ Ordering Context ] ──ACL──────────→ [ Legacy ERP ]
+[ Ordering Context ] ──Open Host Service─→ [ Mobile App ]
+[ Ordering Context ] ──Shared Kernel──→ [ Shipping Context ]
+```
+
+The relationships and their implications:
+
+<ComparisonTable
+  headers={["Relationship", "Description", "Integration approach in .NET"]}
+  rows={[
+    ["Partnership", "Two teams coordinate closely; changes are co-planned", "Shared library or direct service calls with agreed contract"],
+    ["Shared Kernel", "Teams share a subset of the domain model; changes require both teams' agreement", "Common NuGet package with shared domain types"],
+    ["Customer/Supplier", "Downstream (customer) depends on upstream (supplier). Supplier sets the terms.", "Supplier publishes versioned API/events; downstream adapts"],
+    ["Conformist", "Downstream adopts upstream's model wholesale (no translation)", "Downstream uses upstream's DTOs directly"],
+    ["Anti-Corruption Layer (ACL)", "Downstream translates upstream's model to protect its own domain", "Adapter + mapper between contexts (see lesson 08)"],
+    ["Open Host Service", "Provider publishes a stable, documented protocol for multiple consumers", "REST API / gRPC / event schema with versioning guarantees"],
+    ["Published Language", "Shared, well-documented format (JSON schema, Protobuf) usable by all consumers", "Shared contracts via OpenAPI spec or Protobuf files"],
+  ]}
+/>
+
+---
+
+## Bounded Contexts in a .NET Solution
+
+A monolith can have multiple bounded contexts as separate modules or namespaces:
+
+```
+src/
+├── Ordering/                    ← Ordering bounded context
+│   ├── Ordering.Domain/
+│   ├── Ordering.Application/
+│   ├── Ordering.Infrastructure/
+│   └── Ordering.API/
+├── Catalog/                     ← Catalog bounded context
+│   ├── Catalog.Domain/
+│   ├── Catalog.Application/
+│   ├── Catalog.Infrastructure/
+│   └── Catalog.API/
+└── Billing/                     ← Billing bounded context
+    ├── Billing.Domain/
+    ├── Billing.Application/
+    ├── Billing.Infrastructure/
+    └── Billing.API/
+```
+
+Each context has its own `Customer` (or `Buyer`, or `Account`) type, its own database schema, and its own team. The contexts communicate via events or explicit service calls — never by sharing a database table.
+
+---
+
+## The Same Concept, Different Models
+
+```csharp
+// Ordering context — Customer is a Buyer with a delivery address
+namespace Ordering.Domain.Entities
+{
+    public class Buyer : Entity<BuyerId>
+    {
+        public string FullName { get; private set; }
+        public Address DefaultShippingAddress { get; private set; }
+        public IReadOnlyList<Order> Orders => _orders.AsReadOnly();
+
+        public void PlaceOrder(Order order) { /* ... */ }
+    }
+}
+
+// Billing context — Customer is an Account with payment methods
+namespace Billing.Domain.Entities
+{
+    public class BillingAccount : Entity<BillingAccountId>
+    {
+        public string CompanyName { get; private set; }
+        public string VatNumber { get; private set; }
+        public IReadOnlyList<PaymentMethod> PaymentMethods => _paymentMethods.AsReadOnly();
+        public IReadOnlyList<Invoice> Invoices => _invoices.AsReadOnly();
+
+        public Invoice GenerateInvoice(OrderId orderId, Money amount) { /* ... */ }
+    }
+}
+
+// Support context — Customer is a Ticket holder with SLA
+namespace Support.Domain.Entities
+{
+    public class SupportCustomer : Entity<SupportCustomerId>
+    {
+        public string DisplayName { get; private set; }
+        public ServiceLevel ServiceLevel { get; private set; }
+        public TimeSpan MaxResponseTime => ServiceLevel == ServiceLevel.Enterprise
+            ? TimeSpan.FromHours(1)
+            : TimeSpan.FromHours(24);
+
+        public Ticket OpenTicket(string subject, Priority priority) { /* ... */ }
+    }
+}
+```
+
+These three types have the same real-world referent (a human being who uses the system) but model completely different aspects of that person's relationship with the business.
+
+---
+
+## Shared Kernel: A Double-Edged Sword
+
+A **Shared Kernel** is a small, stable subset of the domain shared across contexts — typically value objects and enumerations that have the same meaning everywhere:
+
+```csharp
+// SharedKernel/ValueObjects/Money.cs — shared across contexts
+// Published as MyApp.SharedKernel NuGet package
+namespace MyApp.SharedKernel.ValueObjects
+{
+    public sealed class Money : ValueObject
+    {
+        public decimal Amount { get; }
+        public Currency Currency { get; }
+        // ...
+    }
+
+    public enum Currency { USD, EUR, GBP, JPY }
+}
+
+// SharedKernel/Events/IIntegrationEvent.cs
+namespace MyApp.SharedKernel.Events
+{
+    // Contract for events crossing context boundaries
+    public interface IIntegrationEvent
+    {
+        Guid EventId { get; }
+        DateTime OccurredOn { get; }
+        string EventType { get; }
+    }
+}
+```
+
+Shared kernels reduce duplication but create tight coupling. Any change to `Money` requires coordinating all consuming contexts. Keep the shared kernel extremely small — only things that change rarely and mean the same thing everywhere.
+
+---
+
+## Communication Between Contexts: Events
+
+```csharp
+// When Order is confirmed in Ordering context,
+// publish an integration event for other contexts to consume.
+
+// Ordering.Application/Orders/EventHandlers/OrderConfirmedIntegrationEventHandler.cs
+public sealed class OrderConfirmedIntegrationEventPublisher
+    : INotificationHandler<OrderConfirmedEvent>
+{
+    private readonly IEventBus _eventBus;
+
+    public OrderConfirmedIntegrationEventPublisher(IEventBus eventBus)
+        => _eventBus = eventBus;
+
+    public async Task Handle(OrderConfirmedEvent notification, CancellationToken ct)
+    {
+        // Translate domain event to integration event (different schema!)
+        var integrationEvent = new OrderConfirmedIntegrationEvent(
+            OrderId: notification.OrderId.Value,
+            CustomerId: notification.CustomerId.Value,
+            TotalAmount: notification.Total.Amount,
+            Currency: notification.Total.Currency,
+            OccurredOn: notification.OccurredOn);
+
+        await _eventBus.PublishAsync(integrationEvent, ct);
+    }
+}
+
+// Billing context subscribes and handles it independently
+// Billing.Application/Handlers/OrderConfirmedHandler.cs
+public sealed class OrderConfirmedIntegrationEventHandler
+    : IIntegrationEventHandler<OrderConfirmedIntegrationEvent>
+{
+    private readonly IBillingAccountRepository _accounts;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public async Task HandleAsync(OrderConfirmedIntegrationEvent @event, CancellationToken ct)
+    {
+        var account = await _accounts.GetByCustomerIdAsync(
+            new CustomerId(@event.CustomerId), ct);
+
+        account?.QueueInvoiceGeneration(
+            new OrderId(@event.OrderId),
+            new Money(@event.TotalAmount, @event.Currency));
+
+        await _unitOfWork.SaveChangesAsync(ct);
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Bounded Contexts and Microservices Are Not the Same Thing**
+
+A common mistake is equating "bounded context" with "microservice." They are related but not identical.
+
+A bounded context is a domain modeling concept — it defines where a particular model applies. A microservice is a deployment unit. One microservice can encompass multiple bounded contexts (especially early in a system's life). Multiple microservices can implement the same bounded context (for scaling reasons).
+
+More importantly, you can have bounded contexts in a monolith. A well-structured modular monolith with explicit context boundaries, separate schemas per module, and inter-module communication via in-process events gives you most of the architectural benefits of microservices with far less operational complexity.
+
+The decision to split a bounded context into a separate deployable service should be driven by: team autonomy needs, independent scalability requirements, or technology heterogeneity — not by "microservices are modern."
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Each bounded context must be a separate microservice"
+  reality="Bounded contexts are a modeling concept; microservices are a deployment concern. A modular monolith can have multiple bounded contexts sharing a process while maintaining clear module boundaries, separate DB schemas, and explicit integration contracts. Split into microservices when teams need independent deployment velocity or when scalability requirements diverge — not by default."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Identify microservice domain model boundaries (.NET Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries" },
+    { label: ".NET Microservices Architecture eBook", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/" },
+    { label: "eShopOnContainers reference application", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+  ]}
+/>

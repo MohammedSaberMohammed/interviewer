@@ -1,24 +1,292 @@
 ---
-title: "Rate Limiting"
+title: "Rate Limiting: RateLimiterMiddleware and Algorithms"
 slug: "rate-limiting"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["rate limiting", "RateLimiterMiddleware", "fixed window", "sliding window", "token bucket", "concurrency limiter", "asp.net core 7"]
+summary: "Rate limiting protects APIs from abuse and ensures fair use. ASP.NET Core 7 introduced RateLimiterMiddleware with four built-in algorithms — understanding each is essential for high-traffic API design."
+docsLinks:
+  - label: "Rate limiting middleware in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit"
+  - label: "System.Threading.RateLimiting"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-7/library-improvements#rate-limiting-apis"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Four Rate Limiting Algorithms
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+ASP.NET Core 7 ships `RateLimiterMiddleware` with four built-in algorithms. Each has different behavior under burst traffic:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+<ComparisonTable
+  headers={["Algorithm", "Burst Handling", "Smoothness", "Typical Use"]}
+  rows={[
+    ["Fixed Window", "Allows full burst at window start", "Uneven — resets sharply", "Simple per-user limits"],
+    ["Sliding Window", "Smooths window boundary spikes", "Moderate", "More accurate request counting"],
+    ["Token Bucket", "Allows bursts up to bucket size", "Good — refills gradually", "APIs with bursty-but-bounded clients"],
+    ["Concurrency Limiter", "Limits simultaneous requests (not rate)", "N/A", "Protecting expensive resources"],
+  ]}
+/>
+
+---
+
+## Fixed Window Limiter
+
+Allows N requests in a fixed time window. Resets at the window boundary:
+
+```csharp
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("fixed", config =>
+    {
+        config.Window = TimeSpan.FromMinutes(1);
+        config.PermitLimit = 100;         // 100 requests per minute
+        config.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        config.QueueLimit = 0;            // No queuing — reject immediately
+    });
+
+    // Response when rate limit is hit
+    options.OnRejected = async (context, token) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.Headers["Retry-After"] =
+            context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+                ? ((int)retryAfter.TotalSeconds).ToString()
+                : "60";
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            error = "Too Many Requests",
+            message = "Rate limit exceeded. Please slow down."
+        }, token);
+    };
+});
+```
+
+**Problem with Fixed Window:** If your window resets at :00, a client can make 100 requests at :59 and 100 more at :01, effectively getting 200 requests in 2 seconds.
+
+---
+
+## Sliding Window Limiter
+
+Tracks requests in segments of the window to smooth out boundary spikes:
+
+```csharp
+options.AddSlidingWindowLimiter("sliding", config =>
+{
+    config.Window = TimeSpan.FromMinutes(1);
+    config.SegmentsPerWindow = 6;         // 6 segments = 10-second resolution
+    config.PermitLimit = 100;             // 100 requests per minute total
+    config.QueueLimit = 10;              // Queue up to 10 requests
+    config.QueueProcessingOrder = QueueProcessingOrder.NewestFirst;
+});
+```
+
+---
+
+## Token Bucket Limiter
+
+Tokens are added at a steady rate. Bursts are allowed up to the bucket size:
+
+```csharp
+options.AddTokenBucketLimiter("token-bucket", config =>
+{
+    config.TokenLimit = 50;              // Bucket holds max 50 tokens
+    config.ReplenishmentPeriod = TimeSpan.FromSeconds(10);
+    config.TokensPerPeriod = 10;         // Add 10 tokens every 10 seconds
+    config.AutoReplenishment = true;     // Replenish automatically
+    config.QueueLimit = 5;
+    config.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+});
+```
+
+**Token Bucket is excellent for APIs** where legitimate clients occasionally burst (e.g., upload multiple files) but should not sustain high rates indefinitely.
+
+---
+
+## Concurrency Limiter
+
+Limits simultaneous in-flight requests — not the rate. Useful for protecting expensive resources:
+
+```csharp
+options.AddConcurrencyLimiter("concurrency", config =>
+{
+    config.PermitLimit = 10;             // Max 10 simultaneous requests
+    config.QueueLimit = 5;              // Queue 5 more — others get 429
+    config.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+});
+```
+
+---
+
+## Per-User Rate Limiting with Policy Partitioning
+
+The real value of rate limiting is per-user or per-IP limits — not global limits:
+
+```csharp
+builder.Services.AddRateLimiter(options =>
+{
+    // Partition by authenticated user ID, fall back to IP for anonymous
+    options.AddPolicy("PerUser", context =>
+    {
+        var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (userId is not null)
+        {
+            // Authenticated users get higher limits
+            return RateLimitPartition.GetTokenBucketLimiter(
+                partitionKey: $"user:{userId}",
+                factory: _ => new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 200,
+                    ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+                    TokensPerPeriod = 200,
+                    AutoReplenishment = true
+                });
+        }
+
+        // Anonymous users limited by IP
+        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: $"ip:{ip}",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                Window = TimeSpan.FromMinutes(1),
+                PermitLimit = 20             // Anonymous: 20 req/min
+            });
+    });
+
+    // Different limits for different tiers
+    options.AddPolicy("PremiumUsers", context =>
+    {
+        var tier = context.User.FindFirstValue("subscription_tier");
+        var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anon";
+
+        return tier switch
+        {
+            "enterprise" => RateLimitPartition.GetNoLimiter("enterprise"),
+            "premium" => RateLimitPartition.GetTokenBucketLimiter(
+                $"premium:{userId}",
+                _ => new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 1000,
+                    TokensPerPeriod = 1000,
+                    ReplenishmentPeriod = TimeSpan.FromHours(1),
+                    AutoReplenishment = true
+                }),
+            _ => RateLimitPartition.GetFixedWindowLimiter(
+                $"free:{userId}",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 100,
+                    Window = TimeSpan.FromHours(1)
+                })
+        };
+    });
+});
+```
+
+**Apply to endpoints:**
+
+```csharp
+var app = builder.Build();
+
+app.UseRateLimiter(); // Must be AFTER UseRouting, BEFORE MapControllers
+
+// Apply policy to all endpoints
+app.MapControllers().RequireRateLimiting("PerUser");
+
+// Apply to specific Minimal API endpoints
+app.MapGet("/expensive-report", async (IReportService svc) => await svc.GenerateAsync())
+    .RequireRateLimiting("PremiumUsers");
+
+// Disable for health checks
+app.MapHealthChecks("/healthz").DisableRateLimiting();
+```
+
+**Apply in controllers:**
+
+```csharp
+[ApiController]
+[EnableRateLimiting("PerUser")]        // Applies to all actions
+public class OrdersController : ControllerBase
+{
+    [HttpGet]
+    [EnableRateLimiting("PremiumUsers")] // Overrides controller-level for this action
+
+    [HttpDelete("{id}")]
+    [DisableRateLimiting]               // No rate limiting for this action
+    public IActionResult Delete(int id) => Ok();
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Rate Limiting Headers for Client Observability**
+
+Clients need feedback to implement exponential backoff and user-facing messages. Add standard rate limit headers to every response:
+
+```csharp
+options.OnRejected = async (context, token) =>
+{
+    context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+    if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        context.HttpContext.Response.Headers["Retry-After"] =
+            ((int)retryAfter.TotalSeconds).ToString();
+
+    await context.HttpContext.Response.WriteAsJsonAsync(new ProblemDetails
+    {
+        Status = 429,
+        Title = "Too Many Requests",
+        Detail = "You have exceeded your request quota."
+    }, token);
+};
+
+// Add informational headers on successful requests (custom middleware)
+app.Use(async (context, next) =>
+{
+    await next(context);
+    // Add headers after response — these are informational only
+    // Real quota headers require access to the rate limiter lease metadata
+    // Use a custom policy that exposes this via HttpContext.Items
+});
+```
+
+Also note: in Kubernetes or behind a load balancer, rate limiting state must be in Redis — not in-memory per-instance. The built-in algorithms are in-memory only. For distributed rate limiting, use Redis with a StackExchange.Redis-backed custom `RateLimiter` or a library like `AspNetCoreRateLimit` with Redis backing.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/rate-limiting/quiz-1"
+  question="You configure a Fixed Window limiter with 100 requests per minute. At 11:59:50, a client makes 100 requests. At 12:00:01, the same client makes 100 more. What happens?"
+  options={[
+    "The second batch is rejected because the combined rate is 200 requests in 11 seconds",
+    "The second batch is allowed because the window reset at 12:00:00 — the previous 100 don't count",
+    "The second batch is queued until the next window",
+    "The fixed window limiter spreads the 100 limit across the entire minute so each second allows ~1.67 requests"
+  ]}
+  correctAnswer={1}
+  explanation="Fixed Window resets completely at the window boundary. The 100 requests at 11:59:50 consumed the previous window's quota. When the window resets at 12:00:00, the counter starts fresh — so the 100 requests at 12:00:01 are all allowed. This creates a '2x burst at window boundaries' problem, which Sliding Window was designed to solve."
+/>
+
+---
+
+<MythBuster
+  myth="Adding rate limiting middleware protects against all forms of API abuse"
+  truth="Rate limiting is one layer of protection. It helps against accidental abuse and simple scripts, but determined attackers can distribute requests across IPs, use proxies, or target specific expensive operations below your limits. Rate limiting should be combined with authentication, monitoring, anomaly detection, and WAF rules for comprehensive protection."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Rate limiting middleware in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit" },
+    { label: "System.Threading.RateLimiting APIs", url: "https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-7/library-improvements#rate-limiting-apis" },
+    { label: "RateLimiter class reference", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.ratelimiting.ratelimiter" },
+  ]}
+/>

@@ -1,24 +1,254 @@
 ---
-title: "Repository Patterns"
+title: "Repository in Clean Architecture: Generic vs Specific, IUnitOfWork"
 slug: "repository-patterns"
 order: 10
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["repository pattern", "IUnitOfWork", "clean architecture", "EF Core", "generic repository", "DDD"]
+summary: "The repository pattern mediates between the domain and data mapping layers. Generic repositories save time; specific repositories preserve domain semantics. Both have a place."
+docsLinks:
+  - label: "Repository pattern (.NET Microservices)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design"
+  - label: "EF Core — working with DbContext"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What a Repository Does
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A repository **mediates between the domain model and data mapping layers**. From the domain's perspective, it's a collection of aggregate roots you can add to, remove from, and query. The domain doesn't know about SQL, EF Core, or Dapper — it just asks the repository for objects and gets them.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// From the domain/application perspective:
+var order = await _orders.GetByIdAsync(orderId, ct);   // reads
+await _orders.AddAsync(order, ct);                       // tracks addition
+await _unitOfWork.SaveChangesAsync(ct);                  // commits
+```
+
+This is clean. The handler doesn't know if orders are stored in SQL Server, Cosmos DB, or an in-memory store. In tests, you swap the EF Core implementation for an in-memory fake.
+
+---
+
+## Generic Repository: Pros and Cons
+
+```csharp
+// Application/Interfaces/IRepository.cs
+public interface IRepository<TEntity, TId>
+    where TEntity : Entity<TId>
+    where TId : notnull
+{
+    Task<TEntity?> GetByIdAsync(TId id, CancellationToken ct = default);
+    Task<IReadOnlyList<TEntity>> GetAllAsync(CancellationToken ct = default);
+    Task AddAsync(TEntity entity, CancellationToken ct = default);
+    void Update(TEntity entity);
+    void Remove(TEntity entity);
+}
+
+// Infrastructure/Persistence/Repositories/EfRepository.cs
+public class EfRepository<TEntity, TId> : IRepository<TEntity, TId>
+    where TEntity : Entity<TId>
+    where TId : notnull
+{
+    protected readonly AppDbContext Db;
+    protected DbSet<TEntity> Set => Db.Set<TEntity>();
+
+    public EfRepository(AppDbContext db) => Db = db;
+
+    public async Task<TEntity?> GetByIdAsync(TId id, CancellationToken ct = default)
+        => await Set.FindAsync(new object[] { id }, ct);
+
+    public async Task<IReadOnlyList<TEntity>> GetAllAsync(CancellationToken ct = default)
+        => await Set.ToListAsync(ct);
+
+    public async Task AddAsync(TEntity entity, CancellationToken ct = default)
+        => await Set.AddAsync(entity, ct);
+
+    public void Update(TEntity entity) => Set.Update(entity);
+
+    public void Remove(TEntity entity) => Set.Remove(entity);
+}
+```
+
+The generic repository works for simple CRUD. Its problems:
+- `GetAllAsync()` is rarely safe to call on large tables
+- No domain-specific query methods (`GetActiveOrdersByCustomer`, `GetExpiredCoupons`)
+- Leaks query concerns into handlers: `GetAllAsync().Where(...)` brings LINQ into the Application layer
+
+---
+
+## Domain-Specific Repositories
+
+Prefer domain-specific interfaces that express what the application actually needs:
+
+```csharp
+// Application/Interfaces/IOrderRepository.cs
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default);
+    Task<Order?> GetByIdWithLinesAsync(OrderId id, CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetDraftsByCustomerAsync(CustomerId customerId, CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetConfirmedAfterAsync(DateTime afterUtc, CancellationToken ct = default);
+    Task AddAsync(Order order, CancellationToken ct = default);
+    void Remove(Order order);
+}
+
+// Infrastructure/Persistence/Repositories/EfOrderRepository.cs
+public sealed class EfOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+
+    public EfOrderRepository(AppDbContext db) => _db = db;
+
+    public async Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default)
+        => await _db.Orders.FindAsync(new object[] { id }, ct);
+
+    public async Task<Order?> GetByIdWithLinesAsync(OrderId id, CancellationToken ct = default)
+        => await _db.Orders
+            .Include(o => o.Lines)
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public async Task<IReadOnlyList<Order>> GetDraftsByCustomerAsync(
+        CustomerId customerId, CancellationToken ct = default)
+        => await _db.Orders
+            .Where(o => o.CustomerId == customerId && o.Status == OrderStatus.Draft)
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<Order>> GetConfirmedAfterAsync(
+        DateTime afterUtc, CancellationToken ct = default)
+        => await _db.Orders
+            .Where(o => o.Status == OrderStatus.Confirmed && o.ConfirmedAt > afterUtc)
+            .ToListAsync(ct);
+
+    public async Task AddAsync(Order order, CancellationToken ct = default)
+        => await _db.Orders.AddAsync(order, ct);
+
+    public void Remove(Order order) => _db.Orders.Remove(order);
+}
+```
+
+This makes the application's needs explicit and keeps EF Core queries in Infrastructure where they belong.
+
+---
+
+## IUnitOfWork: Coordinating Transactions
+
+EF Core's `DbContext` is already a unit of work — it tracks changes and commits them together. The `IUnitOfWork` interface is an Application-layer abstraction over this:
+
+```csharp
+// Application/Interfaces/IUnitOfWork.cs
+public interface IUnitOfWork
+{
+    Task<int> SaveChangesAsync(CancellationToken ct = default);
+    Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken ct = default);
+}
+
+// Infrastructure/Persistence/UnitOfWork.cs
+public sealed class UnitOfWork : IUnitOfWork
+{
+    private readonly AppDbContext _db;
+
+    public UnitOfWork(AppDbContext db) => _db = db;
+
+    public Task<int> SaveChangesAsync(CancellationToken ct = default)
+        => _db.SaveChangesAsync(ct);
+
+    public Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken ct = default)
+        => _db.Database.BeginTransactionAsync(ct);
+}
+
+// DI registration — same DbContext lifetime for repo and UoW
+builder.Services.AddScoped<AppDbContext>();
+builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+```
+
+---
+
+## Hybrid: Generic Base + Specific Extensions
+
+The best of both worlds — a generic base for common operations, specific methods added via extension or inheritance:
+
+```csharp
+// Infrastructure base with common EF functionality
+public abstract class EfRepositoryBase<TEntity, TId>
+    where TEntity : Entity<TId>
+    where TId : notnull
+{
+    protected readonly AppDbContext Db;
+    protected DbSet<TEntity> Set => Db.Set<TEntity>();
+
+    protected EfRepositoryBase(AppDbContext db) => Db = db;
+
+    protected async Task<TEntity?> FindByIdAsync(TId id, CancellationToken ct)
+        => await Set.FindAsync(new object[] { id }, ct);
+
+    protected async Task AddEntityAsync(TEntity entity, CancellationToken ct)
+        => await Set.AddAsync(entity, ct);
+
+    protected void RemoveEntity(TEntity entity) => Set.Remove(entity);
+}
+
+// Domain-specific repository adds what the domain needs
+public sealed class EfOrderRepository : EfRepositoryBase<Order, OrderId>, IOrderRepository
+{
+    public EfOrderRepository(AppDbContext db) : base(db) { }
+
+    public Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default)
+        => FindByIdAsync(id, ct);
+
+    public Task<Order?> GetByIdWithLinesAsync(OrderId id, CancellationToken ct = default)
+        => Db.Orders.Include(o => o.Lines).FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public Task AddAsync(Order order, CancellationToken ct = default)
+        => AddEntityAsync(order, ct);
+
+    public void Remove(Order order) => RemoveEntity(order);
+}
+```
+
+---
+
+<Callout type="senior">
+**The Repository Pattern Is a Seam, Not an Abstraction Tax**
+
+The most common objection to repositories in Clean Architecture is: "EF Core already has `DbContext`, which is a repository and unit of work — why wrap it?"
+
+The answer: the repository interface is a **seam** for testing and for enforcing the Dependency Rule, not primarily an abstraction over EF Core's API.
+
+Without `IOrderRepository`, your Application layer handlers directly reference `DbContext` (an Infrastructure type). With it, handlers are testable with a simple in-memory fake — no SQL Server, no test containers, no EF Core bootstrap. A `FakeOrderRepository : IOrderRepository` that uses a `List<Order>` in memory runs 100x faster than any EF integration test.
+
+The secondary benefit: the repository interface expresses what the application actually needs from persistence. `GetByIdWithLinesAsync` is a domain concept; `_db.Orders.Include(o => o.Lines)` is an EF concern. The interface keeps the domain language visible; the EF code is hidden in Infrastructure.
 </Callout>
+
+---
+
+<ComparisonTable
+  headers={["Approach", "When to use", "Trade-off"]}
+  rows={[
+    ["Generic IRepository\<T,TId\>", "Simple CRUD, no domain-specific queries", "Leaks query logic into handlers; too broad GetAllAsync"],
+    ["Domain-specific IOrderRepository", "Any domain with meaningful query needs", "More interfaces to write; but expresses intent clearly"],
+    ["Hybrid (base + specific)", "Teams with many aggregates; reduce boilerplate", "Requires discipline to not let base class grow"],
+    ["Skip repository, use DbContext directly", "CRUD microservices, no Clean Architecture", "Breaks Dependency Rule; Application depends on EF"],
+  ]}
+/>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Repository pattern is mandatory in Clean Architecture"
+  reality="Repository pattern is a tool for enforcing the Dependency Rule and enabling fast unit tests. For a simple CRUD service with no real domain logic, you might choose to inject IDbContext (an interface wrapping DbContext) instead. The mandatory thing is the Dependency Rule — the domain and application must not reference EF Core. How you achieve that is flexible."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Repository and Unit of Work patterns (.NET Microservices Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design" },
+    { label: "EF Core — DbContext", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/" },
+    { label: "eShopOnWeb — repository implementation", url: "https://github.com/dotnet-architecture/eShopOnWeb" },
+  ]}
+/>

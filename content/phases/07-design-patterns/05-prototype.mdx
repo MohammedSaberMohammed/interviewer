@@ -1,24 +1,296 @@
 ---
-title: "Prototype"
+title: "Prototype — Cloning Objects"
 slug: "prototype"
 order: 5
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["prototype", "creational", "cloning", "IClonable", "deep copy", "shallow copy", "MemberwiseClone"]
+summary: "Prototype creates new objects by cloning an existing instance — useful when object creation is expensive or when you need variations of a preconfigured object."
+docsLinks:
+  - label: "ICloneable Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.icloneable"
+  - label: "Object.MemberwiseClone"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.object.memberwiseclone"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Expensive or Complex Object Creation
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Sometimes creating an object from scratch is expensive (loading configuration from disk, querying a database, running complex initialization logic). Other times you need a copy of an existing object with minor tweaks — like a template document with different values.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Prototype solves this by cloning an existing instance as the basis for new objects.
+
+---
+
+## Shallow Copy vs Deep Copy
+
+This distinction is critical for correctness:
+
+```csharp
+public class Address
+{
+    public string Street { get; set; } = "";
+    public string City   { get; set; } = "";
+}
+
+public class Person
+{
+    public string  Name    { get; set; } = "";
+    public int     Age     { get; set; }
+    public Address Address { get; set; } = new();
+}
+
+// SHALLOW COPY — MemberwiseClone copies field values
+// Reference fields point to the SAME objects
+Person original = new Person { Name = "Alice", Age = 30, Address = new Address { Street = "123 Main St", City = "NY" } };
+Person shallow  = (Person)original.MemberwiseClone();
+
+shallow.Name           = "Bob";   // OK — Name is a string (immutable in .NET)
+shallow.Address.City   = "LA";    // PROBLEM! Modifies original.Address.City too!
+
+Console.WriteLine(original.Address.City); // "LA" — original was mutated!
+
+// DEEP COPY — manually copy all nested objects
+public class Person
+{
+    public string  Name    { get; set; } = "";
+    public int     Age     { get; set; }
+    public Address Address { get; set; } = new();
+
+    public Person DeepClone() => new Person
+    {
+        Name    = this.Name,
+        Age     = this.Age,
+        Address = new Address { Street = this.Address.Street, City = this.Address.City }
+    };
+}
+
+Person deep = original.DeepClone();
+deep.Address.City = "LA"; // safe — original.Address.City unchanged
+```
+
+---
+
+## Implementing the Prototype Pattern
+
+```csharp
+// The prototype interface
+public interface IPrototype<T>
+{
+    T Clone();
+}
+
+// Concrete prototype — a configurable email template
+public class EmailTemplate : IPrototype<EmailTemplate>
+{
+    public string Subject { get; set; } = "";
+    public string Body    { get; set; } = "";
+    public List<string> Recipients { get; set; } = new();
+
+    // Deep clone implementation
+    public EmailTemplate Clone() => new EmailTemplate
+    {
+        Subject    = this.Subject,
+        Body       = this.Body,
+        Recipients = new List<string>(this.Recipients) // copy the list
+    };
+}
+
+// Prototype registry — stores named prototypes
+public class TemplateRegistry
+{
+    private readonly Dictionary<string, EmailTemplate> _templates = new();
+
+    public void Register(string name, EmailTemplate template)
+        => _templates[name] = template;
+
+    public EmailTemplate GetClone(string name)
+    {
+        if (!_templates.TryGetValue(name, out var template))
+            throw new KeyNotFoundException($"Template '{name}' not found.");
+        return template.Clone(); // return a clone, not the original
+    }
+}
+
+// Usage
+var registry = new TemplateRegistry();
+registry.Register("welcome", new EmailTemplate
+{
+    Subject    = "Welcome to {AppName}!",
+    Body       = "Hello {Name}, welcome aboard.",
+    Recipients = new List<string> { "notifications@company.com" }
+});
+
+// Get a pre-configured clone and customize it
+EmailTemplate welcome = registry.GetClone("welcome");
+welcome.Subject = welcome.Subject.Replace("{AppName}", "MyApp");
+welcome.Body    = welcome.Body.Replace("{Name}", "Alice");
+welcome.Recipients.Add("alice@example.com");
+```
+
+---
+
+## The `ICloneable` Interface — Why Microsoft Recommends Against It
+
+```csharp
+// ICloneable is in the BCL but considered problematic
+public interface ICloneable
+{
+    object Clone(); // returns object — must cast, no generic version
+}
+
+// The problem: Clone() doesn't specify shallow or deep — ambiguous contract
+public class Document : ICloneable
+{
+    public string Title   { get; set; } = "";
+    public List<Page> Pages { get; set; } = new();
+
+    // Is this shallow or deep? The caller can't know without reading the source.
+    public object Clone() => this.MemberwiseClone(); // shallow!
+}
+
+// Preferred: use your own typed interface
+public interface IDeepCloneable<T>
+{
+    T DeepClone();
+}
+```
+
+`ICloneable` has no specification on whether `Clone()` is shallow or deep — the .NET team officially recommends not implementing it in new code.
+
+---
+
+## Modern Alternative: `record` with `with`
+
+C# 9 records have built-in non-destructive mutation via `with` — a form of shallow prototype:
+
+```csharp
+public record Address(string Street, string City);
+
+public record Person(string Name, int Age, Address Address);
+
+// 'with' creates a shallow clone with specified properties changed
+Person alice = new Person("Alice", 30, new Address("123 Main", "NY"));
+Person bob   = alice with { Name = "Bob", Age = 25 }; // clone + override
+
+Console.WriteLine(alice.Name); // "Alice" — original unchanged
+Console.WriteLine(bob.Name);   // "Bob"
+
+// Warning: Address is still shared (shallow copy)
+Person carol = alice with { Name = "Carol" };
+// carol.Address is the same Address reference as alice.Address
+// but since Address is a record (immutable), this is safe
+```
+
+For immutable record types, shallow `with` is safe because neither the original nor the clone can mutate the shared reference.
+
+---
+
+<ComparisonTable
+  title="Cloning Approaches in C#"
+  headers={["Approach", "Depth", "Type-Safe", "Effort", "Use When"]}
+  rows={[
+    ["MemberwiseClone", "Shallow", "No (returns object)", "None", "All fields are value types or immutable"],
+    ["Manual clone constructor", "Deep (explicit)", "Yes", "High", "Full control needed"],
+    ["record with { }", "Shallow", "Yes", "None", "Immutable record types"],
+    ["Serialization (JSON/Binary)", "Deep (automatic)", "No (reflection)", "Low", "Complex graphs, unknown depth"],
+    ["IPrototype\<T\>.Clone()", "Your choice", "Yes", "Medium", "Explicit contract, mixed depth"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/prototype/challenge-1"
+  title="Shallow vs Deep Clone Bug"
+  description="This code tries to create an independent copy of a shopping cart. What is the bug?"
+  code={`public class CartItem { public string Name { get; set; } = ""; public decimal Price { get; set; } }
+
+public class ShoppingCart
+{
+    public List\<CartItem\> Items { get; set; } = new();
+
+    public ShoppingCart Clone() => (ShoppingCart)this.MemberwiseClone();
+}
+
+var original = new ShoppingCart();
+original.Items.Add(new CartItem { Name = "Book", Price = 29.99m });
+
+var copy = original.Clone();
+copy.Items.Add(new CartItem { Name = "Pen", Price = 1.99m });
+
+Console.WriteLine(original.Items.Count); // What does this print?`}
+  options={[
+    "1 — Clone() creates an independent copy of Items",
+    "2 — Items list is shared between original and copy (shallow clone bug)",
+    "0 — MemberwiseClone() doesn't copy the list at all",
+    "It throws an InvalidOperationException"
+  ]}
+  correctAnswer={1}
+  explanation="MemberwiseClone() performs a shallow copy — it copies the reference to the Items list, not the list itself. Both original and copy point to the same List<CartItem> object. Adding to copy.Items also adds to original.Items. The fix: copy the list explicitly: new ShoppingCart { Items = new List<CartItem>(this.Items) }. For a deep clone, also clone each CartItem."
+/>
+
+---
+
+<Callout type="senior">
+**Serialization-Based Deep Clone**
+
+For complex object graphs, serialization/deserialization gives you an automatic deep clone without writing clone methods for every class:
+
+```csharp
+using System.Text.Json;
+
+public static class DeepCloneExtensions
+{
+    public static T DeepClone<T>(this T obj)
+    {
+        // Serialize to JSON, then deserialize to a new instance
+        string json = JsonSerializer.Serialize(obj);
+        return JsonSerializer.Deserialize<T>(json)!;
+    }
+}
+
+// Usage
+var original = new ShoppingCart { Items = { new CartItem { Name = "Book", Price = 29.99m } } };
+var copy = original.DeepClone();
+copy.Items.Add(new CartItem { Name = "Pen", Price = 1.99m });
+// original.Items.Count is still 1
+
+// Tradeoffs of serialization cloning:
+// + Simple — no per-class Clone() methods
+// + Handles arbitrary depth
+// - Slower than manual (allocates strings, uses reflection)
+// - Loses non-serializable state (events, delegates, private fields not in JSON)
+// - Requires all types to be serializable
+```
+
+For hot paths, benchmark before using serialization cloning. For configuration objects cloned at startup, it's usually fine.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/prototype/quiz-1"
+  question="Why does Microsoft's documentation say you should NOT implement ICloneable in new code?"
+  options={[
+    "ICloneable is deprecated and will be removed in a future version of .NET",
+    "Clone() returns object, requiring a cast, and doesn't specify whether the copy is shallow or deep",
+    "ICloneable only works with reference types, not structs",
+    "ICloneable conflicts with the IDisposable pattern"
+  ]}
+  correctAnswer={1}
+  explanation="The main problems with ICloneable are: (1) Clone() returns object — callers must cast, losing type safety, and (2) the interface has no specification on shallow vs deep copy, so implementers and callers may have different assumptions. The official guidance is to implement your own typed cloning method (e.g., DeepClone(), Copy()) with a clear contract instead of ICloneable."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ICloneable Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.icloneable" },
+    { label: "Object.MemberwiseClone Method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.object.memberwiseclone" },
+    { label: "Records — with expressions (C# 9)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+    { label: "System.Text.Json serialization", url: "https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/overview" },
+  ]}
+/>

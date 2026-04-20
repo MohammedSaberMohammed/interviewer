@@ -1,24 +1,302 @@
 ---
-title: "Pattern Matching (C# 7 → 12)"
+title: "Pattern Matching (C# 7–12)"
 slug: "pattern-matching"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["pattern matching", "switch expression", "property patterns", "list patterns", "positional patterns", "is", "when guards"]
+summary: "Pattern matching evolved from simple type checks in C# 7 into a full declarative dispatch system — switch expressions, property patterns, and list patterns replace entire classes of if/else chains."
+docsLinks:
+  - label: "Pattern matching overview (C#)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching"
+  - label: "Patterns (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/patterns"
+  - label: "switch expression (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/switch-expression"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Pattern Matching Journey
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+C# pattern matching grew significantly across versions:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+| Version | Additions |
+|---------|-----------|
+| C# 7 | `is` type patterns, `switch` with `when` guards, var pattern |
+| C# 8 | Switch expressions, property patterns, positional patterns, tuple patterns |
+| C# 9 | Logical patterns (`and`, `or`, `not`), relational patterns (`< > <= >=`) |
+| C# 10 | Extended property patterns (`obj.Prop.SubProp`) |
+| C# 11 | List patterns (`[1, 2, ..]`), slice patterns |
+
+---
+
+## is Patterns
+
+The `is` operator now supports full pattern matching, not just type testing:
+
+```csharp
+object value = "Hello";
+
+// Type pattern with binding
+if (value is string s)
+    Console.WriteLine(s.ToUpper()); // HELLO — s is string, only in scope here
+
+// Negation (C# 9)
+if (value is not null)
+    Console.WriteLine("Not null");
+
+// Combination (C# 9)
+if (value is string { Length: > 3 } s2) // property pattern + binding
+    Console.WriteLine($"Long string: {s2}");
+
+// Relational patterns
+int age = 25;
+if (age is >= 18 and < 65)
+    Console.WriteLine("Working age");
+
+// var pattern — always matches, binds the value (rarely needed)
+if (value is var v)
+    Console.WriteLine(v?.ToString()); // v = "Hello"
+```
+
+---
+
+## Switch Expressions (C# 8)
+
+Switch expressions return a value inline — replacing verbose switch statements and chains of if/else:
+
+```csharp
+// Old: switch statement (no return value)
+string Classify(int n)
+{
+    switch (n)
+    {
+        case < 0:  return "negative";
+        case 0:    return "zero";
+        case < 10: return "small";
+        default:   return "large";
+    }
+}
+
+// New: switch expression — concise, exhaustive, returns directly
+string Classify(int n) => n switch
+{
+    < 0  => "negative",
+    0    => "zero",
+    < 10 => "small",
+    _    => "large"    // discard pattern = default
+};
+
+// The compiler enforces exhaustiveness — missing cases are a warning/error
+// _ (discard) is the catch-all arm
+
+// Complex type dispatch
+string Describe(object obj) => obj switch
+{
+    null            => "nothing",
+    int i when i < 0 => $"negative int: {i}",  // when guard
+    int i            => $"int: {i}",
+    string s         => $"string of length {s.Length}",
+    double d         => $"double: {d:F2}",
+    _                => $"unknown: {obj.GetType().Name}"
+};
+```
+
+---
+
+## Property Patterns
+
+Property patterns match against the properties of an object, enabling expressive, declarative conditions:
+
+```csharp
+record Address(string City, string Country, string PostalCode);
+record Order(string Status, decimal Total, Address ShippingAddress, bool IsPriority);
+
+// Property pattern — { Property: pattern }
+string GetShippingLabel(Order order) => order switch
+{
+    { Status: "Cancelled" }                        => "CANCELLED",
+    { IsPriority: true, Total: > 500 }             => "PRIORITY - FREE SHIPPING",
+    { IsPriority: true }                           => "PRIORITY",
+    { ShippingAddress.Country: "US" }              => "DOMESTIC",   // C# 10 extended
+    { ShippingAddress: { Country: "CA" } }         => "CANADA",
+    { Total: > 100 }                               => "FREE SHIPPING",
+    _                                              => "STANDARD"
+};
+
+// Nested property patterns for deep inspection
+bool IsHighValueUSOrder(Order o) => o is
+{
+    Status: not "Cancelled",
+    Total: > 1000,
+    ShippingAddress.Country: "US"  // C# 10: dot-separated nested property
+};
+```
+
+---
+
+## Positional Patterns (Deconstruction)
+
+Positional patterns work with types that have a `Deconstruct` method (tuples, records):
+
+```csharp
+// Tuple pattern
+string ClassifyPoint((int x, int y) point) => point switch
+{
+    (0, 0)          => "origin",
+    (0, _)          => "y-axis",
+    (_, 0)          => "x-axis",
+    (> 0, > 0)      => "first quadrant",
+    (< 0, > 0)      => "second quadrant",
+    (< 0, < 0)      => "third quadrant",
+    _               => "fourth quadrant"
+};
+
+Console.WriteLine(ClassifyPoint((3, 4)));   // first quadrant
+Console.WriteLine(ClassifyPoint((0, -5)));  // y-axis
+
+// Record positional pattern
+record Point(int X, int Y);
+
+string Describe(Point p) => p switch
+{
+    (0, 0)     => "origin",
+    (var x, 0) => $"on x-axis at {x}",
+    (0, var y) => $"on y-axis at {y}",
+    var (x, y) => $"at ({x}, {y})"
+};
+```
+
+---
+
+## List Patterns (C# 11)
+
+List patterns match against sequences — arrays, lists, spans:
+
+```csharp
+int[] nums = { 1, 2, 3, 4, 5 };
+
+string Classify(int[] arr) => arr switch
+{
+    []           => "empty",
+    [var only]   => $"single element: {only}",
+    [var first, var second] => $"two elements: {first}, {second}",
+    [1, 2, ..]   => "starts with 1, 2",
+    [.., 5]      => "ends with 5",
+    [_, _, _, ..] => "4 or more elements",
+    _            => "other"
+};
+
+Console.WriteLine(Classify(new[] { 1, 2, 3, 4, 5 })); // starts with 1, 2
+Console.WriteLine(Classify(new[] { 7, 5 }));           // two elements: 7, 5
+Console.WriteLine(Classify(Array.Empty<int>()));        // empty
+
+// Slice pattern (..) can capture the remainder
+string SummarizeLog(string[] lines) => lines switch
+{
+    [] => "no entries",
+    [var first, .. var rest] => $"First: '{first}', plus {rest.Length} more"
+};
+```
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/pattern-matching/playground-1"
+  title="Polymorphic Dispatch with Switch Expressions"
+  code={`using System;
+
+abstract record Shape;
+record Circle(double Radius) : Shape;
+record Rectangle(double Width, double Height) : Shape;
+record Triangle(double Base, double Height) : Shape;
+
+static double Area(Shape shape) => shape switch
+{
+    Circle    { Radius: var r }          => Math.PI * r * r,
+    Rectangle { Width: var w, Height: var h } => w * h,
+    Triangle  { Base: var b, Height: var h }  => 0.5 * b * h,
+    _                                         => throw new ArgumentException(\$"Unknown shape: {shape}")
+};
+
+Console.WriteLine(\$"Circle:    {Area(new Circle(5)):F2}");       // 78.54
+Console.WriteLine(\$"Rectangle: {Area(new Rectangle(4, 6)):F2}"); // 24.00
+Console.WriteLine(\$"Triangle:  {Area(new Triangle(3, 8)):F2}");  // 12.00`}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/pattern-matching/challenge-1"
+  title="Pattern Match Result"
+  description="What does this switch expression return for the input (2, 0)?"
+  code={`(int x, int y) point = (2, 0);
+
+string result = point switch
+{
+    (0, 0)     => "origin",
+    (_, 0)     => "x-axis",     // arm A
+    (0, _)     => "y-axis",     // arm B
+    (> 0, > 0) => "Q1",
+    _          => "other"
+};
+
+Console.WriteLine(result);`}
+  options={[
+    "origin",
+    "x-axis",
+    "y-axis",
+    "Q1"
+  ]}
+  correctAnswer={1}
+  explanation="Switch expressions evaluate arms in order from top to bottom and use the FIRST matching arm. The input is (2, 0). The first arm (0, 0) doesn't match (x is 2, not 0). The second arm (_, 0) matches: _ matches any value (x=2), and 0 matches y=0. So 'x-axis' is returned and evaluation stops — arm B (0, _) is never tested. This order-sensitivity is important: if you swapped arms A and B, (0, 0) would still match origin, but (0, 5) would then incorrectly match arm A instead of arm B."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Pattern Matching Enables Closed-World Polymorphism Without Virtual Methods**
+
+Traditional OOP polymorphism uses virtual methods — each type handles its own behavior. Pattern matching enables a different style: a central dispatch function that handles all types, useful when you want behavior to live outside the types (e.g., for serialization, rendering, logging):
+
+```csharp
+// Traditional: behavior spread across types (open/closed principle)
+abstract record Notification { public abstract string Format(); }
+record Email(string Subject, string Body) : Notification
+{
+    public override string Format() => $"Email: {Subject}"; // behavior inside type
+}
+
+// Pattern matching: behavior centralized, types are pure data
+abstract record Notification;
+record Email(string To, string Subject, string Body) : Notification;
+record Sms(string Number, string Text) : Notification;
+record Push(string DeviceId, string Title, string Body) : Notification;
+
+// One function handles all — easy to add new operations, closed set of types
+string FormatForLog(Notification n) => n switch
+{
+    Email(var to, var subj, _) => $"EMAIL to {to}: {subj}",
+    Sms(var num, var text)     => $"SMS to {num}: {text[..Math.Min(30, text.Length)]}...",
+    Push(var dev, var title, _)=> $"PUSH to {dev}: {title}",
+    _                          => throw new UnreachableException()
+};
+
+// The compiler warns if a new Notification subtype is added and FormatForLog
+// doesn't handle it — exhaustiveness checking is a key benefit
+```
+
+This is the **discriminated union** pattern (or "algebraic data type"), common in F# and Haskell. C# records with switch expressions give you most of the benefits without a native sum type.
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Pattern matching overview", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching" },
+    { label: "Patterns (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/patterns" },
+    { label: "switch expression", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/switch-expression" },
+  ]}
+/>

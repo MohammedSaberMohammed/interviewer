@@ -1,24 +1,213 @@
 ---
-title: "Struct Equality & IEquatable"
+title: "Struct Equality and IEquatable&lt;T&gt;"
 slug: "struct-equality-iequatable"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["structs", "equality", "IEquatable", "boxing", "GetHashCode", "value types", "performance"]
+summary: "The default struct equality uses reflection-based field comparison that boxes value types and is much slower than IEquatable<T> — and the == operator doesn't even exist by default."
+docsLinks:
+  - label: "IEquatable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.iequatable-1"
+  - label: "Struct design guidelines"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/struct"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// Struct without IEquatable<T>
+public struct Money
+{
+    public decimal Amount;
+    public string Currency;
+}
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+var a = new Money { Amount = 10.00m, Currency = "USD" };
+var b = new Money { Amount = 10.00m, Currency = "USD" };
+
+// All three have TRAPS:
+bool eq1 = a.Equals(b);    // Works but SLOW — uses reflection + boxing
+bool eq2 = (a == b);       // COMPILE ERROR — == not defined for structs by default!
+bool eq3 = a == b;         // Same compile error
+
+// In a collection:
+var set = new HashSet<Money>();
+set.Add(a);
+set.Add(b);
+Console.WriteLine(set.Count); // 2? or 1? — depends on GetHashCode implementation
+```
+
+<Callout type="trap">
+Without implementing `IEquatable<T>` and overriding `GetHashCode`, structs use `ValueType.Equals()` — a reflection-based comparison that boxes every field and is slow. Additionally, `==` and `!=` are not defined for structs by default, causing compile errors. And without a consistent `GetHashCode`, structs cannot be reliably used in hash-based collections.
 </Callout>
+
+---
+
+## Why the Default Is Slow
+
+```csharp
+// ValueType.Equals() (what runs without IEquatable<T>):
+// 1. Uses reflection to enumerate all fields
+// 2. Boxes each field value to call object.Equals on it
+// 3. Compares field by field
+
+// Simplified (not actual CLR source):
+public override bool Equals(object? other)
+{
+    if (other == null || GetType() != other.GetType()) return false;
+    var fields = GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+    foreach (var field in fields)
+    {
+        object? thisVal  = field.GetValue(this);  // Boxing!
+        object? otherVal = field.GetValue(other); // Boxing!
+        if (!object.Equals(thisVal, otherVal)) return false;
+    }
+    return true;
+}
+
+// Also: if any field contains a reference (like our string Currency),
+// the CLR optimizes with a bitwise comparison where possible,
+// but still falls back to field-by-field for reference fields.
+```
+
+---
+
+## The Fix: Implement IEquatable\<T\>
+
+```csharp
+// CORRECT — struct with full equality implementation
+public readonly struct Money : IEquatable<Money>
+{
+    public decimal Amount { get; }
+    public string Currency { get; }
+
+    public Money(decimal amount, string currency)
+    {
+        Amount   = amount;
+        Currency = currency ?? throw new ArgumentNullException(nameof(currency));
+    }
+
+    // IEquatable<T> — no boxing, direct type-safe comparison
+    public bool Equals(Money other)
+        => Amount == other.Amount
+           && string.Equals(Currency, other.Currency, StringComparison.OrdinalIgnoreCase);
+
+    // Override object.Equals for compatibility with non-generic code
+    public override bool Equals(object? obj)
+        => obj is Money other && Equals(other);
+
+    // Always override GetHashCode when overriding Equals
+    public override int GetHashCode()
+        => HashCode.Combine(Amount, Currency?.ToUpperInvariant());
+
+    // Define == and != explicitly for structs
+    public static bool operator ==(Money left, Money right) => left.Equals(right);
+    public static bool operator !=(Money left, Money right) => !left.Equals(right);
+
+    public override string ToString() => $"{Amount:F2} {Currency}";
+}
+
+// Now usage is clean and performant:
+var a = new Money(10.00m, "USD");
+var b = new Money(10.00m, "USD");
+
+Console.WriteLine(a.Equals(b)); // true — no boxing, direct comparison
+Console.WriteLine(a == b);      // true — operator defined
+Console.WriteLine(a != b);      // false
+
+var set = new HashSet<Money> { a, b };
+Console.WriteLine(set.Count);  // 1 — correct deduplication
+```
+
+---
+
+<MythBuster
+  myth="Structs automatically have value equality — if two structs have the same fields, == returns true"
+  truth="Structs get reference-based object.Equals() inherited from ValueType, which uses slow reflection. The == operator is NOT defined for structs unless you define it. A struct is not usable in HashSet<T> or Dictionary<TKey,TValue> keys without a correct GetHashCode override."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/struct-equality-iequatable/challenge-1"
+  title="What does the HashSet contain?"
+  description="How many elements does the HashSet contain after these operations?"
+  code={`public struct Point
+{
+    public int X, Y;
+    // No IEquatable, no GetHashCode override
+}
+
+var set = new HashSet\<Point\>();
+set.Add(new Point { X = 1, Y = 1 });
+set.Add(new Point { X = 1, Y = 1 });
+set.Add(new Point { X = 2, Y = 2 });
+
+Console.WriteLine(set.Count);`}
+  options={[
+    "2 — struct equality deduplicates the two (1,1) points",
+    "3 — default struct GetHashCode may not deduplicate, so all three are added",
+    "1 — all structs with the same fields hash to the same bucket",
+    "Throws InvalidOperationException — Point does not implement IEquatable"
+  ]}
+  correctAnswer={1}
+  explanation="The behavior is actually implementation-dependent and historically 3 in many cases. Without overriding GetHashCode, ValueType uses a default implementation that may or may not produce consistent hashes for structs with the same field values (it depends on CLR internals and field layout). In practice with simple structs containing only value type fields, the default GetHashCode CAN work correctly. But with reference type fields (like strings), it uses object identity for hash, which is unreliable. The safe answer: ALWAYS implement IEquatable<T> and override GetHashCode for structs used in collections."
+/>
+
+---
+
+## C# Records as an Alternative
+
+```csharp
+// C# 9+ record struct — value equality built-in, == defined, GetHashCode generated
+public record struct Money(decimal Amount, string Currency);
+
+var a = new Money(10.00m, "USD");
+var b = new Money(10.00m, "USD");
+
+Console.WriteLine(a == b);     // true — generated
+Console.WriteLine(a.Equals(b)); // true — IEquatable<Money> generated
+
+// Records generate all of this automatically:
+// - Equals(Money other) — IEquatable<T>
+// - Equals(object? obj) — override
+// - GetHashCode() — consistent
+// - == and != operators
+// - ToString() — "Money { Amount = 10.00, Currency = USD }"
+
+// Use record struct when:
+// - You want value semantics and equality
+// - The struct is immutable
+// - You want to reduce boilerplate
+
+// Use manual IEquatable when:
+// - Custom equality logic is needed (case-insensitive strings, tolerance, etc.)
+// - You need control over which fields participate in equality
+```
+
+---
+
+<Callout type="senior">
+**Why the code review rule exists: "Always implement IEquatable on structs used as keys"**
+
+A team had a `ProductCode` struct used as a dictionary key. It worked fine in unit tests (which happened to have consistent hash behavior). In production under load, with thousands of concurrent requests building dictionaries, they intermittently had product codes that "weren't found" in the cache.
+
+The root cause: the default `GetHashCode` for their struct returned different values in different JIT compilation contexts (not guaranteed stable across process restarts or compilation modes). The dictionary key lookups failed silently — the `TryGetValue` returned false, causing cache misses that looked like data integrity issues.
+
+The fix: implement `IEquatable<ProductCode>` with explicit `GetHashCode`. **Every struct used as a Dictionary key, HashSet element, or in any hash-based lookup must have explicit, stable `GetHashCode` and `Equals` implementations.**
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IEquatable\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.iequatable-1" },
+    { label: "HashCode struct (.NET 2.1+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.hashcode" },
+    { label: "Struct design guidelines", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/struct" },
+    { label: "Record structs (C# 10)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+  ]}
+/>

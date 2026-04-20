@@ -1,24 +1,284 @@
 ---
-title: "Rich vs Anemic Domain Models"
+title: "Rich vs Anemic Domain Model: Behavior in Entities"
 slug: "rich-vs-anemic-domain"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["rich domain model", "anemic domain model", "DDD", "domain-driven design", "entities", "business logic", "anti-pattern"]
+summary: "An anemic domain model puts all business logic in services, leaving entities as data bags. A rich domain model puts behavior in entities — where it can enforce invariants and raise events."
+docsLinks:
+  - label: "AnemicDomainModel (Martin Fowler)"
+    url: "https://martinfowler.com/bliki/AnemicDomainModel.html"
+  - label: ".NET Microservices Architecture — Rich domain model"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Anemic Domain Model
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An anemic domain model (Martin Fowler's term, 2003) has entities that are pure data containers — properties with getters and setters, no business logic:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// ANEMIC: Order is just a data bag
+public class Order
+{
+    public Guid Id { get; set; }
+    public Guid CustomerId { get; set; }
+    public string Status { get; set; } = "Draft";
+    public List<OrderLine> Lines { get; set; } = new();
+    public decimal TotalAmount { get; set; }
+}
+
+// ANEMIC: All logic lives in a service (or worse, in handlers)
+public class OrderService
+{
+    public void ConfirmOrder(Order order)
+    {
+        if (order.Status != "Draft")
+            throw new Exception("Order is not in draft status.");
+
+        if (!order.Lines.Any())
+            throw new Exception("Order has no lines.");
+
+        order.Status = "Confirmed";
+        order.TotalAmount = order.Lines.Sum(l => l.UnitPrice * l.Quantity);
+        // What happens if someone forgets to call this and sets Status directly?
+    }
+
+    public void AddLine(Order order, Guid productId, decimal unitPrice, int quantity)
+    {
+        if (order.Status != "Draft")
+            throw new Exception("Cannot modify a confirmed order.");
+
+        // No encapsulation — anyone can modify order.Lines directly!
+        order.Lines.Add(new OrderLine
+        {
+            ProductId = productId,
+            UnitPrice = unitPrice,
+            Quantity = quantity
+        });
+        // Forget to update TotalAmount? Silent bug.
+        order.TotalAmount = order.Lines.Sum(l => l.UnitPrice * l.Quantity);
+    }
+}
+```
+
+The anemic model looks like OOP but is procedural code organized around data structures. The "objects" are just structs with methods living elsewhere.
+
+---
+
+## The Rich Domain Model
+
+A rich domain model puts business logic — especially invariant enforcement — inside entities:
+
+```csharp
+// RICH: Order enforces its own invariants
+public sealed class Order : AggregateRoot<OrderId>
+{
+    private readonly List<OrderLine> _lines = new();
+
+    public CustomerId CustomerId { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public IReadOnlyList<OrderLine> Lines => _lines.AsReadOnly(); // no external mutation
+
+    // Computed — always consistent
+    public Money Total => _lines.Aggregate(Money.Zero, (sum, l) => sum + l.Subtotal);
+
+    private Order() { }
+
+    public static Order Place(CustomerId customerId, Address shippingAddress)
+    {
+        var order = new Order
+        {
+            Id = OrderId.New(),
+            CustomerId = customerId,
+            Status = OrderStatus.Draft
+        };
+        order.Raise(new OrderPlacedEvent(order.Id, customerId));
+        return order;
+    }
+
+    public void AddLine(Product product, int quantity)
+    {
+        // Invariant: only draft orders can be modified
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("Cannot add lines to a confirmed order.");
+
+        // Invariant: quantity must be positive
+        if (quantity <= 0)
+            throw new DomainException("Quantity must be positive.");
+
+        // Invariant: max 20 distinct products per order
+        var existing = _lines.FirstOrDefault(l => l.ProductId == product.Id);
+        if (existing is not null)
+        {
+            existing.IncreaseQuantity(quantity);
+        }
+        else
+        {
+            if (_lines.Count >= 20)
+                throw new DomainException("Order cannot have more than 20 distinct products.");
+            _lines.Add(OrderLine.Create(product.Id, product.Name, product.Price, quantity));
+        }
+    }
+
+    public void Confirm()
+    {
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("Only draft orders can be confirmed.");
+        if (!_lines.Any())
+            throw new DomainException("Cannot confirm an empty order.");
+
+        Status = OrderStatus.Confirmed;
+        Raise(new OrderConfirmedEvent(Id, CustomerId, Total));
+    }
+
+    // Cannot set Status directly — it's private set
+    // Cannot modify Lines directly — it returns IReadOnlyList
+    // Cannot create an OrderLine outside Order — constructor is internal
+}
+```
+
+---
+
+## Side-by-Side Comparison
+
+<ComparisonTable
+  headers={["Aspect", "Anemic Domain Model", "Rich Domain Model"]}
+  rows={[
+    ["Where does business logic live?", "Service classes, handlers, controllers", "Entity and aggregate root methods"],
+    ["Invariant enforcement", "Scattered — easy to bypass by calling setters directly", "Enforced in entity methods — impossible to violate from outside"],
+    ["Entity properties", "Public getters and setters (fully mutable)", "Public getters, private or protected setters"],
+    ["Collections", "Public List\<T\> — directly modifiable", "Private List\<T\> exposed as IReadOnlyList\<T\>"],
+    ["Domain events", "Raised from services — entities are unaware", "Raised from aggregate root methods — entities record what happened"],
+    ["Testability", "Services testable, but entities have no behavior to test", "Entity behavior testable without any mocks or infrastructure"],
+    ["Onboarding complexity", "Familiar — looks like DTOs + service layer", "Higher initial curve — DDD concepts needed"],
+    ["Risk of inconsistency", "High — multiple code paths can update state differently", "Low — all state changes go through one method"],
+  ]}
+/>
+
+---
+
+## When Anemic Is Acceptable
+
+```csharp
+// Anemic is fine here: CRUD microservice with no real domain rules
+public class TagService
+{
+    private readonly AppDbContext _db;
+
+    public async Task<Tag> CreateAsync(string name, string color)
+    {
+        var tag = new Tag { Id = Guid.NewGuid(), Name = name, Color = color };
+        _db.Tags.Add(tag);
+        await _db.SaveChangesAsync();
+        return tag;
+    }
+}
+```
+
+Tags in a blog platform have no business invariants worth enforcing. An anemic model is appropriate — there's nothing to encapsulate.
+
+The rich model pays off when entities have:
+- **State machines** (Draft → Confirmed → Shipped → Delivered)
+- **Cross-property invariants** ("total items cannot exceed 50 across all lines")
+- **Domain events** that should fire when specific state changes occur
+- **Computed values** that must be consistent with internal state
+
+---
+
+## Refactoring from Anemic to Rich
+
+```csharp
+// Step 1: Identify what business rules exist in service classes
+// Step 2: Move those rules into private entity methods
+// Step 3: Make entity fields/collections private; expose read-only
+// Step 4: Remove public setters; force callers to use methods
+
+// BEFORE (anemic)
+public class Subscription
+{
+    public Guid Id { get; set; }
+    public DateTime? CancelledAt { get; set; }
+    public bool IsActive { get; set; }
+    public SubscriptionTier Tier { get; set; }
+}
+
+// AFTER (rich)
+public sealed class Subscription : Entity<SubscriptionId>
+{
+    public DateTime StartedAt { get; private set; }
+    public DateTime? CancelledAt { get; private set; }
+    public SubscriptionTier Tier { get; private set; }
+    public bool IsActive => CancelledAt is null || CancelledAt > DateTime.UtcNow;
+
+    private Subscription() { }
+
+    public static Subscription Start(CustomerId customerId, SubscriptionTier tier)
+        => new() { Id = SubscriptionId.New(), StartedAt = DateTime.UtcNow, Tier = tier };
+
+    public void Upgrade(SubscriptionTier newTier)
+    {
+        if (!IsActive) throw new DomainException("Cannot upgrade an inactive subscription.");
+        if (newTier <= Tier) throw new DomainException("New tier must be higher than current.");
+        Tier = newTier;
+    }
+
+    public void Cancel()
+    {
+        if (!IsActive) throw new DomainException("Subscription is already cancelled.");
+        CancelledAt = DateTime.UtcNow;
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**The Anemic Model Is Often a Sign of Framework Pressure, Not a Design Choice**
+
+In many codebases, the anemic domain model isn't a deliberate choice — it's the path of least resistance when using ORMs. EF Core's convention-based mapping wants public setters. AutoMapper wants public properties. Web API model binding wants public properties. The friction of making entities truly rich (private setters, factory methods, internal constructors) leads developers to give up and expose everything.
+
+The solution is to configure EF Core to work with private fields and backing properties:
+
+```csharp
+// EF Core configuration for a rich entity with private fields
+modelBuilder.Entity<Order>(b =>
+{
+    b.HasKey(o => o.Id);
+    b.Property(o => o.Id).HasConversion<Guid>();
+    b.Property(o => o.Status).HasConversion<string>();
+
+    // Map private backing field
+    b.HasMany(o => o.Lines)        // uses IReadOnlyList<OrderLine> Lines property
+     .WithOne()
+     .HasForeignKey("OrderId");    // shadow property
+
+    // Private field for the list
+    b.Navigation(o => o.Lines).HasField("_lines");
+});
+```
+
+Once EF Core is configured to work with private fields, the ORM pressure disappears and entities can be truly encapsulated.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Rich domain models are only for complex enterprise applications"
+  reality="Any entity with state transitions (Active/Inactive, Draft/Published, Open/Closed) benefits from a rich model. The threshold is not complexity per se but the existence of business rules that must be enforced consistently. An e-commerce order with 3 status transitions is complex enough to warrant a rich model — it prevents the classic bug of directly setting Status = 'Confirmed' without validating the cart."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: ".NET Microservices Architecture — Microservice domain model", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model" },
+    { label: "EF Core — Backing fields", url: "https://learn.microsoft.com/en-us/ef/core/modeling/backing-field" },
+    { label: "eShopOnContainers — rich domain model examples", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+  ]}
+/>

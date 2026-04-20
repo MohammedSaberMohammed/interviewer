@@ -1,24 +1,278 @@
 ---
-title: "Deadlocks: The Classic ASP.NET Trap"
+title: "Async Deadlocks: .Result and .Wait() on Async Code"
 slug: "async-deadlocks"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["deadlock", "async", "await", ".Result", ".Wait()", "SynchronizationContext", "blocking", "ASP.NET"]
+summary: "Blocking on async code with .Result or .Wait() causes deadlocks in any environment with a SynchronizationContext — know exactly why and how to escape."
+docsLinks:
+  - label: "Async/await best practices"
+    url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming"
+  - label: "Don't block on async code"
+    url: "https://blog.stephencleary.com/2012/07/dont-block-on-async-code.html"
+  - label: "SynchronizationContext class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.synchronizationcontext"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Anatomy of an Async Deadlock
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An async deadlock requires three ingredients:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. A `SynchronizationContext` that limits concurrency (UI context or classic ASP.NET request context)
+2. A blocking call (`.Result`, `.Wait()`, `.GetAwaiter().GetResult()`) that holds that thread
+3. An async method that captures the context and tries to resume on it
+
+All three together create a circular wait: the thread holds the context lock waiting for the task, while the task's continuation is waiting for the context lock to become available.
+
+---
+
+## Step-by-Step Deadlock Trace
+
+```csharp
+// Classic ASP.NET Framework controller — will deadlock
+public class OrderController : Controller
+{
+    private readonly IOrderService _service;
+
+    public ActionResult GetOrder(int id)
+    {
+        // T1: Request thread, AspNetSynchronizationContext current
+        // Context limit: 1 thread at a time in request context
+        var order = _service.GetOrderAsync(id).Result;
+        //                                     ^^^^
+        // T1 blocks here, holding the AspNetSynchronizationContext
+        // T1 is waiting for GetOrderAsync to finish
+
+        return Json(order);
+    }
+}
+
+// Meanwhile, inside GetOrderAsync:
+public async Task<Order> GetOrderAsync(int id)
+{
+    // T2 (ThreadPool): Running the first part of this method
+    // Captures AspNetSynchronizationContext before the await
+    var data = await _db.QueryAsync(id);
+    //              ^^^^
+    // T2 suspends. Task.Delay / QueryAsync completes on T3.
+    // State machine tries to resume: calls context.Post(continuation)
+    // But context.Post() is blocked: T1 holds the context lock!
+    // T1 is waiting for T2. T2 is waiting for T1. DEADLOCK.
+
+    return MapToOrder(data);
+}
+```
+
+The key insight: `AspNetSynchronizationContext` (and UI contexts) are single-threaded — only one thread can be in the context at a time. `.Result` holds T1 in the context. The continuation can never get into the context while T1 is there.
+
+---
+
+## Where Deadlocks CAN Happen
+
+```csharp
+// DEADLOCKS in these environments:
+// 1. ASP.NET Framework (MVC/WebForms/WebAPI 1)
+var result = someAsyncMethod().Result; // Deadlock risk
+
+// 2. WinForms / WPF (if called from UI thread)
+private void Button_Click(object sender, EventArgs e)
+{
+    var data = LoadDataAsync().Result; // Deadlock risk
+}
+
+// 3. Any custom SynchronizationContext that limits concurrency
+
+// DOES NOT DEADLOCK in these environments:
+// 4. ASP.NET Core (no SynchronizationContext)
+var result = someAsyncMethod().Result; // No deadlock — but still bad practice!
+
+// 5. Console application (no SynchronizationContext)
+// 6. Thread pool threads (no SynchronizationContext)
+```
+
+<Callout type="warning">
+**ASP.NET Core doesn't deadlock from .Result — but it still starves threads.** Even without a deadlock, calling `.Result` or `.Wait()` on a thread-pool thread blocks that thread. Under load, if all thread-pool threads are blocked, new work queues up and the app grinds to a halt (thread pool starvation). The symptom looks different from a deadlock but is equally fatal to throughput.
 </Callout>
+
+---
+
+## Variants of Blocking — All Equally Dangerous
+
+```csharp
+Task<string> task = GetDataAsync();
+
+// All of these block synchronously in a context — deadlock risk:
+string a = task.Result;
+string b = task.GetAwaiter().GetResult();
+task.Wait();
+Task.WaitAll(task);
+Task.WaitAny(task);
+
+// The "safest" blocking call if you absolutely must block:
+// GetAwaiter().GetResult() — at least it doesn't wrap exceptions in AggregateException
+try
+{
+    string result = task.GetAwaiter().GetResult(); // Throws original exception, not AggregateException
+}
+catch (HttpRequestException ex) // Catches the real exception, not AggregateException
+{
+    // Handle
+}
+
+// .Result wraps exceptions:
+try
+{
+    string result = task.Result; // Wraps in AggregateException
+}
+catch (AggregateException ex)
+{
+    // Must unwrap: ex.InnerException or ex.InnerExceptions[0]
+    var real = ex.InnerException;
+}
+```
+
+---
+
+## The Correct Fixes
+
+**Fix 1: Async all the way up (the real fix)**
+
+```csharp
+// CORRECT — async propagates upward
+public async Task<ActionResult> GetOrder(int id)
+{
+    var order = await _service.GetOrderAsync(id); // No blocking, no deadlock
+    return Json(order);
+}
+```
+
+**Fix 2: ConfigureAwait(false) in library code (partial mitigation)**
+
+```csharp
+// In the library: ConfigureAwait(false) breaks the context dependency
+public async Task<Order> GetOrderAsync(int id)
+{
+    // With ConfigureAwait(false), the continuation does NOT try to resume
+    // on the AspNetSynchronizationContext — it runs on any ThreadPool thread
+    var data = await _db.QueryAsync(id).ConfigureAwait(false);
+    return MapToOrder(data);
+}
+
+// Now the caller's .Result won't deadlock because the continuation
+// doesn't need the context T1 is holding.
+// WARNING: This is a workaround, not the real fix. The right fix is still async all the way.
+```
+
+**Fix 3: Task.Run to escape the context (worst option — last resort)**
+
+```csharp
+// Pushes async work to the ThreadPool where there's no context
+// Only use when you truly cannot make the caller async
+var order = Task.Run(() => _service.GetOrderAsync(id)).Result;
+// This works but burns a ThreadPool thread and adds overhead.
+// It is an escape hatch, not a pattern.
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The "Sync Over Async" anti-pattern in framework migrations**
+
+During ASP.NET Framework → ASP.NET Core migrations, developers often encounter legacy synchronous code that calls async methods. The temptation is to use `GetAwaiter().GetResult()` everywhere "just to make it compile."
+
+This creates a time bomb:
+- Works fine in dev (low load, fast operations)
+- Works in ASP.NET Core (no SynchronizationContext)
+- Explodes under load in any environment with a context, or causes thread pool starvation in ASP.NET Core at scale
+
+The correct migration path is **top-down async conversion**:
+1. Start at the outermost layer (controller actions, event handlers)
+2. Mark them `async Task<T>`
+3. Replace `.Result`/`.Wait()` with `await`
+4. The inner layers naturally follow
+
+If you must handle a synchronous interface (e.g., a third-party SDK calling your code synchronously), use `AsyncHelper` patterns with a dedicated `SynchronizationContext` that pumps — but document it heavily as technical debt.
+</Callout>
+
+---
+
+## Diagnosing a Deadlock in Production
+
+```csharp
+// Tools for investigating async deadlocks:
+
+// 1. Thread dump (Visual Studio Parallel Stacks, WinDbg, dotnet-dump)
+// Look for threads blocked in:
+//   - Task.Wait() / Task.Result getter
+//   - SynchronizationContext.Send()
+//   - Monitor.Enter() via context lock
+
+// 2. dotnet-trace with "gc-heavy" or "cpu-sampling" profile
+// dotnet trace collect -p <pid> --profile gc-collect
+
+// 3. Application hangs with no CPU — classic deadlock symptom
+// Async deadlock: no CPU usage, request times out after N seconds
+
+// 4. In ASP.NET: check for queued ThreadPool requests
+ThreadPool.GetAvailableThreads(out int workerThreads, out int completionPortThreads);
+ThreadPool.GetMaxThreads(out int maxWorker, out int maxCp);
+int queueDepth = maxWorker - workerThreads; // High number = starvation
+```
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/async-deadlocks/challenge-1"
+  title="Identify the Deadlock Pattern"
+  description="This code runs fine in testing but deadlocks in production ASP.NET Framework. Why?"
+  code={`// Called from an ASP.NET Framework action during unit tests (no context) — passes
+// Called from real ASP.NET Framework request — deadlocks
+public static string GetConfig(string key)
+{
+    return LoadConfigAsync(key).GetAwaiter().GetResult();
+}
+
+private static async Task\<string\> LoadConfigAsync(string key)
+{
+    await Task.Delay(1); // Simulates async I/O
+    return ConfigurationManager.AppSettings[key] ?? string.Empty;
+}`}
+  options={[
+    "Task.Delay(1) is too short — use Task.Delay(100)",
+    "GetAwaiter().GetResult() blocks the ASP.NET request thread; Task.Delay resumes on the captured AspNetSynchronizationContext which needs that blocked thread — deadlock",
+    "ConfigurationManager.AppSettings is not thread-safe",
+    "static methods cannot be async — the issue is the static keyword"
+  ]}
+  correctAnswer={1}
+  explanation="GetAwaiter().GetResult() blocks the request thread while holding the AspNetSynchronizationContext. Inside LoadConfigAsync, await Task.Delay(1) captures that context. When Task.Delay completes, the continuation tries to Post() back to AspNetSynchronizationContext. But the context is occupied by the blocked request thread. Circular wait — deadlock. Unit tests don't reproduce this because test runners have no SynchronizationContext."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/async-deadlocks/quiz-1"
+  question="Why does adding ConfigureAwait(false) to library code prevent the classic async deadlock?"
+  options={[
+    "It makes the task complete faster, releasing the context before the block times out",
+    "It prevents the continuation from being scheduled on the captured SynchronizationContext, so the blocked thread's context is no longer needed for resumption",
+    "It bypasses the SynchronizationContext entirely and uses a new thread",
+    "It converts the async method to synchronous, eliminating the await"
+  ]}
+  correctAnswer={1}
+  explanation="ConfigureAwait(false) tells the awaiter not to capture SynchronizationContext.Current. When the awaited task completes, the continuation runs on a ThreadPool thread instead of posting back to the captured context. This breaks the deadlock cycle: the continuation no longer needs the context that the blocking caller is holding. The blocked thread still occupies the context, but the continuation doesn't care — it runs freely on the ThreadPool."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async/await best practices (Stephen Cleary)", url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming" },
+    { label: "SynchronizationContext class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.synchronizationcontext" },
+    { label: "ConfigureAwait FAQ", url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/" },
+    { label: "Task.GetAwaiter().GetResult() vs .Result", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.getawaiter" },
+  ]}
+/>

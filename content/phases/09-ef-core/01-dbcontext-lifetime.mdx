@@ -1,24 +1,258 @@
 ---
-title: "DbContext Lifetime"
+title: "DbContext Lifetime: Scoped, Singleton Anti-Pattern, Factory"
 slug: "dbcontext-lifetime"
 order: 1
-difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["dbcontext", "lifetime", "dependency injection", "scoped", "singleton", "factory", "ef core"]
+summary: "DbContext must be scoped — using it as a singleton corrupts your data. Learn the right lifetime, the factory pattern for background services, and how pooling changes the equation."
+docsLinks:
+  - label: "DbContext Lifetime, Configuration, and Initialization"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/"
+  - label: "Using DbContext with Dependency Injection"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-dbcontext-with-dependency-injection"
+  - label: "DbContext Pooling"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/advanced-performance-topics#dbcontext-pooling"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Lifetime Matters
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`DbContext` is not a lightweight object. It maintains a **change tracker**, an **identity map** (first-level cache), connection state, and pending query state. Sharing it incorrectly between requests or threads produces silent data corruption, stale reads, and hard-to-reproduce concurrency exceptions.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The fundamental rule: **one DbContext per unit of work**.
+
+---
+
+## Registering DbContext the Right Way
+
+In ASP.NET Core, the correct registration is `AddDbContext<T>()`, which defaults to **Scoped** lifetime:
+
+```csharp
+// Program.cs — correct
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+
+// This is equivalent to:
+builder.Services.AddScoped<AppDbContext>();
+```
+
+Scoped means: **one instance per HTTP request**. Each request gets a fresh DbContext, processes its work, then the context is disposed when the request pipeline completes.
+
+```csharp
+// AppDbContext.cs
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<Customer> Customers => Set<Customer>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    }
+}
+```
+
+---
+
+## The Singleton Anti-Pattern
+
+Registering DbContext as a singleton is the most dangerous EF Core mistake. Here's why:
+
+```csharp
+// WRONG — DO NOT DO THIS
+builder.Services.AddSingleton<AppDbContext>(); // ☠️
+
+// What goes wrong:
+// 1. The change tracker accumulates every entity ever loaded — it grows without bound
+// 2. Two concurrent requests share the same context → data races, ObjectDisposedException
+// 3. Entities from Request A are visible in Request B (data leak!)
+// 4. DbConnection is held open forever — connection pool exhaustion
+// 5. SaveChanges from one request saves changes from another
+```
+
+The change tracker is designed to hold state for **one transaction**. Across thousands of requests it becomes a memory leak and a correctness nightmare.
+
+```csharp
+// Also wrong — scoped service cannot be injected into singleton
+builder.Services.AddSingleton<EmailService>(); // singleton
+builder.Services.AddScoped<AppDbContext>();     // scoped
+
+// EmailService taking AppDbContext in constructor → runtime exception:
+// "Cannot consume scoped service 'AppDbContext' from singleton 'EmailService'"
+// ASP.NET Core catches this at startup with scope validation (in Development mode)
+```
+
+<Callout type="trap">
+**Captive Dependency Trap**
+
+A singleton that depends on a scoped service is called a "captive dependency." ASP.NET Core's DI container validates this in Development mode and throws `InvalidOperationException` at startup. But if you bypass DI (e.g., via `IServiceProvider.GetService<T>()` in the wrong scope), it silently succeeds and corrupts data. Always let the container validate lifetimes.
 </Callout>
+
+---
+
+## DbContext in Background Services
+
+`IHostedService` and `BackgroundService` are singletons — they live for the application lifetime. You cannot inject a scoped DbContext directly. Use `IServiceScopeFactory` or `IDbContextFactory<T>`:
+
+```csharp
+// Pattern 1: IServiceScopeFactory (classic)
+public class OrderProcessingService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public OrderProcessingService(IServiceScopeFactory scopeFactory)
+        => _scopeFactory = scopeFactory;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            // Create a fresh scope (and therefore a fresh DbContext) per iteration
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var pendingOrders = await db.Orders
+                .Where(o => o.Status == OrderStatus.Pending)
+                .ToListAsync(stoppingToken);
+
+            foreach (var order in pendingOrders)
+            {
+                order.Status = OrderStatus.Processing;
+            }
+
+            await db.SaveChangesAsync(stoppingToken);
+
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+}
+```
+
+```csharp
+// Pattern 2: IDbContextFactory<T> (EF Core 5+, preferred for non-DI scenarios)
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
+    options.UseSqlServer(connectionString));
+
+public class ReportGenerator
+{
+    private readonly IDbContextFactory<AppDbContext> _factory;
+
+    public ReportGenerator(IDbContextFactory<AppDbContext> factory)
+        => _factory = factory;
+
+    public async Task<SalesReport> GenerateAsync()
+    {
+        // Each call creates and disposes its own context
+        await using var db = await _factory.CreateDbContextAsync();
+
+        return new SalesReport
+        {
+            TotalRevenue = await db.Orders.SumAsync(o => o.TotalAmount),
+            OrderCount = await db.Orders.CountAsync()
+        };
+    }
+}
+```
+
+---
+
+## DbContext Pooling
+
+`AddDbContextPool<T>()` reuses DbContext instances instead of creating new ones per request, amortizing the cost of initialization:
+
+```csharp
+// Program.cs
+builder.Services.AddDbContextPool<AppDbContext>(options =>
+    options.UseSqlServer(connectionString),
+    poolSize: 128); // default is 1024
+```
+
+The pool resets the context state between uses (clears the change tracker, resets connection state). This provides ~5–10% throughput improvement in high-traffic APIs.
+
+**Constraints when using pooling:**
+- No `DbContext` constructor parameters beyond `DbContextOptions` (no custom services)
+- No state stored in DbContext fields that survives between requests
+- `OnConfiguring` cannot add new options at runtime
+
+```csharp
+// Works with pooling — options only, no injected services
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+}
+
+// Does NOT work with pooling — injected ICurrentUserService
+public class AppDbContext : DbContext
+{
+    private readonly ICurrentUserService _currentUser; // breaks pooling
+
+    public AppDbContext(DbContextOptions<AppDbContext> options,
+        ICurrentUserService currentUser) : base(options)
+    {
+        _currentUser = currentUser;
+    }
+}
+```
+
+<Callout type="senior">
+**Senior Insight: Pooling + Per-Request Configuration**
+
+When you need per-request context (e.g., setting the current tenant), pooling still works — use `IDbContextFactory<T>` pooling alongside `AddDbContextPool`, or hook into `DbContext.OnConfiguring` by reading from a scoped `ICurrentTenantService` stored in a field that you set *after* the context is retrieved from the pool:
+
+```csharp
+// Custom pool accessor pattern
+public class TenantAwareDbContext : AppDbContext
+{
+    public int? TenantId { get; set; } // set per-request, reset by pool
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        builder.Entity<Order>().HasQueryFilter(o => o.TenantId == TenantId);
+    }
+}
+
+// In middleware:
+var db = scope.ServiceProvider.GetRequiredService<TenantAwareDbContext>();
+db.TenantId = httpContext.GetTenantId();
+```
+
+This is the pattern used by Finbuckle.MultiTenant and similar libraries.
+</Callout>
+
+---
+
+<MythBuster
+  myth="DbContext is thread-safe — you can share one instance across multiple async operations"
+  truth="DbContext is explicitly NOT thread-safe. Even async operations must not overlap on the same instance. EF Core 5+ detects concurrent use and throws InvalidOperationException, but it's a runtime check — not compile-time safety. Always use one DbContext per logical unit of work."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/dbcontext-lifetime/challenge-1"
+  question="A BackgroundService needs to process database records every minute. Which registration strategy is correct?"
+  options={[
+    "Register AppDbContext as Singleton so the BackgroundService can inject it directly",
+    "Register AppDbContext as Scoped and inject it via constructor into the BackgroundService",
+    "Inject IServiceScopeFactory and create a new scope (and DbContext) per processing iteration",
+    "Register AppDbContext as Transient so each operation gets a fresh instance"
+  ]}
+  correctAnswer={2}
+  explanation="BackgroundService is a singleton. You cannot inject a Scoped DbContext into a singleton — the DI container throws at startup. Transient would work at the DI level but would leave each context undisposed (memory leak). The correct pattern is IServiceScopeFactory: create a scope per unit of work, resolve the DbContext, do the work, then dispose the scope. IDbContextFactory<T> is an equally valid alternative that avoids the scope pattern entirely."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DbContext Lifetime, Configuration, and Initialization", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/" },
+    { label: "Using DbContext with Dependency Injection", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-dbcontext-with-dependency-injection" },
+    { label: "DbContext Pooling", url: "https://learn.microsoft.com/en-us/ef/core/performance/advanced-performance-topics#dbcontext-pooling" },
+    { label: "IDbContextFactory", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-a-dbcontext-factory-eg-for-blazor" },
+  ]}
+/>

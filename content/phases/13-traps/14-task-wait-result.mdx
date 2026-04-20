@@ -1,24 +1,201 @@
 ---
-title: "Task.Wait() and .Result Deadlocks"
+title: "Task.Wait() and .Result — The Deadlock Factory"
 slug: "task-wait-result"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["async", "Task", "deadlock", "Wait", "Result", "SynchronizationContext", "sync-over-async"]
+summary: "Blocking on async code with .Wait() or .Result is the most reliable way to deadlock your ASP.NET or UI application — and it looks completely harmless."
+docsLinks:
+  - label: "Async/await best practices — don't block on async code"
+    url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming"
+  - label: "Task.Wait method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.wait"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE TRAP — synchronously blocking on an async method
+public class OrderController : ApiController // classic ASP.NET, not Core
+{
+    private readonly IOrderService _orders;
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    public IHttpActionResult GetOrder(int id)
+    {
+        // This looks like a simple synchronous call...
+        var order = _orders.GetOrderAsync(id).Result; // DEADLOCK!
+        return Ok(order);
+    }
+}
+
+// The async service:
+public async Task<Order> GetOrderAsync(int id)
+{
+    var order = await _db.Orders.FindAsync(id); // No ConfigureAwait(false)!
+    return order;
+}
+```
+
+**The application hangs on `GetOrderAsync(id).Result` forever.**
+
+<Callout type="trap">
+`.Result` and `.Wait()` block the current thread until the Task completes. If that Task's continuation needs to resume on the same thread (because the async method didn't use `ConfigureAwait(false)`), you have a **deadlock**: the thread is blocked waiting for the Task, and the Task is waiting for the thread to become free.
 </Callout>
+
+---
+
+## The Deadlock Step-by-Step
+
+```
+1. ASP.NET request arrives — handled on a thread with SynchronizationContext (AspNetSynchronizationContext)
+2. Controller calls GetOrderAsync().Result — BLOCKS the ASP.NET thread
+3. GetOrderAsync runs, hits 'await _db.Orders.FindAsync(id)'
+4. FindAsync completes on a thread pool thread
+5. The continuation (code after await) tries to resume on the CAPTURED SynchronizationContext
+   → The captured context is the ASP.NET SynchronizationContext
+   → That context requires resuming on the ASP.NET request thread
+6. The ASP.NET request thread is BLOCKED by .Result
+7. DEADLOCK: thread waits for task, task waits for thread
+```
+
+---
+
+## The Fix: Go Async All the Way
+
+```csharp
+// CORRECT — async all the way down
+public class OrderController : ApiController
+{
+    public async Task<IHttpActionResult> GetOrder(int id)
+    {
+        var order = await _orders.GetOrderAsync(id); // No blocking!
+        return Ok(order);
+    }
+}
+```
+
+**The "GetAwaiter().GetResult()" trick — still a deadlock**
+
+```csharp
+// This is NOT better than .Result — same deadlock, just less obvious:
+var order = _orders.GetOrderAsync(id).GetAwaiter().GetResult();
+// STILL DEADLOCKS for the same reason
+
+// The only REAL difference: GetAwaiter().GetResult() unwraps AggregateException
+// .Result wraps exceptions in AggregateException
+// Neither solves the deadlock
+```
+
+**When you MUST block (legacy code bridge):**
+
+```csharp
+// Last resort — run on a thread pool thread that has no SynchronizationContext
+// This avoids the deadlock because thread pool threads don't have a SyncContext
+var order = Task.Run(() => _orders.GetOrderAsync(id)).Result;
+
+// Better: use AsyncHelper pattern (not recommended for new code)
+// But truly: the right fix is to make the calling code async
+```
+
+---
+
+<MythBuster
+  myth="Task.Result is safe to use if the async method is already complete by the time I call it"
+  truth="If the Task is already completed, .Result does NOT deadlock — it returns synchronously. But you cannot reliably know this, and the deadlock risk makes .Result a code smell in any non-test, non-console code that runs with a SynchronizationContext."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/task-wait-result/challenge-1"
+  title="Does this deadlock?"
+  description="This code runs in a Console application (no SynchronizationContext). Does it deadlock?"
+  code={`static async Task<string> GetDataAsync()
+{
+    await Task.Delay(100); // No ConfigureAwait(false)
+    return "data";
+}
+
+static void Main()
+{
+    string result = GetDataAsync().Result;
+    Console.WriteLine(result);
+}`}
+  options={[
+    "Yes — .Result always deadlocks with async code",
+    "No — Console apps have no SynchronizationContext, so continuations run on the thread pool",
+    "Yes — Task.Delay causes a context capture that deadlocks",
+    "No — but only because Task.Delay is short enough to complete before .Result blocks"
+  ]}
+  correctAnswer={1}
+  explanation="No deadlock in a Console app. Console applications (and ASP.NET Core apps) run on the thread pool without a SynchronizationContext. When GetDataAsync() resumes after Task.Delay, there is no specific thread it needs to resume on — it can run on any thread pool thread. The Result call blocks Main's thread, but the continuation runs on a different thread pool thread, so there is no conflict. The deadlock only occurs when there IS a SynchronizationContext (WPF, WinForms, classic ASP.NET) that requires continuations to post back to a specific thread that is blocked."
+/>
+
+---
+
+## Exception Wrapping: AggregateException
+
+```csharp
+// .Wait() and .Result wrap exceptions in AggregateException:
+try
+{
+    someTask.Wait();
+}
+catch (AggregateException ae)
+{
+    // Must unwrap:
+    throw ae.InnerException!; // Or ae.Flatten().InnerException
+    // Or use ae.Handle(e => { ... return true; })
+}
+
+// await unwraps automatically — much cleaner:
+try
+{
+    await someTask; // Throws the original exception type directly
+}
+catch (InvalidOperationException ex) // Catch the actual type
+{
+    // ...
+}
+```
+
+---
+
+<Callout type="senior">
+**The synchronous wrapper anti-pattern**
+
+Teams migrating legacy code sometimes write "sync wrappers" to avoid refactoring whole call chains:
+
+```csharp
+// The "we'll fix it later" wrapper that ships to production:
+public static T RunSync<T>(Func<Task<T>> func)
+{
+    return Task.Run(() => func()).GetAwaiter().GetResult();
+}
+
+// Usage:
+var order = RunSync(() => _orders.GetOrderAsync(id));
+```
+
+`Task.Run()` avoids the deadlock by escaping the SynchronizationContext. But it:
+- Wastes a thread pool thread for the duration (the calling thread blocks, the Run thread works)
+- Eliminates the scalability benefit of async
+- Hides the problem instead of solving it
+
+These wrappers are technical debt that grows. Every sync wrapper is a promise to "eventually go async all the way" that rarely gets kept. The correct answer is always: make the caller async too, until the entire call chain is properly async.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async/await best practices", url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming" },
+    { label: "Task.Wait method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.wait" },
+    { label: "Task.Result property", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task-1.result" },
+    { label: "Async programming patterns in .NET", url: "https://learn.microsoft.com/en-us/dotnet/standard/asynchronous-programming-patterns/" },
+  ]}
+/>

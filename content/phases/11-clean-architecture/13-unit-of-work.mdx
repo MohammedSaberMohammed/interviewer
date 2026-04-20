@@ -1,24 +1,244 @@
 ---
-title: "Unit of Work"
+title: "Unit of Work in Clean Architecture: When Needed, When Redundant"
 slug: "unit-of-work"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["unit of work", "EF Core", "DbContext", "transactions", "clean architecture", "IUnitOfWork"]
+summary: "EF Core's DbContext is already a Unit of Work. Wrapping it in IUnitOfWork serves the Dependency Rule and testing — but adds a layer you need to understand when to skip."
+docsLinks:
+  - label: "Unit of Work pattern (.NET Microservices Architecture)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design#the-unit-of-work-pattern"
+  - label: "EF Core — saving data"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/"
+  - label: "EF Core — transactions"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## EF Core Is Already a Unit of Work
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+EF Core's `DbContext` implements the Unit of Work and Repository patterns out of the box:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Change tracking**: DbContext tracks every entity loaded from the DB
+- **Deferred writes**: no SQL is executed until `SaveChangesAsync()` is called
+- **Atomic commit**: all tracked changes are written in a single transaction
+
+```csharp
+// This IS the Unit of Work pattern — DbContext bundles all changes
+await using var db = new AppDbContext(options);
+
+var order = await db.Orders.FindAsync(orderId); // tracked
+order.Confirm();                                  // state change tracked in memory
+// No SQL yet!
+
+var customer = await db.Customers.FindAsync(customerId); // tracked
+customer.UpdateLastOrderDate(DateTime.UtcNow);            // change tracked
+
+await db.SaveChangesAsync(); // ONE transaction commits BOTH changes
+```
+
+So why do we wrap it in `IUnitOfWork`?
+
+---
+
+## Why Wrap It: The Dependency Rule
+
+If Application layer handlers inject `AppDbContext` directly, they have a compile-time dependency on an Infrastructure type. This violates the Dependency Rule:
+
+```csharp
+// BAD: Application knows about DbContext (Infrastructure)
+public class PlaceOrderHandler : IRequestHandler<PlaceOrderCommand, Guid>
+{
+    private readonly AppDbContext _db; // Infrastructure type in Application!
+
+    public async Task<Guid> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        // ...
+        await _db.SaveChangesAsync(ct); // direct EF Core call
+    }
+}
+```
+
+The fix is a thin `IUnitOfWork` interface owned by the Application layer:
+
+```csharp
+// Application/Interfaces/IUnitOfWork.cs
+public interface IUnitOfWork : IAsyncDisposable
+{
+    Task<int> SaveChangesAsync(CancellationToken ct = default);
+    Task<IDbContextTransaction> BeginTransactionAsync(
+        IsolationLevel isolationLevel = IsolationLevel.ReadCommitted,
+        CancellationToken ct = default);
+}
+
+// Infrastructure/Persistence/EfUnitOfWork.cs
+public sealed class EfUnitOfWork : IUnitOfWork
+{
+    private readonly AppDbContext _db;
+
+    public EfUnitOfWork(AppDbContext db) => _db = db;
+
+    public Task<int> SaveChangesAsync(CancellationToken ct = default)
+        => _db.SaveChangesAsync(ct);
+
+    public Task<IDbContextTransaction> BeginTransactionAsync(
+        IsolationLevel isolationLevel = IsolationLevel.ReadCommitted,
+        CancellationToken ct = default)
+        => _db.Database.BeginTransactionAsync(isolationLevel, ct);
+
+    public ValueTask DisposeAsync() => _db.DisposeAsync();
+}
+```
+
+Now Application handlers can call `_unitOfWork.SaveChangesAsync()` without knowing about `DbContext`.
+
+---
+
+## The Scoped Lifetime Pairing
+
+Repositories and the Unit of Work must share the same `DbContext` instance — otherwise changes tracked by the repository won't be visible to the unit of work's `SaveChangesAsync`. Register everything as `Scoped`:
+
+```csharp
+// Program.cs
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("Default")));
+
+// All registered as Scoped — one DbContext per HTTP request
+builder.Services.AddScoped<IUnitOfWork, EfUnitOfWork>();
+builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+builder.Services.AddScoped<ICustomerRepository, EfCustomerRepository>();
+
+// The DbContext is injected into all of them by the DI container
+// — they all get the SAME instance within a request
+```
+
+If you register `DbContext` as `Transient`, each repository gets a different instance — `SaveChangesAsync` commits nothing because no changes are tracked in the UoW's instance. This is a common bug.
+
+---
+
+## Explicit Transactions: When SaveChangesAsync Isn't Enough
+
+EF Core's `SaveChangesAsync` wraps all changes in an implicit transaction. For multi-step operations that span multiple `SaveChangesAsync` calls, you need an explicit transaction:
+
+```csharp
+// Application/Orders/Commands/BulkConfirmOrdersHandler.cs
+public sealed class BulkConfirmOrdersHandler
+    : IRequestHandler<BulkConfirmOrdersCommand, BulkConfirmResult>
+{
+    private readonly IOrderRepository _orders;
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<BulkConfirmOrdersHandler> _logger;
+
+    public async Task<BulkConfirmResult> Handle(
+        BulkConfirmOrdersCommand cmd, CancellationToken ct)
+    {
+        var confirmed = new List<Guid>();
+        var failed = new List<(Guid OrderId, string Reason)>();
+
+        await using var transaction = await _unitOfWork.BeginTransactionAsync(ct: ct);
+
+        try
+        {
+            foreach (var orderId in cmd.OrderIds)
+            {
+                try
+                {
+                    var order = await _orders.GetByIdAsync(new OrderId(orderId), ct);
+                    if (order is null) { failed.Add((orderId, "Not found")); continue; }
+
+                    order.Confirm();
+                    confirmed.Add(orderId);
+                }
+                catch (DomainException ex)
+                {
+                    failed.Add((orderId, ex.Message));
+                }
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct); // one commit for all
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
+
+        return new BulkConfirmResult(confirmed, failed);
+    }
+}
+```
+
+---
+
+## When IUnitOfWork Is Redundant
+
+In some architectures, `IUnitOfWork` is genuinely unnecessary:
+
+<ComparisonTable
+  headers={["Scenario", "Need IUnitOfWork?", "Reason"]}
+  rows={[
+    ["Clean Architecture with DB", "Yes", "Dependency Rule: Application cannot reference DbContext directly"],
+    ["Testing with in-memory fakes", "Yes", "FakeUnitOfWork replaces EF in unit tests"],
+    ["MediatR pipeline TransactionBehavior", "Yes", "Behavior needs to call SaveChangesAsync without knowing DbContext"],
+    ["Simple CRUD app with no Clean Architecture", "No", "Inject DbContext directly — it IS the unit of work"],
+    ["Event-Sourced system", "No", "The event store has its own transaction semantics; no DbContext"],
+    ["Dapper-only reads (query side of CQRS)", "No", "Read handlers open/close connections per query; no change tracking"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**The MediatR Pipeline TransactionBehavior Is Often Better Than Handler-Level UoW**
+
+Instead of injecting `IUnitOfWork` into every command handler and calling `SaveChangesAsync` at the end, register a pipeline behavior that automatically wraps every command in a transaction:
+
+```csharp
+// This replaces manually calling _unitOfWork.SaveChangesAsync() in every handler
+public sealed class TransactionBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : ICommand<TResponse>  // only for commands, not queries
+{
+    private readonly IUnitOfWork _uow;
+
+    public TransactionBehavior(IUnitOfWork uow) => _uow = uow;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken ct)
+    {
+        var response = await next(); // run the handler
+        await _uow.SaveChangesAsync(ct); // auto-save after handler succeeds
+        return response;
+    }
+}
+```
+
+Now command handlers don't need `IUnitOfWork` at all — they just modify domain objects and the behavior commits. This reduces boilerplate significantly and ensures no handler accidentally forgets to save.
+
+The trade-off: all commands must save exactly once at the end. If a handler needs multiple save points (bulk operations, saga steps), inject `IUnitOfWork` explicitly for that handler only.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="You should always implement IUnitOfWork and inject it into every handler"
+  reality="IUnitOfWork solves two problems: enforcing the Dependency Rule and enabling the TransactionBehavior pipeline. If you use the TransactionBehavior, most handlers don't need IUnitOfWork injected at all — the behavior handles saving. Only inject IUnitOfWork into handlers that need fine-grained control over transaction boundaries."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Unit of Work pattern (.NET Microservices Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design#the-unit-of-work-pattern" },
+    { label: "EF Core — Transactions", url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions" },
+    { label: "EF Core — Saving data", url: "https://learn.microsoft.com/en-us/ef/core/saving/" },
+  ]}
+/>

@@ -3,22 +3,320 @@ title: "Abstract Classes vs Interfaces (Post C# 8)"
 slug: "abstract-vs-interfaces"
 order: 4
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["abstract class", "interface", "default interface methods", "design patterns", "SOLID", "abstraction"]
+summary: "The abstract class vs interface decision is not about syntax — it's about whether you're sharing implementation or defining a contract, and C# 8 blurred that line significantly."
+docsLinks:
+  - label: "Abstract classes and class members"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/abstract-and-sealed-classes-and-class-members"
+  - label: "Interfaces (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces"
+  - label: "Default interface methods"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-8.0/default-interface-methods"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Classic Answer (and Why It's Incomplete)
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The textbook answer is: "use an interface when you need a contract, use an abstract class when you want to share implementation." That's still mostly true, but C# 8 added **default interface methods** (DIMs), which means interfaces can now contain implementation too. The real criteria are more nuanced.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Abstract Classes: Shared Implementation + Identity
+
+An abstract class is for when you have:
+1. **Shared state** that implementations will all need
+2. **Shared behavior** (non-virtual methods or implementation to reuse)
+3. A **is-a relationship**: the derived type truly IS a specialized version of the base
+4. The need to **enforce initialization** (abstract classes can have constructors)
+
+```csharp
+// Good abstract class: shared state, shared behavior, strong is-a
+public abstract class Stream
+{
+    // Shared state
+    private bool _disposed;
+
+    // Non-abstract shared behavior — all streams handle this the same way
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            Dispose(true);
+            _disposed = true;
+        }
+    }
+
+    // Template method: defines algorithm skeleton, subclasses fill in the steps
+    public void CopyTo(Stream destination)
+    {
+        byte[] buffer = new byte[4096];
+        int bytesRead;
+        while ((bytesRead = Read(buffer, 0, buffer.Length)) > 0)
+            destination.Write(buffer, 0, bytesRead);
+    }
+
+    // Abstract: subclasses MUST provide these
+    public abstract int Read(byte[] buffer, int offset, int count);
+    public abstract void Write(byte[] buffer, int offset, int count);
+
+    // Virtual with default: subclasses MAY override
+    protected virtual void Dispose(bool disposing) { }
+}
+
+public class MemoryStream : Stream
+{
+    private readonly List<byte> _data = new();
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        // ... read from _data
+        return 0;
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+        => _data.AddRange(buffer.AsSpan(offset, count).ToArray());
+}
+```
+
+---
+
+## Interfaces: Capability Contracts
+
+An interface is for when you have:
+1. **No shared state** to carry (before C# 8; DIMs changed this slightly)
+2. A **can-do relationship**: the type has this capability, not necessarily shares an identity
+3. The need for **multiple implementations** from unrelated types
+4. **Cross-cutting concerns** that many types need: `IDisposable`, `IComparable<T>`, `IFormattable`
+
+```csharp
+// Good interfaces: pure capability contracts, no implied identity
+public interface ISerializable
+{
+    byte[] Serialize();
+    static abstract T Deserialize<T>(byte[] data) where T : ISerializable; // .NET 7+
+}
+
+public interface IHealthCheckable
+{
+    Task<bool> IsHealthyAsync(CancellationToken ct = default);
+}
+
+// Completely unrelated types can both be IHealthCheckable
+public class DatabaseService : IHealthCheckable
+{
+    public async Task<bool> IsHealthyAsync(CancellationToken ct)
+    {
+        // ping the DB
+        return true;
+    }
+}
+
+public class ExternalApiClient : IHealthCheckable
+{
+    public async Task<bool> IsHealthyAsync(CancellationToken ct)
+    {
+        // ping the API endpoint
+        return true;
+    }
+}
+
+// Generic code works with any IHealthCheckable — no inheritance required
+public class HealthMonitor
+{
+    private readonly IEnumerable<IHealthCheckable> _services;
+    public HealthMonitor(IEnumerable<IHealthCheckable> services) => _services = services;
+
+    public async Task<Dictionary<string, bool>> CheckAllAsync()
+    {
+        var results = new Dictionary<string, bool>();
+        foreach (var service in _services)
+        {
+            var isHealthy = await service.IsHealthyAsync();
+            results[service.GetType().Name] = isHealthy;
+        }
+        return results;
+    }
+}
+```
+
+---
+
+## Default Interface Methods (C# 8+) — What Changed
+
+DIMs let interfaces provide a default implementation. This was added primarily for **API evolution** — you can add a new method to a published interface without breaking all existing implementations:
+
+```csharp
+public interface ILogger
+{
+    void Log(string message);
+
+    // Added in v2 of the interface — existing implementations don't break
+    void LogWarning(string message) => Log($"[WARN] {message}");
+    void LogError(string message)   => Log($"[ERROR] {message}");
+}
+
+// Old implementation — still compiles even though new methods were added
+public class ConsoleLogger : ILogger
+{
+    public void Log(string message) => Console.WriteLine(message);
+    // LogWarning and LogError are provided by the interface default
+}
+
+// New implementation can override defaults
+public class SentryLogger : ILogger
+{
+    public void Log(string message) => Sentry.CaptureMessage(message);
+
+    // Override the default for better error reporting
+    public void LogError(string message)
+    {
+        Sentry.CaptureException(new Exception(message)); // richer than default
+    }
+}
+```
+
+<Callout type="warning">
+**DIMs are only accessible through the interface reference, not through the class.** If you don't override a DIM and call it on a class reference, the compiler won't find it:
+
+```csharp
+ConsoleLogger logger = new ConsoleLogger();
+logger.LogWarning("oops"); // COMPILE ERROR — ConsoleLogger doesn't define LogWarning
+
+ILogger iLogger = new ConsoleLogger();
+iLogger.LogWarning("oops"); // OK — dispatches to interface default
+```
+
+This is surprising and often catches developers off-guard. DIMs are primarily a versioning mechanism, not a code-sharing mechanism.
 </Callout>
+
+---
+
+<ComparisonTable
+  headers={["Criterion", "Abstract Class", "Interface"]}
+  rows={[
+    ["Multiple inheritance", "No — single base class only", "Yes — implement many interfaces"],
+    ["Shared state (fields)", "Yes", "No (only static fields in DIMs)"],
+    ["Constructor", "Yes (called by derived class)", "No"],
+    ["Access modifiers on members", "Any (private, protected, internal)", "Public only (implicit)"],
+    ["Default method implementation", "Yes (always had it)", "Yes since C# 8 (DIMs)"],
+    ["Versioning existing API", "Add new virtual methods (risky)", "Add DIMs (safe for existing impls)"],
+    ["Use when...", "Shared implementation + is-a", "Capability contract + can-do"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="02-oop/abstract-vs-interfaces/challenge-1"
+  title="Design Choice"
+  description="You're building a plugin system. Plugins can be loaded from disk, and every plugin must implement OnLoad() and OnUnload(). You also want all plugins to get a free implementation of a Restart() method (OnUnload followed by OnLoad). Which is better — abstract class or interface?"
+  code={`// Option A: Interface
+public interface IPlugin
+{
+    void OnLoad();
+    void OnUnload();
+    void Restart() => { OnUnload(); OnLoad(); } // DIM
+}
+
+// Option B: Abstract class
+public abstract class Plugin
+{
+    public abstract void OnLoad();
+    public abstract void OnUnload();
+    public void Restart() { OnUnload(); OnLoad(); }
+    public string PluginPath { get; set; } = "";
+}
+
+// Option C: Interface + base class together
+public interface IPlugin { void OnLoad(); void OnUnload(); }
+public abstract class PluginBase : IPlugin
+{
+    public abstract void OnLoad();
+    public abstract void OnUnload();
+    public void Restart() { OnUnload(); OnLoad(); }
+}`}
+  options={[
+    "Option A — interface with DIM, because plugins should be loosely coupled",
+    "Option B — abstract class, because plugins share state (PluginPath) and behavior",
+    "Option C — interface + base class, offering both contractual flexibility and shared implementation",
+    "None — plugins should use composition, not inheritance at all"
+  ]}
+  correctAnswer={2}
+  explanation="Option C is the standard .NET pattern for extensible systems. The interface (IPlugin) defines the contract — it's what consumers depend on, and it allows external plugins from third parties that don't inherit from your PluginBase. The abstract base class (PluginBase) provides shared implementation for teams building plugins within your ecosystem who want the free helpers. This is exactly how ASP.NET Core is built: IMiddleware is the interface, MiddlewareBase would be the abstract helper. Option A's DIM trick works but has the accessibility problem — Restart() won't be visible on a concrete plugin reference without casting to IPlugin."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Real Decision Criteria**
+
+After working on large systems, the heuristics that actually matter:
+
+1. **Is this a versioning concern?** If you're publishing a library and may need to add members, DIMs on interfaces are safer than abstract class additions (which require `virtual` and can break binary compatibility).
+
+2. **Will third parties implement this?** If yes, prefer interfaces — they impose fewer constraints on implementers' class hierarchies.
+
+3. **Do you need constructors or per-instance state in the shared base?** Only abstract classes provide this.
+
+4. **Is Liskov Substitution the point?** Abstract classes imply a stronger is-a relationship and thus stronger LSP obligations. If you're not sure consumers will honor LSP, an interface is a looser contract that's harder to violate.
+
+The **interface + abstract base** pattern (e.g., `IList<T>` + `Collection<T>`, `IStream` + `StreamBase`) gives you both worlds: interface for consumption code, abstract class for implementation code. This is the pattern used throughout the BCL and is worth defaulting to in any API that might have multiple implementations.
+
+```csharp
+// Production pattern: IRepository + RepositoryBase
+public interface IRepository<T> where T : class
+{
+    Task<T?> GetByIdAsync(int id, CancellationToken ct = default);
+    Task<IReadOnlyList<T>> GetAllAsync(CancellationToken ct = default);
+    Task AddAsync(T entity, CancellationToken ct = default);
+    Task UpdateAsync(T entity, CancellationToken ct = default);
+    Task DeleteAsync(int id, CancellationToken ct = default);
+}
+
+public abstract class RepositoryBase<T> : IRepository<T> where T : class
+{
+    protected readonly DbContext _db;
+    protected readonly DbSet<T> _set;
+
+    protected RepositoryBase(DbContext db)
+    {
+        _db = db;
+        _set = db.Set<T>();
+    }
+
+    public virtual async Task<T?> GetByIdAsync(int id, CancellationToken ct)
+        => await _set.FindAsync(new object[] { id }, ct);
+
+    public virtual async Task<IReadOnlyList<T>> GetAllAsync(CancellationToken ct)
+        => await _set.ToListAsync(ct);
+
+    public virtual async Task AddAsync(T entity, CancellationToken ct)
+    {
+        await _set.AddAsync(entity, ct);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public virtual async Task UpdateAsync(T entity, CancellationToken ct)
+    {
+        _set.Update(entity);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public abstract Task DeleteAsync(int id, CancellationToken ct); // Force subclass to handle delete
+}
+```
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Abstract classes and class members", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/abstract-and-sealed-classes-and-class-members" },
+    { label: "Interfaces (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces" },
+    { label: "Default interface methods", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-8.0/default-interface-methods" },
+    { label: "Interface design guidelines", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/interface" },
+  ]}
+/>

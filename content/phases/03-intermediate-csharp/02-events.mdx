@@ -3,22 +3,316 @@ title: "Events & Event Patterns"
 slug: "events"
 order: 2
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["events", "EventHandler", "publisher-subscriber", "event accessors", "delegates", "observer pattern"]
+summary: "Events are a protected multicast delegate pattern that enforces the publisher/subscriber contract and prevents external invocation."
+docsLinks:
+  - label: "Events (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/"
+  - label: "EventHandler Delegate"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.eventhandler"
+  - label: "How to implement interface events"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/how-to-implement-interface-events"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Events vs Delegates
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An **event** is a delegate field with a protection layer around it. It adds two critical constraints on top of a raw delegate:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. **Only the declaring class can invoke the event** — subscribers cannot trigger it
+2. **Subscribers can only add (`+=`) or remove (`-=`)** — they cannot replace the entire invocation list with `=`
+
+```csharp
+class Counter
+{
+    // Raw delegate — DANGEROUS: anyone can invoke or replace it
+    public Action<int>? OnCountRaw;
+
+    // Event — SAFE: outsiders can only subscribe/unsubscribe
+    public event Action<int>? OnCount;
+
+    public void Increment(int value)
+    {
+        OnCountRaw?.Invoke(value); // external code can also call this
+        OnCount?.Invoke(value);    // only this class can call this
+    }
+}
+
+var c = new Counter();
+
+// Both compile for subscription:
+c.OnCountRaw += v => Console.WriteLine(v);
+c.OnCount    += v => Console.WriteLine(v);
+
+// Only this compiles for invocation from outside:
+c.OnCountRaw?.Invoke(42); // Works — raw delegate
+
+// c.OnCount.Invoke(42); // COMPILE ERROR — event can only be raised by Counter
+// c.OnCount = null;     // COMPILE ERROR — can't assign, only += / -=
+```
+
+---
+
+## The EventHandler Convention
+
+The .NET convention for events uses `EventHandler` or `EventHandler<TEventArgs>`:
+
+```csharp
+// Standard event args — inherit from EventArgs
+public class OrderPlacedEventArgs : EventArgs
+{
+    public int    OrderId    { get; init; }
+    public decimal Amount   { get; init; }
+    public DateTime PlacedAt { get; init; }
+}
+
+// Publisher
+public class OrderService
+{
+    // Standard signature: object sender, TEventArgs e
+    public event EventHandler<OrderPlacedEventArgs>? OrderPlaced;
+
+    public void PlaceOrder(int id, decimal amount)
+    {
+        // ... business logic ...
+
+        // Raise: capture in local to avoid race condition
+        OrderPlaced?.Invoke(this, new OrderPlacedEventArgs
+        {
+            OrderId  = id,
+            Amount   = amount,
+            PlacedAt = DateTime.UtcNow
+        });
+    }
+}
+
+// Subscriber
+var service = new OrderService();
+
+service.OrderPlaced += (sender, e) =>
+    Console.WriteLine($"Order {e.OrderId} placed for {e.Amount:C}");
+
+service.OrderPlaced += OnOrderPlaced;
+
+void OnOrderPlaced(object? sender, OrderPlacedEventArgs e)
+    => Console.WriteLine($"Audit: order at {e.PlacedAt:HH:mm:ss}");
+
+service.PlaceOrder(101, 49.99m);
+// Order 101 placed for $49.99
+// Audit: order at 14:32:07
+```
+
+<Callout type="trap">
+**Trap: The Thread-Safety Race Condition**
+
+This code has a subtle race condition in multithreaded code:
+
+```csharp
+// UNSAFE in multithreaded code
+if (OrderPlaced != null)       // Thread A checks — not null
+    OrderPlaced(this, args);   // Thread B unsubscribes between check and invoke!
+                               // OrderPlaced is now null → NullReferenceException
+
+// SAFE: capture in local variable first (atomic reference copy)
+var handler = OrderPlaced;     // Atomic read — snapshot of current subscribers
+handler?.Invoke(this, args);   // Even if someone unsubscribes after this line, safe
+```
+
+The `?.Invoke()` pattern is idiomatic C# 6+ — use it always. It handles the null check and invocation atomically from the calling thread's perspective.
 </Callout>
+
+---
+
+## Custom Event Accessors
+
+When you need fine-grained control (thread safety, backing storage, filtering), implement explicit `add` and `remove` accessors:
+
+```csharp
+public class EventBus
+{
+    private readonly Dictionary<string, EventHandler> _handlers = new();
+    private readonly object _lock = new();
+
+    // Custom accessors — full control over subscription management
+    public event EventHandler DataChanged
+    {
+        add
+        {
+            lock (_lock)
+            {
+                _handlers["DataChanged"] = _handlers.TryGetValue("DataChanged", out var h)
+                    ? h + value
+                    : value;
+            }
+        }
+        remove
+        {
+            lock (_lock)
+            {
+                if (_handlers.TryGetValue("DataChanged", out var h))
+                    _handlers["DataChanged"] = (EventHandler)(h - value)!;
+            }
+        }
+    }
+
+    public void RaiseDataChanged()
+    {
+        EventHandler? handler;
+        lock (_lock) { _handlers.TryGetValue("DataChanged", out handler!); }
+        handler?.Invoke(this, EventArgs.Empty);
+    }
+}
+```
+
+Custom accessors are also how you implement interface events when a class raises multiple events:
+
+```csharp
+public interface INotifier
+{
+    event EventHandler<string> MessageReceived;
+}
+
+public class Notifier : INotifier
+{
+    // Explicit interface implementation with custom backing field
+    private EventHandler<string>? _messageReceived;
+
+    event EventHandler<string> INotifier.MessageReceived
+    {
+        add    => _messageReceived += value;
+        remove => _messageReceived -= value;
+    }
+
+    protected virtual void OnMessageReceived(string message)
+        => _messageReceived?.Invoke(this, message);
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Feature", "Raw Delegate Field", "Event"]}
+  rows={[
+    ["External invocation", "Allowed", "Compile error"],
+    ["External assignment (=)", "Allowed", "Compile error"],
+    ["External subscribe (+=)", "Allowed", "Allowed"],
+    ["External unsubscribe (-=)", "Allowed", "Allowed"],
+    ["Internal invocation", "Allowed", "Allowed"],
+    ["Custom add/remove", "Not applicable", "Supported via accessors"],
+    ["Thread safety (built-in)", "None", "None (must add manually)"],
+    ["Convention", "No specific pattern", "object sender, EventArgs e"],
+  ]}
+/>
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/events/playground-1"
+  title="Publisher/Subscriber Pattern"
+  code={`using System;
+
+public class StockTicker
+{
+    public event EventHandler\<decimal\>? PriceChanged;
+
+    private decimal _price;
+    public decimal Price
+    {
+        get => _price;
+        set
+        {
+            if (value != _price)
+            {
+                _price = value;
+                PriceChanged?.Invoke(this, _price);
+            }
+        }
+    }
+}
+
+var ticker = new StockTicker();
+
+ticker.PriceChanged += (_, price) => Console.WriteLine(\$"Alert: price is now {price:C}");
+ticker.PriceChanged += (_, price) => { if (price > 150) Console.WriteLine("SELL SIGNAL"); };
+
+ticker.Price = 100m;  // Alert: price is now $100.00
+ticker.Price = 100m;  // No event — price unchanged
+ticker.Price = 160m;  // Alert: price is now $160.00 + SELL SIGNAL`}
+/>
+
+---
+
+<Quiz
+  id="03-intermediate-csharp/events/quiz-1"
+  question="An external class has a reference to an object that exposes a public event. Which operations are permitted from outside the class?"
+  options={[
+    "Subscribe (+=), unsubscribe (-=), and invoke the event directly",
+    "Subscribe (+=) and unsubscribe (-=) only",
+    "Assign a new delegate with = and subscribe with +=",
+    "Only read the current invocation list via GetInvocationList()"
+  ]}
+  correctAnswer={1}
+  explanation="The event keyword restricts external access to subscribe (+=) and unsubscribe (-=) only. External code cannot invoke the event, assign a whole new delegate to it with =, or read its invocation list directly. Only the declaring class (or derived classes, for protected events) can invoke it or assign null. This is the fundamental contract that makes the publisher/subscriber pattern safe."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Memory Leaks from Event Subscriptions**
+
+Events are one of the most common sources of memory leaks in .NET applications. The publisher holds a reference to every subscriber through the event's invocation list. If the subscriber doesn't unsubscribe, the publisher keeps it alive indefinitely — even if you have no other reference to the subscriber.
+
+```csharp
+// LEAK: DialogViewModel subscribes but never unsubscribes
+class DialogViewModel
+{
+    public DialogViewModel(GlobalEventBus bus)
+    {
+        bus.ThemeChanged += OnThemeChanged; // bus now holds a reference to this
+        // When dialog closes and goes out of scope, GC cannot collect it
+        // because bus.ThemeChanged still holds a reference!
+    }
+
+    private void OnThemeChanged(object? s, EventArgs e) { /* ... */ }
+}
+
+// FIX: implement IDisposable and unsubscribe
+class DialogViewModel : IDisposable
+{
+    private readonly GlobalEventBus _bus;
+
+    public DialogViewModel(GlobalEventBus bus)
+    {
+        _bus = bus;
+        _bus.ThemeChanged += OnThemeChanged;
+    }
+
+    private void OnThemeChanged(object? s, EventArgs e) { /* ... */ }
+
+    public void Dispose() => _bus.ThemeChanged -= OnThemeChanged;
+}
+```
+
+Alternatives for situations where unsubscribing is inconvenient: **weak event patterns** (WPF's `WeakEventManager`), **Reactive Extensions** with subscription tokens, or messaging libraries like MediatR/MassTransit that manage lifetime explicitly.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Events and delegates are fundamentally different things."
+  reality="An event IS a delegate under the hood — specifically, it's a delegate field with compiler-enforced access restrictions on assignment and invocation. When you declare `public event EventHandler Foo;`, the compiler generates a private delegate field and two accessor methods (add and remove). The `event` keyword is purely a protection mechanism, not a new type. You can verify this by looking at the generated IL or using a decompiler."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Events (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/" },
+    { label: "EventHandler Delegate", url: "https://learn.microsoft.com/en-us/dotnet/api/system.eventhandler" },
+    { label: "How to implement interface events", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/how-to-implement-interface-events" },
+    { label: "Weak Event Patterns (WPF)", url: "https://learn.microsoft.com/en-us/dotnet/desktop/wpf/events/weak-event-patterns" },
+  ]}
+/>

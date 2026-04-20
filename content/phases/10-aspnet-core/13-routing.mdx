@@ -1,24 +1,273 @@
 ---
-title: "Routing"
+title: "Routing: Attribute Routing, Constraints, Endpoint Routing"
 slug: "routing"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["routing", "attribute routing", "route constraints", "endpoint routing", "route templates", "asp.net core"]
+summary: "Routing maps URLs to endpoints. Attribute routing gives you explicit control; route constraints add type safety; endpoint routing decouples matching from execution."
+docsLinks:
+  - label: "Routing in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/routing"
+  - label: "Attribute routing in ASP.NET Core APIs"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/routing#attribute-routing-for-rest-apis"
+  - label: "Route constraints reference"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/routing#route-constraints"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Attribute Routing
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Attribute routing uses `[Route]`, `[HttpGet]`, `[HttpPost]`, etc. to declare routes directly on controllers and actions:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+[ApiController]
+[Route("api/v{version:apiVersion}/[controller]")] // [controller] = "products" (lowercase)
+public class ProductsController : ControllerBase
+{
+    // GET api/v1/products
+    [HttpGet]
+    public IActionResult GetAll() => Ok();
+
+    // GET api/v1/products/42
+    [HttpGet("{id:int}")]         // :int is a route constraint
+    public IActionResult GetById(int id) => Ok();
+
+    // GET api/v1/products/by-slug/my-cool-product
+    [HttpGet("by-slug/{slug:regex(^[a-z0-9-]+$)}")]
+    public IActionResult GetBySlug(string slug) => Ok();
+
+    // POST api/v1/products
+    [HttpPost]
+    public IActionResult Create([FromBody] CreateProductRequest req) => Ok();
+
+    // PUT api/v1/products/42
+    [HttpPut("{id:int}")]
+    public IActionResult Update(int id, [FromBody] UpdateProductRequest req) => Ok();
+
+    // DELETE api/v1/products/42
+    [HttpDelete("{id:int}")]
+    public IActionResult Delete(int id) => Ok();
+
+    // Route on action overrides controller-level route entirely if it starts with /
+    [HttpGet("/api/all-products")] // Absolute path — ignores [controller] prefix
+    public IActionResult GetAbsolute() => Ok();
+}
+```
+
+---
+
+## Route Constraints
+
+Route constraints restrict which values a route parameter matches. They are evaluated at routing time — before model binding:
+
+```csharp
+// Built-in constraints
+[HttpGet("{id:int}")]               // int — any integer
+[HttpGet("{id:guid}")]              // guid — valid GUID
+[HttpGet("{id:long}")]              // long
+[HttpGet("{slug:alpha}")]           // alpha — letters only
+[HttpGet("{page:int:min(1)}")]      // int, minimum value 1
+[HttpGet("{code:length(5)}")]       // exactly 5 chars
+[HttpGet("{zip:regex(^\\d{5}$)}")] // 5-digit zip code
+[HttpGet("{name:maxlength(100)}")] // max 100 chars
+[HttpGet("{date:datetime}")]        // parseable DateTime
+[HttpGet("{version:decimal}")]      // decimal
+[HttpGet("{enabled:bool}")]         // true/false
+[HttpGet("{id:int:range(1,1000)}")] // int between 1 and 1000 (chained constraints)
+```
+
+**Custom constraint:**
+
+```csharp
+// Custom constraint — validates a product SKU format
+public class SkuRouteConstraint : IRouteConstraint
+{
+    // SKU format: 3 letters, hyphen, 4 digits (e.g., ABC-1234)
+    private static readonly Regex SkuRegex = new(@"^[A-Z]{3}-\d{4}$", RegexOptions.Compiled);
+
+    public bool Match(HttpContext? httpContext, IRouter? route, string routeKey,
+        RouteValueDictionary values, RouteDirection routeDirection)
+    {
+        if (!values.TryGetValue(routeKey, out var rawValue) || rawValue is null)
+            return false;
+
+        return SkuRegex.IsMatch(rawValue.ToString()!);
+    }
+}
+
+// Register the constraint
+builder.Services.AddRouting(options =>
+    options.ConstraintMap.Add("sku", typeof(SkuRouteConstraint)));
+
+// Use in route template
+[HttpGet("{sku:sku}")]
+public IActionResult GetBySku(string sku) => Ok();
+// Matches: /products/ABC-1234
+// Does not match: /products/12345, /products/ABCDE
+```
+
+---
+
+## Endpoint Routing Internals
+
+Endpoint routing separates **matching** from **execution** — enabling middleware between the two:
+
+```csharp
+// Matching phase (UseRouting or implicit with MapControllers in .NET 6+)
+// Sets context.GetEndpoint() with the matched endpoint
+
+// After UseRouting but before endpoint execution:
+app.Use(async (context, next) =>
+{
+    var endpoint = context.GetEndpoint();
+    if (endpoint is not null)
+    {
+        var displayName = endpoint.DisplayName;
+        var metadata = endpoint.Metadata;
+
+        // Example: read custom metadata added to endpoint
+        var requiresAudit = metadata.GetMetadata<RequiresAuditAttribute>();
+        if (requiresAudit is not null)
+            await RecordAuditAsync(context, requiresAudit);
+    }
+    await next(context);
+});
+
+app.MapControllers(); // Execution phase
+```
+
+**Route metadata can be added to Minimal API endpoints:**
+
+```csharp
+app.MapGet("/orders/{id:int}", async (int id, IOrderService svc) => { })
+    .WithMetadata(new RequiresAuditAttribute("read"))
+    .WithName("GetOrder")
+    .WithTags("Orders");
+```
+
+---
+
+## Route Priority and Disambiguation
+
+When multiple routes could match, ASP.NET Core uses specificity rules:
+
+```csharp
+// More specific routes win over less specific
+[HttpGet("orders/pending")]    // Matches /orders/pending — literal wins over {id}
+[HttpGet("orders/{id:int}")]   // Matches /orders/42
+
+// Constraint makes route more specific
+[HttpGet("{id:int}")]    // Only matches integers — more specific
+[HttpGet("{name}")]      // Catches anything else — less specific (catch-all)
+
+// Explicit order with Order property (lower = higher priority)
+[HttpGet("{id:int}", Order = -1)] // Matched first
+[HttpGet("{anything}",  Order = 1)]  // Matched last
+```
+
+---
+
+## Minimal API Routing
+
+```csharp
+// Minimal APIs use pattern matching with route templates
+app.MapGet("/users/{id:int}", async (int id, IUserService svc) => { });
+
+// Optional parameters
+app.MapGet("/products/{category?}", (string? category) =>
+    category is null ? Results.Ok("All categories") : Results.Ok(category));
+
+// Catch-all parameters
+app.MapGet("/files/{*filePath}", (string filePath) => Results.Ok(filePath));
+// Matches: /files/docs/readme.md => filePath = "docs/readme.md"
+
+// Route groups (ASP.NET Core 7+)
+var api = app.MapGroup("/api/v1").RequireAuthorization();
+var products = api.MapGroup("/products").WithTags("Products");
+
+products.MapGet("/", async (IProductService svc) => await svc.GetAllAsync());
+products.MapGet("/{id:int}", async (int id, IProductService svc) =>
+{
+    var product = await svc.GetByIdAsync(id);
+    return product is null ? Results.NotFound() : Results.Ok(product);
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: LinkGenerator for URL Generation**
+
+Hard-coding URLs in code is fragile. Use `LinkGenerator` to generate URLs from route names or endpoint metadata — they update automatically when routes change:
+
+```csharp
+public class OrderService : IOrderService
+{
+    private readonly LinkGenerator _linkGenerator;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+
+    public OrderService(LinkGenerator linkGenerator, IHttpContextAccessor httpContextAccessor)
+    {
+        _linkGenerator = linkGenerator;
+        _httpContextAccessor = httpContextAccessor;
+    }
+
+    public string GetOrderUrl(int orderId)
+    {
+        var ctx = _httpContextAccessor.HttpContext!;
+
+        // Generate URL from route name (set via WithName() or [ActionName])
+        return _linkGenerator.GetUriByName(ctx, "GetOrder", new { id = orderId })!;
+        // Returns: https://api.myapp.com/api/orders/42
+    }
+}
+
+// In controller, use CreatedAtAction/CreatedAtRoute for Location header
+[HttpPost]
+public async Task<IActionResult> Create(CreateOrderRequest req)
+{
+    var order = await _orderService.CreateAsync(req);
+    return CreatedAtAction(
+        nameof(GetById),   // Action name for URL generation
+        new { id = order.Id },
+        order);
+    // Sets Location: /api/orders/42 header automatically
+}
+```
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/routing/quiz-1"
+  question="You have two routes: [HttpGet('products/featured')] and [HttpGet('products/{id:int}')]. A GET request to /products/featured is received. Which route matches?"
+  options={[
+    "products/{id:int} — because id comes before featured alphabetically",
+    "products/featured — literal route segments are more specific than constrained parameters",
+    "Both match — ASP.NET Core throws an AmbiguousMatchException",
+    "products/{id:int} — because integer constraints are evaluated first"
+  ]}
+  correctAnswer={1}
+  explanation="In ASP.NET Core endpoint routing, literal segments are more specific than parameterized segments. 'products/featured' is a literal match and takes priority over 'products/{id:int}'. Since 'featured' is also not an integer, the constraint on {id:int} would prevent it from matching anyway — but even without the constraint, literals win over parameters."
+/>
+
+---
+
+<MythBuster
+  myth="Route constraints validate that user input is valid and safe"
+  truth="Route constraints determine whether a route MATCHES — they affect routing only. They are not a validation or security mechanism. A constraint like :int will refuse to route /products/abc, but it does not sanitize or validate business rules on matched values. Validation of the matched value's business meaning (e.g., does product 42 exist?) must happen in your action logic."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Routing in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/routing" },
+    { label: "Attribute routing for REST APIs", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/controllers/routing#attribute-routing-for-rest-apis" },
+    { label: "Route constraint reference", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/routing#route-constraints" },
+    { label: "LinkGenerator for URL generation", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/routing#url-generation-with-linkgenerator" },
+  ]}
+/>

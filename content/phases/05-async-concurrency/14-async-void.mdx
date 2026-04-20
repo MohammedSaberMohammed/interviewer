@@ -1,24 +1,274 @@
 ---
-title: "async void: The Only Correct Use Case"
+title: "async void: Why It's Dangerous"
 slug: "async-void"
 order: 14
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["async void", "fire and forget", "exceptions", "event handlers", "async", "error handling"]
+summary: "async void is a footgun: exceptions from async void methods crash the process, can't be awaited, and can't be caught by callers — its only legitimate use is event handlers."
+docsLinks:
+  - label: "Async/await best practices"
+    url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming"
+  - label: "Avoid async void"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios"
+  - label: "UnobservedTaskException"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.taskscheduler.unobservedtaskexception"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is async void?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`async void` is a method that is both `async` and returns `void`. Unlike `async Task`, which returns a `Task` that callers can await and observe, `async void` returns nothing — there is no `Task` for callers to hold onto.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// async Task — caller can await, catch exceptions, observe completion
+public async Task DoWorkAsync()
+{
+    await Task.Delay(100);
+    throw new Exception("Something failed");
+}
+
+// async void — caller gets nothing back; exceptions are unobservable
+public async void DoWorkVoid()
+{
+    await Task.Delay(100);
+    throw new Exception("Crashes the process"); // Unhandled!
+}
+```
+
+---
+
+## The Exception Problem
+
+When an exception escapes an `async void` method, it is raised on the **SynchronizationContext** that was captured when the method started. There's no `Task` to carry the exception — it becomes an unhandled exception:
+
+```csharp
+// In a console app (.NET Core) — no SynchronizationContext
+// The exception is raised on the ThreadPool thread and crashes the process:
+async void CrashingMethod()
+{
+    await Task.Delay(10);
+    throw new InvalidOperationException("Goodbye process");
+}
+
+// Calling this does NOT let you catch the exception:
+try
+{
+    CrashingMethod(); // Returns immediately — no Task to await
+    await Task.Delay(100); // By the time this completes, process has crashed
+}
+catch (InvalidOperationException)
+{
+    // NEVER REACHED — the exception was raised outside this try/catch
+}
+
+// Cannot await it either:
+// await CrashingMethod(); // CS4008: Cannot await void
+```
+
+In .NET Core, an unhandled exception on a non-main thread calls `AppDomain.UnhandledException` and then **terminates the process**. In ASP.NET Core, it terminates the request handling worker.
+
+---
+
+## Callers Cannot Track Completion
+
+Because `async void` returns no `Task`, callers have no way to know when it finishes:
+
+```csharp
+public class DataProcessor
+{
+    private bool _processed = false;
+
+    // WRONG: caller cannot know when this finishes
+    public async void ProcessAsync()
+    {
+        await Task.Delay(1000);
+        _processed = true;
+    }
+
+    public async Task RunWrong()
+    {
+        ProcessAsync(); // Fire and... pray
+        await Task.Delay(500);
+        Console.WriteLine(_processed); // Always prints False — ProcessAsync still running!
+    }
+
+    // RIGHT: caller can track completion
+    public async Task ProcessCorrectAsync()
+    {
+        await Task.Delay(1000);
+        _processed = true;
+    }
+
+    public async Task RunCorrect()
+    {
+        await ProcessCorrectAsync(); // Waits for completion
+        Console.WriteLine(_processed); // Always prints True
+    }
+}
+```
+
+---
+
+## The ONE Legitimate Use: Event Handlers
+
+The C# event pattern requires `void` return types. When you need to call async code in a UI event handler, `async void` is unavoidable — but you must handle exceptions explicitly:
+
+```csharp
+// CORRECT use of async void — event handler with proper exception handling
+private async void OnButtonClick(object sender, EventArgs e)
+{
+    try
+    {
+        btnLoad.Enabled = false;
+        labelStatus.Text = "Loading...";
+
+        var data = await _service.GetDataAsync();
+
+        labelResult.Text = data;
+        labelStatus.Text = "Done";
+    }
+    catch (Exception ex)
+    {
+        // MUST catch all exceptions — uncaught exceptions here crash the process
+        labelStatus.Text = "Error: " + ex.Message;
+        _logger.LogError(ex, "Failed to load data");
+    }
+    finally
+    {
+        btnLoad.Enabled = true;
+    }
+}
+```
+
+The rule: **every `async void` method must have a top-level `try/catch` that handles all exceptions**.
+
+---
+
+## Fire-and-Forget Without async void
+
+For genuine fire-and-forget scenarios (where you truly don't need to await), use `async Task` and handle completion separately:
+
+```csharp
+// WRONG: async void fire-and-forget
+public async void StartBackgroundWork()
+{
+    await DoBackgroundWorkAsync(); // Exception crashes process
+}
+
+// BETTER: async Task with explicit discard and exception handling
+public void StartBackgroundWork()
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            await DoBackgroundWorkAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Background work failed");
+            // Cannot rethrow here — we're in a fire-and-forget context
+        }
+    });
+}
+
+// BEST: Use a BackgroundService or IHostedService for long-running work
+public class BackgroundWorker : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Exception propagates to the host — process can handle it gracefully
+        await DoBackgroundWorkAsync(stoppingToken);
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The _ = FireAndForgetAsync() pattern and its pitfalls**
+
+The pattern `_ = SomeAsync()` (assigning to discard) is sometimes used to intentionally fire-and-forget while silencing the "not awaited" warning:
+
+```csharp
+// Fires the task; compiler warning suppressed; exception is still unobserved!
+_ = SendNotificationAsync(userId);
+
+// This is better — but still loses exceptions:
+_ = SendNotificationAsync(userId).ContinueWith(t =>
+{
+    if (t.IsFaulted)
+        _logger.LogError(t.Exception, "Notification failed");
+}, TaskContinuationOptions.OnlyOnFaulted);
+
+// In .NET, unobserved exceptions from Task can be caught via:
+TaskScheduler.UnobservedTaskException += (sender, args) =>
+{
+    _logger.LogError(args.Exception, "Unobserved task exception");
+    args.SetObserved(); // Prevent process termination
+};
+// But this is a last resort — not a design pattern
+
+// The right pattern for non-awaited work with proper lifecycle:
+// IHostedService / BackgroundService — gives you cancellation + structured lifetime
+```
+
+The real problem with `_ = SomeAsync()` in ASP.NET Core: the request completes and ASP.NET Core may dispose the DI scope, the `HttpContext`, and associated resources. The fire-and-forget task then runs in a half-torn-down context and throws `ObjectDisposedException`. Use `IBackgroundTaskQueue` or `Channel<T>` to hand work off properly.
 </Callout>
+
+---
+
+<MythBuster
+  myth="async void is fine for fire-and-forget — the method just runs in the background"
+  reality="async void is never 'fine' — exceptions crash the process, completion cannot be observed, and the method's lifetime is uncontrolled. In ASP.NET Core, the surrounding DI scope is disposed when the request completes, causing ObjectDisposedException in any fire-and-forget code that uses injected services. Use BackgroundService or Channel<T> to properly hand off background work with a controlled lifetime and exception handling."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/async-void/challenge-1"
+  title="What Happens When This Throws?"
+  description="This method is called from a button click in a WinForms app. The user clicks the button. The GetDataAsync() call throws an HttpRequestException. What happens to the application?"
+  code={`private async void btnLoad_Click(object sender, EventArgs e)
+{
+    var data = await _service.GetDataAsync(); // Throws HttpRequestException
+    labelResult.Text = data;
+}`}
+  options={[
+    "The exception is caught by WinForms and shown as a MessageBox to the user",
+    "The exception propagates to the WinForms message loop via the captured SynchronizationContext, triggers Application.ThreadException, and may crash the app or show an unhandled exception dialog",
+    "The exception is swallowed because async void cannot propagate exceptions",
+    "The application freezes indefinitely waiting for the exception to be handled"
+  ]}
+  correctAnswer={1}
+  explanation="The exception escapes the async void method and is posted to the SynchronizationContext (WindowsFormsSynchronizationContext). This causes Application.ThreadException to fire. If no handler is registered, WinForms shows an unhandled exception dialog and may terminate. If Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException) is set, it terminates immediately. The fix: wrap the entire body in try/catch inside the async void event handler, and handle all exceptions explicitly."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/async-void/quiz-1"
+  question="Why can't you 'await' an async void method?"
+  options={[
+    "async void methods are not allowed in C# — the compiler rejects them",
+    "async void returns void, and await requires an awaitable (Task, ValueTask, or something with GetAwaiter()). void has no GetAwaiter()",
+    "async void methods run synchronously, so await is unnecessary",
+    "await only works with methods that are marked with the async keyword in the same class"
+  ]}
+  correctAnswer={1}
+  explanation="await requires an awaitable — an object (or value) that has a GetAwaiter() method returning an awaiter. Task and ValueTask are awaitables. void is not a type — it represents the absence of a return value. There is nothing to await. This is the key reason async void breaks the async chain: the caller literally cannot observe when the method completes or whether it succeeded. This is why async Task should be used instead wherever possible."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async/await best practices", url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming" },
+    { label: "TaskScheduler.UnobservedTaskException", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.taskscheduler.unobservedtaskexception" },
+    { label: "IHostedService and BackgroundService", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/hosted-services" },
+    { label: "Async scenarios in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-scenarios" },
+  ]}
+/>

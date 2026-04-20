@@ -1,24 +1,229 @@
 ---
-title: "Bulk Operations"
+title: "Bulk Operations: ExecuteUpdate, ExecuteDelete, and EF Extensions"
 slug: "bulk-operations"
 order: 18
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["bulk operations", "executeupdate", "executedelete", "bulk insert", "ef extensions", "performance", "ef core"]
+summary: "EF Core 7 added ExecuteUpdateAsync and ExecuteDeleteAsync for set-based operations that bypass entity tracking. For bulk inserts, use AddRange with batching or a third-party bulk extension."
+docsLinks:
+  - label: "ExecuteDelete and ExecuteUpdate"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/execute-insert-update-delete"
+  - label: "Efficient Updating"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-updating"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem with Row-by-Row EF Operations
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Traditional EF updates require loading entities into memory, modifying them, and saving:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// SLOW: loads 10,000 entities, tracks them all, sends 10,000 UPDATE statements
+var products = await db.Products
+    .Where(p => p.CategoryId == 5)
+    .ToListAsync(); // 10,000 rows → 10,000 entity objects in memory
+
+foreach (var product in products)
+{
+    product.IsActive = false;
+}
+
+await db.SaveChangesAsync(); // 10,000 individual UPDATE statements (or batched but still slow)
+```
+
+For set-based operations, this approach is:
+- Memory-intensive (thousands of tracked entities)
+- Slow (many database round-trips even with batching)
+- Unnecessary (the database can do this in one statement)
+
+---
+
+## ExecuteUpdateAsync (EF Core 7+)
+
+`ExecuteUpdateAsync` generates a single `UPDATE ... SET ... WHERE ...` statement:
+
+```csharp
+// Update all products in a category — one SQL statement, no entity loading
+int rowsUpdated = await db.Products
+    .Where(p => p.CategoryId == 5)
+    .ExecuteUpdateAsync(setters => setters
+        .SetProperty(p => p.IsActive, false)
+        .SetProperty(p => p.UpdatedAt, DateTime.UtcNow));
+// SQL: UPDATE Products SET IsActive = 0, UpdatedAt = @p0 WHERE CategoryId = 5
+
+// Using computed values (reference other columns)
+await db.Products
+    .Where(p => p.Stock < 10)
+    .ExecuteUpdateAsync(setters => setters
+        .SetProperty(p => p.Price, p => p.Price * 1.1m)  // 10% price increase
+        .SetProperty(p => p.UpdatedAt, DateTime.UtcNow));
+// SQL: UPDATE Products SET Price = Price * 1.1, UpdatedAt = @p0 WHERE Stock < 10
+
+// Combine with any IQueryable composition
+await db.Orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .Where(o => o.CreatedAt < DateTime.UtcNow.AddDays(-30))
+    .ExecuteUpdateAsync(setters => setters
+        .SetProperty(o => o.Status, OrderStatus.Cancelled)
+        .SetProperty(o => o.CancelledAt, DateTime.UtcNow)
+        .SetProperty(o => o.CancelledReason, "Auto-cancelled: no payment"));
+```
+
+---
+
+## ExecuteDeleteAsync (EF Core 7+)
+
+`ExecuteDeleteAsync` generates a single `DELETE ... WHERE ...`:
+
+```csharp
+// Delete all expired sessions — one SQL DELETE
+int deleted = await db.Sessions
+    .Where(s => s.ExpiresAt < DateTime.UtcNow)
+    .ExecuteDeleteAsync();
+// SQL: DELETE FROM Sessions WHERE ExpiresAt < @p0
+
+// Soft-delete alternative: use ExecuteUpdate instead
+await db.Sessions
+    .Where(s => s.ExpiresAt < DateTime.UtcNow)
+    .ExecuteUpdateAsync(s => s
+        .SetProperty(x => x.IsDeleted, true)
+        .SetProperty(x => x.DeletedAt, DateTime.UtcNow));
+```
+
+<Callout type="trap">
+**ExecuteDelete and Global Query Filters**
+
+`ExecuteDeleteAsync` and `ExecuteUpdateAsync` respect global query filters by default. If you have a soft-delete filter (`!IsDeleted`), the generated DELETE will include `AND IsDeleted = 0` in the WHERE clause. To bypass, call `IgnoreQueryFilters()` before `ExecuteDeleteAsync()`:
+
+```csharp
+// Permanently delete already-soft-deleted records (admin operation)
+await db.Products
+    .IgnoreQueryFilters()
+    .Where(p => p.IsDeleted && p.DeletedAt < DateTime.UtcNow.AddDays(-90))
+    .ExecuteDeleteAsync();
+```
+
+Also: `ExecuteUpdateAsync` and `ExecuteDeleteAsync` **bypass the change tracker entirely**. Entities already in memory are not updated — you must reload them or evict them from the tracker.
 </Callout>
+
+---
+
+## Bulk Inserts
+
+EF Core does not have a built-in bulk insert (single-statement `INSERT ... SELECT` or table-valued parameter). For high-volume inserts, use one of these strategies:
+
+**Strategy 1: AddRange + batched SaveChanges**
+
+```csharp
+// EF Core batches INSERT statements automatically (default batch size: 42 for SQL Server)
+// Good for up to ~5,000 rows
+
+db.ChangeTracker.AutoDetectChangesEnabled = false;
+const int batchSize = 500;
+
+for (int i = 0; i < records.Count; i += batchSize)
+{
+    db.Products.AddRange(records.Skip(i).Take(batchSize));
+    await db.SaveChangesAsync();
+    db.ChangeTracker.Clear(); // free memory after each batch
+}
+
+db.ChangeTracker.AutoDetectChangesEnabled = true;
+```
+
+**Strategy 2: EFCore.BulkExtensions (third-party, most popular)**
+
+```csharp
+// NuGet: EFCore.BulkExtensions
+await db.BulkInsertAsync(products); // single SQL bulk insert
+await db.BulkUpdateAsync(products); // SQL Server MERGE or UPDATE ... FROM
+await db.BulkDeleteAsync(products); // bulk DELETE
+
+// Configuration options
+await db.BulkInsertAsync(products, options =>
+{
+    options.BatchSize = 1000;
+    options.SetOutputIdentity = true; // populate auto-generated IDs
+    options.BulkCopyTimeout = 30;
+});
+```
+
+**Strategy 3: SqlBulkCopy for maximum throughput**
+
+```csharp
+// Raw ADO.NET bulk copy — fastest possible, no EF overhead
+using var connection = new SqlConnection(connectionString);
+await connection.OpenAsync();
+
+using var bulkCopy = new SqlBulkCopy(connection)
+{
+    DestinationTableName = "Products",
+    BatchSize = 5000,
+    BulkCopyTimeout = 60
+};
+
+// Map columns
+bulkCopy.ColumnMappings.Add("Name", "Name");
+bulkCopy.ColumnMappings.Add("Price", "Price");
+bulkCopy.ColumnMappings.Add("CategoryId", "CategoryId");
+
+var table = ToDataTable(products); // convert to DataTable
+await bulkCopy.WriteToServerAsync(table);
+```
+
+---
+
+<ComparisonTable
+  title="Bulk Operation Performance Comparison (100,000 rows)"
+  headers={["Approach", "Approx. Time", "Memory", "EF Tracking", "Use When"]}
+  rows={[
+    ["Row-by-row EF", "120s+", "Very High", "Full", "Never for bulk"],
+    ["AddRange + SaveChanges (batched)", "8-15s", "Medium", "Full then cleared", "< 10K rows"],
+    ["EFCore.BulkExtensions", "1-3s", "Low", "Optional", "10K–1M rows"],
+    ["SqlBulkCopy", "0.5-1s", "Low", "None", "> 500K rows, max perf"],
+    ["ExecuteUpdate/Delete", "< 1s", "None", "None", "Set-based updates/deletes"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: ExecuteUpdate Does Not Fire Interceptors**
+
+`ExecuteUpdateAsync` and `ExecuteDeleteAsync` are set-based SQL operations that bypass the EF change tracker entirely — which also means they bypass `SaveChangesInterceptor`. Your audit interceptor setting `UpdatedAt` will NOT fire for `ExecuteUpdateAsync` calls.
+
+Solutions:
+1. Manually set audit fields in the `ExecuteUpdateAsync` call itself (`.SetProperty(e => e.UpdatedAt, DateTime.UtcNow)`)
+2. Use database triggers for audit fields (the one case where triggers are justified)
+3. Accept the trade-off: bulk operations sacrifice per-entity tracking for throughput
+
+This is a deliberate design choice — if you needed per-entity lifecycle hooks, you would not use set-based operations.
+</Callout>
+
+---
+
+<Quiz
+  id="09-ef-core/bulk-operations/challenge-1"
+  question="You need to update the Status to 'Archived' for 50,000 orders older than 2 years. Which approach is most efficient?"
+  options={[
+    "Load all 50,000 orders into memory, set Status in a foreach loop, call SaveChanges",
+    "Use ExecuteUpdateAsync with a Where clause on CreatedAt — generates one SQL UPDATE",
+    "Use EFCore.BulkExtensions BulkUpdateAsync after loading the entities",
+    "Write a raw SQL UPDATE statement with ExecuteSqlRawAsync"
+  ]}
+  correctAnswer={1}
+  explanation="ExecuteUpdateAsync is the most efficient EF Core option — it generates one SQL UPDATE statement without loading any entities into memory. For 50,000 rows, loading them all (Option A) wastes memory and generates thousands of individual UPDATE statements. BulkUpdateAsync (Option C) is efficient but still requires loading entities first. Raw SQL (Option D) also works efficiently, but ExecuteUpdateAsync is preferred because it is type-safe, respects global query filters, and is parameterized automatically."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ExecuteDelete and ExecuteUpdate", url: "https://learn.microsoft.com/en-us/ef/core/saving/execute-insert-update-delete" },
+    { label: "Efficient Updating", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-updating" },
+    { label: "Bulk Inserts Performance", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-updating#use-bulk-operations" },
+  ]}
+/>

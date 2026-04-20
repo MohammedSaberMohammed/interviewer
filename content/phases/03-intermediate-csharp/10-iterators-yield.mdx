@@ -1,24 +1,335 @@
 ---
-title: "Iterators: yield return / yield break"
+title: "Iterators: yield return and yield break"
 slug: "iterators-yield"
 order: 10
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["iterators", "yield return", "yield break", "IEnumerable", "IAsyncEnumerable", "lazy sequences", "state machine"]
+summary: "yield return creates a lazy iterator that produces values on demand — the compiler generates a state machine so execution pauses and resumes with each value."
+docsLinks:
+  - label: "yield statement (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/yield"
+  - label: "Iterators (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/iterators"
+  - label: "IAsyncEnumerable<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What yield return Does
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`yield return` transforms a method into an **iterator** — a method that produces a sequence of values lazily. The compiler rewrites the method into a state machine class that implements `IEnumerator<T>`:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// This iterator method:
+IEnumerable<int> CountUpTo(int max)
+{
+    Console.WriteLine("Starting");
+    for (int i = 1; i <= max; i++)
+    {
+        Console.WriteLine($"Yielding {i}");
+        yield return i;  // suspend here, resume on next MoveNext()
+    }
+    Console.WriteLine("Done");
+}
+
+// Usage — execution is driven by the consumer:
+foreach (int n in CountUpTo(3))
+{
+    Console.WriteLine($"Got: {n}");
+}
+
+// Output:
+// Starting
+// Yielding 1
+// Got: 1
+// Yielding 2
+// Got: 2
+// Yielding 3
+// Got: 3
+// Done
+```
+
+Each iteration of `foreach` calls `MoveNext()` on the generated state machine, which resumes execution from the last `yield return` until it hits the next one (or the method ends).
+
+---
+
+## yield break
+
+`yield break` terminates the iterator early — analogous to `return` in a normal method:
+
+```csharp
+IEnumerable<int> TakeWhilePositive(IEnumerable<int> source)
+{
+    foreach (int item in source)
+    {
+        if (item <= 0)
+            yield break; // stop producing — caller's foreach ends here
+
+        yield return item;
+    }
+}
+
+var numbers = new[] { 5, 3, 8, -1, 2, 7 };
+foreach (int n in TakeWhilePositive(numbers))
+    Console.Write($"{n} "); // 5 3 8  (stops at -1)
+```
+
+---
+
+## Practical Iterator Patterns
+
+### Infinite Sequences
+
+```csharp
+// Infinite sequence — only safe because of deferred execution
+IEnumerable<int> NaturalNumbers()
+{
+    int n = 1;
+    while (true) yield return n++;
+}
+
+// Safe: Take() pulls only what's needed
+var first10Primes = NaturalNumbers()
+    .Where(IsPrime)
+    .Take(10)
+    .ToList();
+
+static bool IsPrime(int n)
+{
+    if (n < 2) return false;
+    for (int i = 2; i * i <= n; i++)
+        if (n % i == 0) return false;
+    return true;
+}
+```
+
+### Flattening Recursive Structures
+
+```csharp
+class TreeNode
+{
+    public int Value { get; set; }
+    public List<TreeNode> Children { get; } = new();
+}
+
+// Depth-first traversal without allocating a list of all nodes
+IEnumerable<int> TraverseDepthFirst(TreeNode root)
+{
+    yield return root.Value;  // visit root first
+
+    foreach (var child in root.Children)
+        foreach (int value in TraverseDepthFirst(child)) // recurse
+            yield return value;
+}
+```
+
+### Batching / Chunking
+
+```csharp
+// Chunk a sequence into batches of a given size
+IEnumerable<T[]> Chunk<T>(IEnumerable<T> source, int size)
+{
+    var batch = new List<T>(size);
+    foreach (T item in source)
+    {
+        batch.Add(item);
+        if (batch.Count == size)
+        {
+            yield return batch.ToArray();
+            batch.Clear();
+        }
+    }
+    if (batch.Count > 0)
+        yield return batch.ToArray(); // last partial batch
+}
+
+// Usage
+var nums = Enumerable.Range(1, 10);
+foreach (int[] batch in Chunk(nums, 3))
+    Console.WriteLine(string.Join(", ", batch));
+// 1, 2, 3
+// 4, 5, 6
+// 7, 8, 9
+// 10
+```
+
+---
+
+<Callout type="trap">
+**Trap: try/catch Around yield return Is Partially Forbidden**
+
+You can use `try/finally` around `yield return`, but not `try/catch`:
+
+```csharp
+// LEGAL — try/finally works, guarantees cleanup even if consumer abandons iteration
+IEnumerable<string> ReadLines(string path)
+{
+    var reader = new StreamReader(path);
+    try
+    {
+        string? line;
+        while ((line = reader.ReadLine()) != null)
+            yield return line; // reader stays alive between yields
+    }
+    finally
+    {
+        reader.Dispose(); // called when iteration completes OR is abandoned
+    }
+}
+
+// ILLEGAL — cannot yield inside try/catch
+IEnumerable<int> BadIterator()
+{
+    try
+    {
+        yield return 1; // COMPILE ERROR: cannot yield in body of a catch clause
+    }
+    catch (Exception) // catch prevents yield in the try block
+    {
+        yield return 0;
+    }
+}
+
+// WORKAROUND: yield outside the try/catch
+IEnumerable<int> GoodIterator()
+{
+    int result;
+    try { result = RiskyOperation(); }
+    catch (Exception) { result = 0; }
+    yield return result; // yield is outside the catch
+}
+```
 </Callout>
+
+---
+
+## IAsyncEnumerable: Async Iterators (.NET Core 3+)
+
+For asynchronous data streams (paginated APIs, database readers, message queues), use `IAsyncEnumerable<T>` with `await foreach`:
+
+```csharp
+// Async iterator — combines yield return with async/await
+async IAsyncEnumerable<Order> StreamOrdersAsync(
+    HttpClient client,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    int page = 1;
+    while (true)
+    {
+        var response = await client.GetFromJsonAsync<PagedResult<Order>>(
+            $"/api/orders?page={page}", ct);
+
+        if (response is null || !response.Items.Any())
+            yield break;
+
+        foreach (var order in response.Items)
+            yield return order; // yield while async-capable
+
+        if (!response.HasNextPage) yield break;
+        page++;
+    }
+}
+
+// Consumer — async foreach processes items as they arrive
+await foreach (Order order in StreamOrdersAsync(httpClient, cancellationToken))
+{
+    await ProcessOrderAsync(order);
+}
+```
+
+<ComparisonTable
+  headers={["Feature", "IEnumerable / yield", "IAsyncEnumerable / async yield"]}
+  rows={[
+    ["Execution model", "Synchronous pull", "Asynchronous pull"],
+    ["Consumer syntax", "foreach", "await foreach"],
+    ["Blocking I/O", "Yes — blocks caller", "No — awaits I/O without blocking"],
+    ["Cancellation", "Not built-in", "CancellationToken via [EnumeratorCancellation]"],
+    [".NET version", "All versions", ".NET Core 3.0 / C# 8.0+"],
+    ["Typical use", "In-memory lazy sequences", "DB streams, APIs, message queues"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/iterators-yield/challenge-1"
+  title="When Does the Body Execute?"
+  description="What is printed first — 'Starting' or 'Calling'?"
+  code={`IEnumerable<int> Lazy()
+{
+    Console.WriteLine("Starting");
+    yield return 1;
+    yield return 2;
+}
+
+var seq = Lazy();  // line A
+Console.WriteLine("Calling");
+foreach (int n in seq) { } // line B`}
+  options={[
+    "Starting, then Calling — body runs at definition time",
+    "Calling, then Starting — body runs at first enumeration",
+    "Starting, then Starting, then Calling — body runs twice",
+    "Calling — the iterator body never runs unless ToList() is called"
+  ]}
+  correctAnswer={1}
+  explanation="Calling an iterator method (line A: var seq = Lazy()) does NOT execute any code inside the method body. It simply creates the state machine object and returns it. The body starts executing only when MoveNext() is first called — which happens at the start of the foreach loop (line B). So 'Calling' is printed first, then the foreach triggers the first MoveNext(), which runs until 'Starting' is printed and the first yield return 1 is hit."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Compiler-Generated State Machine**
+
+When you write an iterator method, the C# compiler generates a hidden class implementing `IEnumerable<T>` and `IEnumerator<T>`. You can inspect it with ILSpy:
+
+```csharp
+// Your code:
+IEnumerable<int> Count() { yield return 1; yield return 2; }
+
+// What the compiler generates (simplified):
+private sealed class <Count>d__0 : IEnumerable<int>, IEnumerator<int>
+{
+    private int <>1__state;  // tracks which yield return to resume at
+    private int <>2__current; // the current yielded value
+
+    public bool MoveNext()
+    {
+        switch (<>1__state)
+        {
+            case 0: // initial state
+                <>2__current = 1;
+                <>1__state = 1;
+                return true;
+            case 1:
+                <>2__current = 2;
+                <>1__state = 2;
+                return true;
+            default:
+                return false; // iteration complete
+        }
+    }
+
+    public int Current => <>2__current;
+}
+```
+
+Understanding this model explains why:
+- Iterator execution doesn't start until `MoveNext()` is called
+- Local variables persist between yields (stored as fields on the state machine)
+- `try/finally` works (state machine calls Dispose on the finally block)
+- You can't yield in a catch (the state machine can't resume from a catch handler)
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "yield statement (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/yield" },
+    { label: "Iterators (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/iterators" },
+    { label: "IAsyncEnumerable\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1" },
+    { label: "Async streams tutorial", url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream" },
+  ]}
+/>

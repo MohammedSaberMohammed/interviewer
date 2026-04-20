@@ -1,24 +1,235 @@
 ---
-title: "Events & Memory Leaks"
+title: "Event Subscriptions and Memory Leaks"
 slug: "events-memory-leaks"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["events", "memory leaks", "GC", "delegates", "unsubscribe", "weak references"]
+summary: "An event subscription keeps the subscriber alive as long as the publisher lives — forgetting to unsubscribe is one of the most common memory leaks in .NET applications."
+docsLinks:
+  - label: "Events (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/"
+  - label: "WeakReference<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.weakreference-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// Publisher — long-lived service (singleton)
+public class StockPriceService
+{
+    public event EventHandler<PriceChangedEventArgs>? PriceChanged;
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    public void UpdatePrice(string symbol, decimal price)
+    {
+        PriceChanged?.Invoke(this, new PriceChangedEventArgs(symbol, price));
+    }
+}
+
+// Subscriber — short-lived view model, created per page navigation
+public class StockViewModel
+{
+    public StockViewModel(StockPriceService service)
+    {
+        // Subscribe to the singleton's event
+        service.PriceChanged += OnPriceChanged; // THE TRAP
+    }
+
+    private void OnPriceChanged(object? sender, PriceChangedEventArgs e)
+    {
+        Console.WriteLine($"{e.Symbol}: {e.Price}");
+    }
+
+    // No Dispose, no unsubscribe!
+}
+
+// Every time the user navigates to the stock page:
+var vm = new StockViewModel(stockService);
+// User navigates away — vm goes "out of scope"
+// But vm is NOT collected! StockPriceService.PriceChanged holds a delegate
+// that references vm via the OnPriceChanged method target.
+// The GC sees: StockPriceService → PriceChanged delegate → StockViewModel
+// StockViewModel is reachable — it will NEVER be collected!
+```
+
+<Callout type="trap">
+An event subscription (`publisher.Event += handler`) creates a **strong reference** from the publisher's delegate list to the subscriber object (via the handler's `Target` property). As long as the publisher is alive, all subscribers that have not unsubscribed are kept alive, regardless of whether anything else references them.
 </Callout>
+
+---
+
+## Why It Happens
+
+```csharp
+// What event += actually stores:
+// event += handler; stores a MulticastDelegate with:
+// - Target: the object that contains OnPriceChanged (the StockViewModel instance)
+// - Method: the MethodInfo for OnPriceChanged
+
+// GC root chain:
+// App (GC root)
+// └── StockPriceService (singleton — rooted by DI container)
+//     └── PriceChanged (MulticastDelegate)
+//         └── [0] Delegate { Target = vm1, Method = OnPriceChanged }  ← KEEPS vm1 ALIVE
+//         └── [1] Delegate { Target = vm2, Method = OnPriceChanged }  ← KEEPS vm2 ALIVE
+//         └── [2] Delegate { Target = vm3, Method = OnPriceChanged }  ← KEEPS vm3 ALIVE
+//         ... one per navigation without unsubscribe
+```
+
+Over time: a growing list of zombie view models, each holding their own references to services, DbContexts, timers, etc. Memory grows with each page visit, never released.
+
+---
+
+## The Fix
+
+**Option 1: Unsubscribe in Dispose (IDisposable pattern)**
+
+```csharp
+// CORRECT — always unsubscribe in Dispose
+public class StockViewModel : IDisposable
+{
+    private readonly StockPriceService _service;
+    private bool _disposed;
+
+    public StockViewModel(StockPriceService service)
+    {
+        _service = service;
+        _service.PriceChanged += OnPriceChanged; // Subscribe
+    }
+
+    private void OnPriceChanged(object? sender, PriceChangedEventArgs e)
+    {
+        Console.WriteLine($"{e.Symbol}: {e.Price}");
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _service.PriceChanged -= OnPriceChanged; // Unsubscribe!
+            _disposed = true;
+        }
+    }
+}
+
+// Caller must ensure Dispose is called:
+using var vm = new StockViewModel(stockService);
+// Or DI framework disposes it when the scope ends (if registered as Scoped/Transient)
+```
+
+**Option 2: Use CancellationToken instead of events for lifecycle**
+
+```csharp
+// Modern pattern: use async streams or channels instead of events
+public class StockViewModel
+{
+    private readonly CancellationTokenSource _cts = new();
+
+    public async Task StartAsync(StockPriceService service)
+    {
+        await foreach (var price in service.GetPriceStreamAsync(_cts.Token))
+        {
+            Console.WriteLine($"{price.Symbol}: {price.Price}");
+        }
+    }
+
+    public void Stop() => _cts.Cancel(); // Clean cancellation, no dangling references
+}
+```
+
+---
+
+<MythBuster
+  myth="When the subscriber goes out of scope, the GC collects it and the event reference is cleaned up automatically"
+  truth="The event subscription creates a strong reference FROM the publisher TO the subscriber. The subscriber is kept alive by this reference regardless of other scope. The GC cannot collect anything that is still reachable."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/events-memory-leaks/challenge-1"
+  title="How many StockViewModel instances are alive after 5 navigations?"
+  description="The user navigates to the stock page 5 times. Each navigation creates a new StockViewModel. How many survive in memory?"
+  code={`// StockPriceService is a singleton
+// StockViewModel is created per navigation, not disposed
+
+public class StockViewModel
+{
+    public StockViewModel(StockPriceService service)
+    {
+        service.PriceChanged += OnPriceChanged;
+    }
+
+    private void OnPriceChanged(object? s, EventArgs e) { }
+    // No Dispose, no unsubscribe
+}
+
+// 5 navigations:
+for (int i = 0; i < 5; i++)
+{
+    var vm = new StockViewModel(stockService);
+    // vm goes out of local scope at end of iteration
+    GC.Collect(); // Full GC
+}`}
+  options={[
+    "0 — GC.Collect() clears all unreferenced objects",
+    "1 — only the most recent vm survives",
+    "5 — all 5 instances survive because the singleton holds references to all of them",
+    "Indeterminate — depends on GC generation"
+  ]}
+  correctAnswer={2}
+  explanation="All 5 instances survive. Even after GC.Collect(), the GC traces reachability from roots. StockPriceService (held by DI container → GC root) holds a MulticastDelegate for PriceChanged, which holds Target references to all 5 StockViewModel instances. They are reachable, so GC cannot collect them. This is the memory leak."
+/>
+
+---
+
+## Static Events — An Even Worse Trap
+
+```csharp
+// Static events hold references FOREVER — the publisher never goes away
+public static class AppEvents
+{
+    public static event EventHandler? ThemeChanged;
+}
+
+public class ThemeAwareControl : Control
+{
+    public ThemeAwareControl()
+    {
+        AppEvents.ThemeChanged += OnThemeChanged; // Static event!
+    }
+
+    private void OnThemeChanged(object? s, EventArgs e) { }
+    // If not unsubscribed, this control lives FOREVER
+    // even after it is removed from the visual tree and seemingly "gone"
+}
+```
+
+---
+
+<Callout type="senior">
+**The WPF/WinForms memory leak that took 3 weeks to find**
+
+A desktop application's memory usage grew by ~2MB per minute. `dotnet-dump` and memory profiler analysis showed thousands of `MainViewModel` instances alive. Each was subscribed to a singleton `ApplicationStateService.StateChanged` event but never unsubscribed.
+
+The fix: implement `IDisposable` on all ViewModels, have the view's `Unloaded` event call `viewModel.Dispose()`. After this change, memory was stable.
+
+Alternatively, the team moved to `WeakEventManager` (WPF built-in) which uses `WeakReference<T>` under the hood — the subscriber is held weakly, so the GC can collect it even while subscribed. The downside: the handler is silently dropped when the subscriber is collected, which can be unexpected.
+
+**Rule of thumb:** every `+=` on an event should have a corresponding `-=` planned from the moment you write it.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Events (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/events/" },
+    { label: "WeakReference\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.weakreference-1" },
+    { label: "Weak event patterns (WPF)", url: "https://learn.microsoft.com/en-us/dotnet/desktop/wpf/events/weak-event-patterns" },
+    { label: "IDisposable interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.idisposable" },
+  ]}
+/>

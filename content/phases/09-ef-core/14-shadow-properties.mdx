@@ -1,24 +1,240 @@
 ---
-title: "Shadow Properties"
+title: "Shadow Properties: Audit Fields Without Entity Pollution"
 slug: "shadow-properties"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["shadow properties", "audit", "ef core", "fluent api", "metadata", "entity design"]
+summary: "Shadow properties exist in the EF model and the database column but not in the entity class. They are the clean solution for audit fields, foreign keys, and metadata that does not belong in your domain model."
+docsLinks:
+  - label: "Shadow and Indexer Properties"
+    url: "https://learn.microsoft.com/en-us/ef/core/modeling/shadow-properties"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Shadow Properties?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A shadow property is a property that:
+- **Exists in EF Core's model** (tracked, queryable, filterable)
+- **Has a column in the database**
+- **Does NOT exist as a C# property on the entity class**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+They are defined purely in `OnModelCreating` and accessed via `EF.Property<T>()` or through `ChangeTracker`:
+
+```csharp
+// Entity class — clean, no audit clutter
+public class Order
+{
+    public int Id { get; set; }
+    public int CustomerId { get; set; }
+    public decimal Total { get; set; }
+    public OrderStatus Status { get; set; }
+    // No CreatedAt, UpdatedAt, CreatedBy, UpdatedBy here
+}
+
+// Model configuration — shadow properties defined here
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Order>(entity =>
+    {
+        // These become real database columns but invisible to the entity class
+        entity.Property<DateTime>("CreatedAt")
+            .HasDefaultValueSql("GETUTCDATE()")
+            .ValueGeneratedOnAdd();
+
+        entity.Property<DateTime>("UpdatedAt")
+            .HasDefaultValueSql("GETUTCDATE()")
+            .ValueGeneratedOnAddOrUpdate();
+
+        entity.Property<string?>("CreatedBy")
+            .HasMaxLength(100);
+
+        entity.Property<string?>("UpdatedBy")
+            .HasMaxLength(100);
+    });
+}
+```
+
+---
+
+## Applying Shadow Properties Globally
+
+For consistent audit fields across all entities, apply them in a loop:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    // Find all entity types and apply audit shadow properties to each
+    foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+    {
+        // Only apply to non-owned types (owned types live inside parent tables)
+        if (entityType.IsOwned()) continue;
+
+        modelBuilder.Entity(entityType.ClrType, builder =>
+        {
+            builder.Property<DateTime>("CreatedAt");
+            builder.Property<DateTime>("UpdatedAt");
+            builder.Property<string?>("CreatedBy").HasMaxLength(100);
+            builder.Property<string?>("UpdatedBy").HasMaxLength(100);
+        });
+    }
+
+    // Apply all IEntityTypeConfiguration<T> implementations
+    modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+}
+```
+
+---
+
+## Setting Shadow Property Values in a SaveChanges Interceptor
+
+Shadow properties are set via `ChangeTracker` — not directly on the entity:
+
+```csharp
+public class AuditShadowPropertyInterceptor : SaveChangesInterceptor
+{
+    private readonly ICurrentUserService _currentUser;
+
+    public AuditShadowPropertyInterceptor(ICurrentUserService currentUser)
+        => _currentUser = currentUser;
+
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        SetShadowProperties(eventData.Context);
+        return base.SavingChanges(eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        SetShadowProperties(eventData.Context);
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private void SetShadowProperties(DbContext? context)
+    {
+        if (context is null) return;
+
+        var now = DateTime.UtcNow;
+        var user = _currentUser.UserId;
+
+        foreach (var entry in context.ChangeTracker.Entries())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                entry.Property("CreatedAt").CurrentValue = now;
+                entry.Property("CreatedBy").CurrentValue = user;
+                entry.Property("UpdatedAt").CurrentValue = now;
+                entry.Property("UpdatedBy").CurrentValue = user;
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Property("UpdatedAt").CurrentValue = now;
+                entry.Property("UpdatedBy").CurrentValue = user;
+            }
+        }
+    }
+}
+```
+
+---
+
+## Querying by Shadow Properties
+
+Shadow properties are fully queryable using `EF.Property<T>()`:
+
+```csharp
+// Filter by shadow property
+var recentOrders = await db.Orders
+    .Where(o => EF.Property<DateTime>(o, "CreatedAt") >= DateTime.UtcNow.AddDays(-7))
+    .ToListAsync();
+
+// Order by shadow property
+var orderedByCreation = await db.Orders
+    .OrderByDescending(o => EF.Property<DateTime>(o, "CreatedAt"))
+    .Take(10)
+    .ToListAsync();
+
+// Read shadow property value from a tracked entity
+var order = await db.Orders.FindAsync(42);
+var createdAt = db.Entry(order!).Property<DateTime>("CreatedAt").CurrentValue;
+var createdBy = db.Entry(order!).Property<string?>("CreatedBy").CurrentValue;
+```
+
+---
+
+## Shadow Foreign Keys
+
+Shadow properties are also used by EF Core automatically for implicit foreign keys when you do not expose the FK in the entity:
+
+```csharp
+// EF creates shadow FK "CategoryId" automatically
+public class Product
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public Category Category { get; set; } = null!;
+    // No explicit CategoryId property — EF creates shadow "CategoryId" FK
+}
+
+// You can also define shadow FKs manually for more control
+modelBuilder.Entity<Product>()
+    .Property<int>("CategoryId"); // explicit shadow FK declaration
+
+modelBuilder.Entity<Product>()
+    .HasOne(p => p.Category)
+    .WithMany(c => c.Products)
+    .HasForeignKey("CategoryId"); // reference the shadow property
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Shadow Properties vs. Interface Properties**
+
+There are two schools of thought for audit fields in EF Core:
+
+**Shadow properties** — zero entity pollution, configured once globally, ideal for infrastructure concerns that domain code should never touch. The trade-off: accessing audit data requires `EF.Property<T>()` syntax, which is verbose.
+
+**Interface properties** (IAuditable pattern) — audit fields visible in entity code, accessible as normal C# properties, easier to test. The trade-off: every entity must implement the interface, and the audit data is part of the entity's public surface area.
+
+In a strict DDD setup, shadow properties are the correct choice — domain entities should not know about persistence metadata. In a pragmatic application where querying audit fields in LINQ is common, interface properties are simpler.
+
+A hybrid: use shadow properties for `CreatedAt`/`UpdatedAt` (pure infrastructure) and expose `CreatedBy` as a real property if the business domain cares about ownership.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Shadow properties cannot be included in LINQ queries or used in WHERE clauses"
+  truth="Shadow properties are fully first-class EF Core model members. They can be used in Where(), OrderBy(), Select(), and any other LINQ operator via EF.Property<T>(entity, 'PropertyName'). They are translated to SQL column references just like regular properties. The only difference is you cannot access them as C# properties on the entity object directly — you must go through EF.Property<T>() or the ChangeTracker entry API."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/shadow-properties/challenge-1"
+  question="You want to add a CreatedAt timestamp to all entities without modifying any entity class. Which approach correctly reads the value of the shadow property after loading an entity?"
+  options={[
+    "var createdAt = order.CreatedAt; // access directly as a property",
+    "var createdAt = db.Entry(order).Property<DateTime>(\"CreatedAt\").CurrentValue;",
+    "var createdAt = (DateTime)db.ShadowProperties[\"CreatedAt\"];",
+    "var createdAt = EF.Property<DateTime>(order, \"CreatedAt\"); // works outside of queries too"
+  ]}
+  correctAnswer={1}
+  explanation={`db.Entry(entity).Property<T>("PropertyName").CurrentValue is the correct way to read a shadow property value from a tracked entity instance. Option A fails because the property does not exist on the entity class. Option C is not a real EF Core API. Option D — EF.Property<T>() — is the correct syntax inside LINQ expression trees (IQueryable queries) but cannot be used outside of LINQ to access values at runtime; it is an expression-tree-only marker method.`}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Shadow and Indexer Properties", url: "https://learn.microsoft.com/en-us/ef/core/modeling/shadow-properties" },
+    { label: "EF.Property Method", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.ef.property" },
+  ]}
+/>

@@ -3,22 +3,304 @@ title: "Model Binding & Validation"
 slug: "model-binding"
 order: 9
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["model binding", "validation", "DataAnnotations", "FluentValidation", "IModelBinder", "asp.net core", "MVC"]
+summary: "Model binding maps HTTP request data to action parameters. Understanding its source priority, validation pipeline, and custom binders separates junior from senior ASP.NET Core developers."
+docsLinks:
+  - label: "Model binding in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/models/model-binding"
+  - label: "Model validation in ASP.NET Core MVC"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/models/validation"
+  - label: "Custom model binding"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/advanced/custom-model-binding"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Model Binding?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Model binding is the process of mapping HTTP request data (route values, query string, headers, body) to action method parameters. Without model binding, you'd manually read `HttpContext.Request` in every action.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Binding Sources
+
+ASP.NET Core checks binding sources in order. Explicit `[From*]` attributes override the defaults:
+
+```csharp
+[ApiController]
+[Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    // Without attributes, ASP.NET Core infers the source:
+    // - Simple types (int, string, Guid) => route values or query string
+    // - Complex types => request body (JSON)
+
+    [HttpGet("{id:guid}")]
+    public IActionResult GetById(
+        [FromRoute] Guid id,                    // /api/orders/{id}
+        [FromQuery] bool includeItems = false,  // ?includeItems=true
+        [FromHeader(Name = "X-Tenant")] string? tenantId = null) // Header
+    {
+        return Ok();
+    }
+
+    [HttpPost]
+    public IActionResult Create(
+        [FromBody] CreateOrderRequest request,  // JSON body (Content-Type: application/json)
+        [FromServices] IOrderService service,   // DI — not from HTTP request
+        [FromQuery] string? couponCode = null)  // ?couponCode=SAVE10
+    {
+        return Ok();
+    }
+
+    [HttpPost("upload")]
+    public IActionResult Upload(
+        [FromForm] IFormFile file,               // multipart/form-data
+        [FromForm] string description)
+    {
+        return Ok();
+    }
+}
+```
+
+**Source priority (without explicit attributes, for simple types):**
+1. Route values (`{id}` in template)
+2. Query string (`?id=5`)
+3. Form data (for POST with `Content-Type: application/x-www-form-urlencoded`)
+
+---
+
+## Validation with DataAnnotations
+
+```csharp
+public class CreateOrderRequest
+{
+    [Required]
+    [StringLength(200, MinimumLength = 1)]
+    public string CustomerName { get; set; } = string.Empty;
+
+    [Required]
+    [EmailAddress]
+    public string Email { get; set; } = string.Empty;
+
+    [Range(1, 10_000)]
+    public decimal TotalAmount { get; set; }
+
+    [Required]
+    [MinLength(1, ErrorMessage = "At least one item is required")]
+    public List<OrderItemRequest> Items { get; set; } = [];
+
+    [RegularExpression(@"^\d{5}(-\d{4})?$", ErrorMessage = "Invalid ZIP code")]
+    public string? ZipCode { get; set; }
+}
+
+public class OrderItemRequest
+{
+    [Required]
+    public int ProductId { get; set; }
+
+    [Range(1, 100)]
+    public int Quantity { get; set; }
+}
+```
+
+With `[ApiController]`, invalid models automatically return 400 with `ValidationProblemDetails` — no `if (!ModelState.IsValid)` needed in each action.
+
+---
+
+## Validation with FluentValidation (Preferred for Complex Rules)
+
+```csharp
+// Install: dotnet add package FluentValidation.AspNetCore
+
+public class CreateOrderRequestValidator : AbstractValidator<CreateOrderRequest>
+{
+    private readonly IProductRepository _products;
+
+    public CreateOrderRequestValidator(IProductRepository products)
+    {
+        _products = products;
+
+        RuleFor(x => x.CustomerName)
+            .NotEmpty()
+            .MaximumLength(200);
+
+        RuleFor(x => x.Email)
+            .NotEmpty()
+            .EmailAddress();
+
+        RuleFor(x => x.TotalAmount)
+            .GreaterThan(0)
+            .LessThanOrEqualTo(10_000);
+
+        RuleFor(x => x.Items)
+            .NotEmpty()
+            .WithMessage("At least one item is required");
+
+        // Async rule — can query the database
+        RuleForEach(x => x.Items).SetValidator(new OrderItemValidator());
+
+        RuleFor(x => x)
+            .MustAsync(async (req, ct) =>
+            {
+                var ids = req.Items.Select(i => i.ProductId).ToList();
+                return await _products.AllExistAsync(ids, ct);
+            })
+            .WithMessage("One or more product IDs are invalid");
+    }
+}
+
+// Register in Program.cs
+builder.Services.AddValidatorsFromAssembly(typeof(Program).Assembly);
+
+// Option 1: Validate manually in action
+[HttpPost]
+public async Task<IActionResult> Create(
+    CreateOrderRequest request,
+    IValidator<CreateOrderRequest> validator)
+{
+    var result = await validator.ValidateAsync(request);
+    if (!result.IsValid)
+        return ValidationProblem(result.ToDictionary());
+
+    // ... proceed
+    return Ok();
+}
+
+// Option 2: Automatic integration (validates before action runs)
+builder.Services.AddFluentValidationAutoValidation();
+```
+
+---
+
+## Custom Model Binders
+
+Use custom binders when the built-in sources can't handle your format:
+
+```csharp
+// Bind a comma-separated list from query string: ?ids=1,2,3,4
+public class CommaSeparatedIntsBinder : IModelBinder
+{
+    public Task BindModelAsync(ModelBindingContext bindingContext)
+    {
+        var value = bindingContext.ValueProvider.GetValue(bindingContext.ModelName);
+
+        if (value == ValueProviderResult.None)
+        {
+            bindingContext.Result = ModelBindingResult.Success(Array.Empty<int>());
+            return Task.CompletedTask;
+        }
+
+        var raw = value.FirstValue;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            bindingContext.Result = ModelBindingResult.Success(Array.Empty<int>());
+            return Task.CompletedTask;
+        }
+
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var result = new List<int>();
+
+        foreach (var part in parts)
+        {
+            if (int.TryParse(part.Trim(), out var id))
+                result.Add(id);
+            else
+            {
+                bindingContext.ModelState.AddModelError(
+                    bindingContext.ModelName,
+                    $"'{part}' is not a valid integer");
+                bindingContext.Result = ModelBindingResult.Failed();
+                return Task.CompletedTask;
+            }
+        }
+
+        bindingContext.Result = ModelBindingResult.Success(result);
+        return Task.CompletedTask;
+    }
+}
+
+// Attribute to apply the binder
+public class CommaSeparatedIntsAttribute : ModelBinderAttribute
+{
+    public CommaSeparatedIntsAttribute() : base(typeof(CommaSeparatedIntsBinder)) { }
+}
+
+// Usage
+[HttpGet("bulk")]
+public IActionResult GetBulk([CommaSeparatedInts] List<int> ids)
+{
+    return Ok(ids);
+}
+// GET /api/products/bulk?ids=1,2,3 => ids = [1, 2, 3]
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Model Binding in Minimal APIs**
+
+Minimal APIs have their own binding rules — simpler but with less flexibility:
+
+```csharp
+// Minimal API parameter sources (inferred automatically):
+// - Route: path segment matches parameter name
+// - Query string: parameter not in route, simple type
+// - Body: complex type (single body per endpoint)
+// - HttpContext, HttpRequest, HttpResponse, CancellationToken: special types
+
+app.MapPost("/orders/{tenantId}", async (
+    string tenantId,              // [FromRoute] — matches route segment
+    CreateOrderRequest request,   // [FromBody] — complex type
+    IOrderService service,        // [FromServices] — DI auto-injection (.NET 7+)
+    CancellationToken ct) =>      // Special — automatic
+{
+    var order = await service.CreateAsync(tenantId, request, ct);
+    return Results.Created($"/orders/{order.Id}", order);
+});
+
+// AsParameters for grouping — .NET 7+
+public record OrderQuery(int Page, int PageSize, string? Search);
+
+app.MapGet("/orders", async ([AsParameters] OrderQuery query, IOrderService svc) =>
+    await svc.GetPageAsync(query.Page, query.PageSize, query.Search));
+// GET /orders?page=2&pageSize=20&search=laptop
+```
+
+Note: `[FromForm]` requires explicit attribute in Minimal APIs. File uploads use `IFormFile` with `[FromForm]` and `.DisableAntiforgery()` on the endpoint.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/model-binding/quiz-1"
+  question="You have a controller action with [ApiController] and an invalid request body. What happens before your action method body runs?"
+  options={[
+    "Nothing — you must check ModelState.IsValid in your action body",
+    "The framework automatically returns a 400 ValidationProblemDetails response before your action runs",
+    "An exception is thrown that must be caught in the action",
+    "The framework sets ModelState but still calls your action method"
+  ]}
+  correctAnswer={1}
+  explanation="[ApiController] applies an implicit IActionFilter that checks ModelState.IsValid before calling the action. If invalid, it short-circuits with a 400 ValidationProblemDetails response — your action method never runs. This is the AutomaticHttpStatusCodeResponses behavior from the [ApiController] attribute."
+/>
+
+---
+
+<MythBuster
+  myth="DataAnnotations validation is sufficient for all business validation needs"
+  truth="DataAnnotations handles property-level constraints well (Required, Range, StringLength), but struggles with cross-property rules, async validation (database lookups), and localization. FluentValidation provides composable, testable, DI-aware validators. For production APIs with complex domain rules, FluentValidation is the industry standard."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Model binding in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/models/model-binding" },
+    { label: "Model validation in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/models/validation" },
+    { label: "Custom model binding", url: "https://learn.microsoft.com/en-us/aspnet/core/mvc/advanced/custom-model-binding" },
+    { label: "Minimal API parameter binding", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/parameter-binding" },
+  ]}
+/>

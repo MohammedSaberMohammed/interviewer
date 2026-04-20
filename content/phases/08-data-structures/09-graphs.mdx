@@ -1,24 +1,413 @@
 ---
-title: "Graph Representations"
+title: "Graphs: Adjacency Lists, BFS, and DFS in C#"
 slug: "graphs"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["graphs", "BFS", "DFS", "adjacency list", "adjacency matrix", "Dijkstra", "topological sort"]
+summary: "Graphs model relationships: social networks, dependency trees, route maps, task schedulers. C# has no built-in graph type — you choose between adjacency list and adjacency matrix representations, each with different Big-O trade-offs. This lesson covers representation, BFS, DFS, and practical algorithms."
+docsLinks:
+  - label: "Dictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2"
+  - label: "Queue<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.queue-1"
+  - label: "Stack<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.stack-1"
+  - label: "PriorityQueue<TElement,TPriority>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Graph Fundamentals
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **graph** G = (V, E) has a set of **vertices** (nodes) V and **edges** E connecting pairs of vertices. Graphs come in several flavors:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Directed / Undirected**: edges have direction (→) or are bidirectional (—)
+- **Weighted / Unweighted**: edges carry a numeric cost
+- **Cyclic / Acyclic**: may or may not contain cycles (DAGs are directed acyclic graphs)
+- **Connected / Disconnected**: all vertices reachable vs isolated components
+
+Graphs appear constantly in interviews and production systems: dependency resolution, route finding, social connections, workflow orchestration, build systems.
+
+---
+
+## Representation 1: Adjacency List
+
+The most common representation. Each vertex maps to a list of its neighbors. Space: O(V + E).
+
+```csharp
+// Unweighted directed graph — Dictionary<int, List<int>>
+var adj = new Dictionary<int, List<int>>
+{
+    [0] = [1, 2],
+    [1] = [3],
+    [2] = [3, 4],
+    [3] = [5],
+    [4] = [5],
+    [5] = []
+};
+
+// Add an edge
+void AddEdge(Dictionary<int, List<int>> graph, int from, int to)
+{
+    graph.TryAdd(from, []);
+    graph[from].Add(to);
+    // For undirected: also graph.TryAdd(to, []); graph[to].Add(from);
+}
+
+// Weighted directed graph — Dictionary<int, List<(int neighbor, int weight)>>
+var weighted = new Dictionary<int, List<(int to, int w)>>
+{
+    [0] = [(1, 4), (2, 1)],
+    [1] = [(3, 1)],
+    [2] = [(1, 2), (3, 5)],
+    [3] = []
+};
+
+// Generic graph using a class for clarity in production code
+class Graph<T> where T : notnull
+{
+    private readonly Dictionary<T, HashSet<T>> _adj = new();
+
+    public void AddVertex(T v) => _adj.TryAdd(v, []);
+
+    public void AddEdge(T from, T to)
+    {
+        _adj.TryAdd(from, []);
+        _adj.TryAdd(to, []);
+        _adj[from].Add(to);
+    }
+
+    public IEnumerable<T> Neighbors(T v) =>
+        _adj.TryGetValue(v, out var n) ? n : [];
+
+    public IEnumerable<T> Vertices => _adj.Keys;
+}
+```
+
+---
+
+## Representation 2: Adjacency Matrix
+
+A 2D array `bool[V, V]` (or `int[V, V]` for weighted). Space: O(V²). Checks edge existence in O(1).
+
+```csharp
+// Adjacency matrix for a dense graph with V=5 vertices
+int V = 5;
+int[,] matrix = new int[V, V]; // 0 = no edge, positive = weight
+
+// Add edge 0→1 with weight 3
+matrix[0, 1] = 3;
+
+// Add undirected edge 2—3 with weight 7
+matrix[2, 3] = matrix[3, 2] = 7;
+
+// Check if edge exists — O(1)
+bool hasEdge = matrix[0, 1] != 0; // true
+
+// List all neighbors of vertex 0 — O(V)
+for (int i = 0; i < V; i++)
+    if (matrix[0, i] != 0)
+        Console.WriteLine($"Edge 0→{i} weight={matrix[0, i]}");
+```
+
+---
+
+## BFS: Breadth-First Search
+
+BFS explores all vertices at distance k before any at distance k+1. Uses a Queue.
+Time: O(V + E). Space: O(V).
+
+```csharp
+// BFS — returns distances from start vertex
+Dictionary<int, int> Bfs(Dictionary<int, List<int>> adj, int start)
+{
+    var dist = new Dictionary<int, int> { [start] = 0 };
+    var queue = new Queue<int>();
+    queue.Enqueue(start);
+
+    while (queue.TryDequeue(out int node))
+    {
+        int d = dist[node];
+        foreach (int neighbor in adj.GetValueOrDefault(node, []))
+        {
+            if (!dist.ContainsKey(neighbor)) // not yet visited
+            {
+                dist[neighbor] = d + 1;
+                queue.Enqueue(neighbor);
+            }
+        }
+    }
+    return dist;
+}
+
+// BFS shortest path reconstruction
+List<int>? ShortestPath(Dictionary<int, List<int>> adj, int start, int end)
+{
+    var prev = new Dictionary<int, int> { [start] = -1 };
+    var queue = new Queue<int>();
+    queue.Enqueue(start);
+
+    while (queue.TryDequeue(out int node))
+    {
+        if (node == end) break;
+        foreach (int nbr in adj.GetValueOrDefault(node, []))
+        {
+            if (!prev.ContainsKey(nbr))
+            {
+                prev[nbr] = node;
+                queue.Enqueue(nbr);
+            }
+        }
+    }
+
+    if (!prev.ContainsKey(end)) return null; // unreachable
+
+    var path = new List<int>();
+    for (int at = end; at != -1; at = prev[at])
+        path.Add(at);
+    path.Reverse();
+    return path;
+}
+```
+
+---
+
+## DFS: Depth-First Search
+
+DFS explores as deep as possible before backtracking. Can be recursive or iterative (using a Stack).
+Time: O(V + E). Space: O(V) for the call stack or explicit stack.
+
+```csharp
+// Recursive DFS — visits all reachable vertices
+void DfsRecursive(Dictionary<int, List<int>> adj, int node, HashSet<int> visited)
+{
+    if (!visited.Add(node)) return; // Add returns false if already present
+    Console.Write($"{node} ");
+
+    foreach (int neighbor in adj.GetValueOrDefault(node, []))
+        DfsRecursive(adj, neighbor, visited);
+}
+
+// Iterative DFS — avoids stack overflow for deep graphs
+void DfsIterative(Dictionary<int, List<int>> adj, int start)
+{
+    var stack = new Stack<int>();
+    var visited = new HashSet<int>();
+    stack.Push(start);
+
+    while (stack.TryPop(out int node))
+    {
+        if (!visited.Add(node)) continue;
+        Console.Write($"{node} ");
+
+        // Push in reverse order so leftmost neighbor processes first
+        var neighbors = adj.GetValueOrDefault(node, []);
+        for (int i = neighbors.Count - 1; i >= 0; i--)
+            stack.Push(neighbors[i]);
+    }
+}
+
+// DFS cycle detection in a directed graph
+bool HasCycle(Dictionary<int, List<int>> adj)
+{
+    var state = new Dictionary<int, int>(); // 0=unvisited, 1=in-stack, 2=done
+
+    bool Dfs(int v)
+    {
+        state[v] = 1; // mark as in current path
+        foreach (int nbr in adj.GetValueOrDefault(v, []))
+        {
+            state.TryGetValue(nbr, out int s);
+            if (s == 1) return true;  // back edge → cycle!
+            if (s == 0 && Dfs(nbr)) return true;
+        }
+        state[v] = 2; // done with this vertex
+        return false;
+    }
+
+    foreach (int v in adj.Keys)
+        if (!state.ContainsKey(v) && Dfs(v))
+            return true;
+    return false;
+}
+```
+
+---
+
+## Topological Sort (Kahn's Algorithm)
+
+For a DAG (directed acyclic graph), topological sort orders vertices so every edge goes forward. Used in build systems, task schedulers, package managers.
+
+```csharp
+// Kahn's algorithm — BFS-based, O(V + E)
+List<int>? TopologicalSort(Dictionary<int, List<int>> adj, int vertexCount)
+{
+    var inDegree = new int[vertexCount];
+    foreach (var (_, neighbors) in adj)
+        foreach (int nbr in neighbors)
+            inDegree[nbr]++;
+
+    var queue = new Queue<int>();
+    for (int i = 0; i < vertexCount; i++)
+        if (inDegree[i] == 0) queue.Enqueue(i);
+
+    var order = new List<int>();
+    while (queue.TryDequeue(out int node))
+    {
+        order.Add(node);
+        foreach (int nbr in adj.GetValueOrDefault(node, []))
+        {
+            if (--inDegree[nbr] == 0)
+                queue.Enqueue(nbr);
+        }
+    }
+
+    return order.Count == vertexCount ? order : null; // null = cycle detected
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Property", "Adjacency List", "Adjacency Matrix"]}
+  rows={[
+    ["Space", "O(V + E)", "O(V²)"],
+    ["Check if edge (u,v) exists", "O(degree(u))", "O(1)"],
+    ["Iterate all neighbors of u", "O(degree(u))", "O(V)"],
+    ["Add edge", "O(1)", "O(1)"],
+    ["Remove edge", "O(degree(u))", "O(1)"],
+    ["Add vertex", "O(1)", "O(V²) rebuild"],
+    ["Best for", "Sparse graphs (E << V²)", "Dense graphs (E ≈ V²)"],
+    ["BCL type", "Dictionary<int, List\<int\>>", "int[V, V] or bool[V, V]"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/graphs/challenge-1"
+  title="Detect a Cycle in an Undirected Graph"
+  description="Given an undirected graph as an adjacency list, write code to detect if it contains a cycle. Which approach is correct?"
+  code={`var graph = new Dictionary<int, List<int>>
+{
+    [0] = [1, 2],
+    [1] = [0, 3],
+    [2] = [0],
+    [3] = [1, 0]   // edge 3→0 creates a cycle: 0-1-3-0
+};
+
+// Option A: DFS with parent tracking
+bool HasCycleA(Dictionary<int, List\<int\>> adj)
+{
+    var visited = new HashSet\<int\>();
+
+    bool Dfs(int v, int parent)
+    {
+        visited.Add(v);
+        foreach (int nbr in adj.GetValueOrDefault(v, []))
+        {
+            if (!visited.Contains(nbr))
+            {
+                if (Dfs(nbr, v)) return true;
+            }
+            else if (nbr != parent) return true; // back edge, not just the edge we came from
+        }
+        return false;
+    }
+
+    return adj.Keys.Any(v => !visited.Contains(v) && Dfs(v, -1));
+}
+
+// Option B: BFS with visited set
+bool HasCycleB(Dictionary<int, List\<int\>> adj)
+{
+    var visited = new HashSet\<int\>();
+    foreach (int start in adj.Keys)
+    {
+        if (visited.Contains(start)) continue;
+        var queue = new Queue\<int\>();
+        queue.Enqueue(start);
+        while (queue.TryDequeue(out int node))
+            if (!visited.Add(node)) return true;
+    }
+    return false;
+}`}
+  options={[
+    "Option A is correct; Option B has a false positive (re-visiting via undirected edges)",
+    "Both A and B are correct",
+    "Option B is correct; Option A misses cycles going through the parent",
+    "Neither is correct — Union-Find is required for undirected cycle detection"
+  ]}
+  correctAnswer={0}
+  explanation="Option A is correct. In an undirected graph, DFS needs parent tracking: when you see a visited neighbor, check it's not just the edge you came from (undirected edges appear in both directions). Finding a visited non-parent neighbor means a genuine cycle. Option B has a bug: in an undirected graph, node 1's neighbor list includes 0 (which was just visited). When BFS dequeues 1 and tries to enqueue 0, it's already visited — but that's not a cycle, it's just the return edge. BFS for undirected cycle detection requires parent tracking too."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Union-Find (Disjoint Set Union) for Cycle Detection**
+
+DFS/BFS cycle detection is O(V + E). For problems involving dynamic edge addition (Kruskal's MST algorithm, online connectivity queries), **Union-Find** is better — O(α(V)) per operation (inverse Ackermann, effectively O(1)):
+
+```csharp
+class UnionFind
+{
+    private readonly int[] _parent, _rank;
+
+    public UnionFind(int n)
+    {
+        _parent = Enumerable.Range(0, n).ToArray();
+        _rank = new int[n];
+    }
+
+    public int Find(int x)
+    {
+        if (_parent[x] != x)
+            _parent[x] = Find(_parent[x]); // path compression
+        return _parent[x];
+    }
+
+    // Returns false if u and v were already in the same component (cycle!)
+    public bool Union(int u, int v)
+    {
+        int pu = Find(u), pv = Find(v);
+        if (pu == pv) return false; // cycle detected
+
+        // Union by rank — attach smaller tree under larger
+        if (_rank[pu] < _rank[pv]) (pu, pv) = (pv, pu);
+        _parent[pv] = pu;
+        if (_rank[pu] == _rank[pv]) _rank[pu]++;
+        return true;
+    }
+}
+
+// Kruskal's MST: sort edges, union-find to detect cycles
+List<(int u, int v, int w)> Kruskal(int V, List<(int u, int v, int w)> edges)
+{
+    var uf = new UnionFind(V);
+    var mst = new List<(int, int, int)>();
+
+    foreach (var (u, v, w) in edges.OrderBy(e => e.w))
+        if (uf.Union(u, v)) // no cycle — add to MST
+            mst.Add((u, v, w));
+
+    return mst;
+}
+```
+
+Know both DFS cycle detection and Union-Find — interviewers ask for both, and production systems (e.g., Kubernetes dependency resolution) use union-find variants.
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2" },
+    { label: "Queue\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.queue-1" },
+    { label: "Stack\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.stack-1" },
+    { label: "PriorityQueue\<TElement,TPriority\> for Dijkstra", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2" },
+  ]}
+/>

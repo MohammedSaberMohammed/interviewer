@@ -2,23 +2,303 @@
 title: "Arrays vs List<T> vs LinkedList<T>"
 slug: "arrays-lists-linkedlist"
 order: 1
-difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["arrays", "List<T>", "LinkedList<T>", "memory layout", "Big-O", "performance", "collections"]
+summary: "Arrays give you contiguous memory and cache locality. List<T> gives you dynamic resizing. LinkedList<T> gives you O(1) insertions at known nodes — but pays for it with pointer overhead and cache misses."
+docsLinks:
+  - label: "Array (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/arrays"
+  - label: "List<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1"
+  - label: "LinkedList<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.linkedlist-1"
+  - label: "Performance best practices — minimize allocations"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/high-performance-logging"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Memory Layout: The Foundation of the Decision
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before comparing APIs, understand where data actually lives in memory — because that determines real-world performance more than Big-O alone.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+**Array / List\<T\>** — contiguous block of memory:
+```
+Stack:                    Heap:
+[ arr ref ] ──────────► [ T | T | T | T | T | T ]
+                          ^--- cache line covers multiple elements
+```
+
+**LinkedList\<T\>** — pointer graph scattered across the heap:
+```
+[ head ref ] ──► [ prev|data|next ] ──► [ prev|data|next ] ──► null
+                        ↑ node object           ↑ different heap location
+```
+
+When you iterate a `List<T>`, the CPU prefetcher reads ahead in the contiguous block. When you iterate a `LinkedList<T>`, each `Next` pointer jump is a potential cache miss. On a modern CPU, a cache miss costs ~100-300 ns; reading from L1 cache costs ~1 ns.
+
+---
+
+## Arrays: Fixed Size, Maximum Performance
+
+An array (`T[]`) is the lowest-level collection in .NET:
+
+```csharp
+// T[] is a single managed heap object with a length header + inline elements
+int[] scores = new int[5];          // one allocation: 5 ints contiguous
+int[] primes = { 2, 3, 5, 7, 11 }; // array initializer
+
+// Bounds-checked element access — O(1)
+int p = primes[2]; // 5
+
+// Slicing without copying — ArraySegment<T> or Span<T>
+Span<int> slice = primes.AsSpan(1, 3); // { 3, 5, 7 } — no allocation!
+
+// Fixed-size 2D array — stored row-major, contiguous in memory
+int[,] matrix = new int[4, 4];     // 16 ints in one block
+
+// Jagged array — array of array references (rows can differ in size)
+int[][] jagged = new int[4][];
+jagged[0] = new int[3];
+jagged[1] = new int[7]; // different row lengths OK
+```
+
+When to use `T[]`:
+- You know the size upfront and it won't change
+- You need `Span<T>` slicing for zero-copy operations
+- You're writing performance-critical buffer code (networking, serialization)
+- You're passing to interop / unmanaged code
+
+---
+
+## List\<T\>: Dynamic Array (Not a Linked List!)
+
+Despite the name, `List<T>` is a **dynamic array** — internally just a `T[]` that grows when needed. It is not a linked list.
+
+```csharp
+var list = new List<int>();       // internal array: capacity = 0
+list.Add(1);                      // array grows to capacity 4
+list.Add(2);
+list.Add(3);
+list.Add(4);
+list.Add(5);                      // array grows to capacity 8 (doubles)
+
+Console.WriteLine(list.Capacity); // 8
+Console.WriteLine(list.Count);    // 5
+
+// Pre-allocate if you know roughly how many items you'll add
+var prealloc = new List<int>(capacity: 1000);
+// This avoids log2(1000) ≈ 10 intermediate array reallocations
+
+// Trimming excess capacity after bulk load
+prealloc.TrimExcess(); // shrinks backing array to Count
+
+// LINQ still works — List<T> implements IList<T>, IEnumerable<T>
+var evens = list.Where(x => x % 2 == 0).ToList();
+```
+
+### Growth Strategy
+
+When `Count == Capacity` and you call `Add`, `List<T>` allocates a **new array of double the current capacity** and copies all elements. This is why:
+- Single `Add` is **amortized O(1)** — most adds are O(1), occasional O(n) copy
+- Pre-allocating with the right capacity avoids copies entirely
+- Large lists doubling can temporarily hold 1.5× their data in memory (old + new array before GC)
+
+```csharp
+// Demonstrating growth
+var list2 = new List<int>();
+int prevCap = 0;
+for (int i = 0; i < 20; i++)
+{
+    list2.Add(i);
+    if (list2.Capacity != prevCap)
+    {
+        Console.WriteLine($"Count={list2.Count}, Capacity={list2.Capacity}");
+        prevCap = list2.Capacity;
+    }
+}
+// Count=1,  Capacity=4
+// Count=5,  Capacity=8
+// Count=9,  Capacity=16
+// Count=17, Capacity=32
+```
+
+---
+
+## LinkedList\<T\>: When Insertion Position Matters
+
+`LinkedList<T>` is a **doubly linked list** where each node holds references to the previous and next node, plus the data value.
+
+```csharp
+var ll = new LinkedList<string>();
+LinkedListNode<string> node = ll.AddLast("banana");
+ll.AddFirst("apple");
+ll.AddBefore(node, "avocado"); // O(1) — no shifting!
+ll.AddAfter(node, "cherry");   // O(1) — no shifting!
+
+// Traversal
+foreach (var item in ll)
+    Console.WriteLine(item); // apple, avocado, banana, cherry
+
+// Remove by node reference — O(1)
+ll.Remove(node); // removes "banana"
+
+// Find is O(n) — must walk the list
+LinkedListNode<string>? found = ll.Find("cherry");
+```
+
+Node structure (approximately):
+```csharp
+// What LinkedListNode<T> looks like internally:
+public sealed class LinkedListNode<T>
+{
+    internal LinkedList<T>? list;
+    internal LinkedListNode<T>? next;
+    internal LinkedListNode<T>? prev;
+    internal T item;              // the actual value
+}
+// On 64-bit: 3 references (24 bytes) + T overhead per node
+// For int: each int "element" costs ~40 bytes total vs 4 bytes in an array!
+```
+
+When `LinkedList<T>` is actually worth it:
+- You frequently insert/remove **in the middle** and hold node references
+- You need O(1) splice (merge two lists, split a list at a known node)
+- You implement an LRU cache (node lookup via Dictionary + O(1) reorder)
+
+```csharp
+// Classic LRU cache skeleton using LinkedList + Dictionary
+class LruCache<TKey, TValue> where TKey : notnull
+{
+    private readonly int _capacity;
+    private readonly Dictionary<TKey, LinkedListNode<(TKey key, TValue value)>> _map;
+    private readonly LinkedList<(TKey key, TValue value)> _order;
+
+    public LruCache(int capacity)
+    {
+        _capacity = capacity;
+        _map = new(capacity);
+        _order = new();
+    }
+
+    public TValue Get(TKey key)
+    {
+        if (!_map.TryGetValue(key, out var node))
+            throw new KeyNotFoundException();
+        _order.Remove(node);          // O(1) — have the node reference
+        _order.AddFirst(node);        // O(1)
+        return node.Value.value;
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Operation", "T[]", "List<T>", "LinkedList<T>"]}
+  rows={[
+    ["Access by index (random)", "O(1)", "O(1)", "O(n)"],
+    ["Add to end", "N/A (fixed)", "O(1) amortized", "O(1)"],
+    ["Insert at middle (index)", "N/A (fixed)", "O(n) shift", "O(1) with node ref"],
+    ["Remove at middle (index)", "N/A (fixed)", "O(n) shift", "O(1) with node ref"],
+    ["Search (unsorted)", "O(n)", "O(n)", "O(n)"],
+    ["Search (sorted, BinarySearch)", "O(log n)", "O(log n)", "N/A"],
+    ["Memory per element (int)", "4 bytes", "4 bytes", "~40 bytes"],
+    ["Cache locality", "Excellent", "Excellent", "Poor"],
+    ["Resize", "Manual (new array)", "Automatic", "N/A (grows by node)"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="LinkedList<T> is faster than List<T> for frequent middle insertions"
+  reality="Only true if you already hold a node reference. Finding the insertion position is O(n) for LinkedList<T> (walking the list) vs O(n) for List<T> (shifting elements) — but List<T> wins on cache performance during the walk. In benchmarks, List<T> often beats LinkedList<T> even for middle insertions below ~10,000 elements due to SIMD-accelerated memmove and CPU prefetching."
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/arrays-lists-linkedlist/challenge-1"
+  title="Spot the Performance Problem"
+  description="This code builds a sorted list by inserting each element at the correct sorted position. What is the time complexity and what would you use instead?"
+  code={`var sorted = new LinkedList<int>();
+
+void InsertSorted(int value)
+{
+    var current = sorted.First;
+    while (current != null && current.Value < value)
+        current = current.Next;          // walk to find position
+
+    if (current == null)
+        sorted.AddLast(value);
+    else
+        sorted.AddBefore(current, value); // O(1) insertion
+}
+
+foreach (int n in new[] { 5, 2, 8, 1, 9, 3 })
+    InsertSorted(n);`}
+  options={[
+    "O(n log n) total — the binary-search-like walk is efficient",
+    "O(n²) total — the linear walk for each insertion dominates; a sorted List<T> with BinarySearch + Insert is faster in practice",
+    "O(n) total — LinkedList insertion is O(1) so only the loop matters",
+    "O(n²) total — but LinkedList is still faster than List<T> because no element shifting"
+  ]}
+  correctAnswer={1}
+  explanation="Each InsertSorted call walks up to O(n) nodes to find the position, giving O(n²) total. A List<T> with List.BinarySearch (O(log n)) + List.Insert (O(n) shift) is also O(n²) — but List<T>'s cache-friendly memmove shift beats linked-list pointer chasing by a wide margin in practice. For a truly sorted dynamic collection, use SortedSet<T> (red-black tree, O(log n) insert) or sort once at the end."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Span\<T\> and Memory\<T\> Replace Most Array Gymnastics**
+
+In modern .NET, reaching for `T[]` directly often means you should be asking: can this be a `Span<T>` or `Memory<T>`?
+
+```csharp
+// OLD: allocating subarrays to pass slices around
+byte[] header = new byte[4];
+Array.Copy(buffer, 0, header, 0, 4); // allocation + copy
+
+// NEW: zero-allocation slice with Span<T>
+ReadOnlySpan<byte> header = buffer.AsSpan(0, 4); // no allocation, no copy
+
+// Stack-allocated small arrays — avoid heap entirely
+Span<int> temp = stackalloc int[8]; // lives on stack, no GC pressure
+
+// ArrayPool<T> — rent/return reusable arrays from a shared pool
+byte[] rented = ArrayPool<byte>.Shared.Rent(4096);
+try { /* use rented */ }
+finally { ArrayPool<byte>.Shared.Return(rented); }
+```
+
+The rule: use `Span<T>` for synchronous slicing, `Memory<T>` for async, `ArrayPool<T>` for large temporary buffers. These patterns eliminate 90% of intermediate array allocations in hot paths.
+
+For `List<T>`, prefer `CollectionsMarshal.AsSpan(list)` (available since .NET 5) to get a `Span<T>` directly over the backing array — enabling SIMD operations on the raw elements without copying.
 </Callout>
+
+---
+
+## Quick Decision Guide
+
+```
+Need fixed-size, max performance, or Span<T> slicing?  → T[]
+Need dynamic size, random access, sorted binary search? → List<T>
+Need O(1) insert/remove at known positions (LRU, etc.)? → LinkedList<T>
+Need sorted order with O(log n) insert?                 → SortedSet<T>
+```
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Array (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/arrays" },
+    { label: "List\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1" },
+    { label: "LinkedList\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.linkedlist-1" },
+    { label: "Span\<T\> and Memory\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines" },
+    { label: "ArrayPool\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1" },
+    { label: "CollectionsMarshal.AsSpan", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.collectionsmarshal.asspan" },
+  ]}
+/>

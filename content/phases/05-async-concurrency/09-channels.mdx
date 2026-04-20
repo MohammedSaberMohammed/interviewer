@@ -1,24 +1,291 @@
 ---
-title: "System.Threading.Channels"
+title: "System.Threading.Channels: Producer/Consumer Pipelines"
 slug: "channels"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["Channel", "producer consumer", "async", "pipeline", "bounded", "unbounded", "concurrency", "System.Threading.Channels"]
+summary: "System.Threading.Channels provides high-performance, async-native producer/consumer queues — the right tool for async pipelines with decoupled producers and consumers."
+docsLinks:
+  - label: "System.Threading.Channels"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels"
+  - label: "Channel<T> class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.channels.channel-1"
+  - label: "An Introduction to System.Threading.Channels"
+    url: "https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Channels?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`System.Threading.Channels` (available in .NET Core 3.0+ and as a NuGet for .NET Standard) provides **async-native FIFO queues** for passing data between producers and consumers. Think of a channel as a pipe: one end writes, the other reads — asynchronously, without polling or manual locking.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Create a bounded channel (backpressure when full)
+var channel = Channel.CreateBounded<WorkItem>(new BoundedChannelOptions(capacity: 100)
+{
+    FullMode = BoundedChannelFullMode.Wait, // Producer awaits when full
+    SingleReader = false, // Multiple consumers allowed
+    SingleWriter = false  // Multiple producers allowed
+});
+
+// Writer (producer side)
+ChannelWriter<WorkItem> writer = channel.Writer;
+
+// Reader (consumer side)
+ChannelReader<WorkItem> reader = channel.Reader;
+```
+
+---
+
+## Bounded vs Unbounded Channels
+
+```csharp
+// BOUNDED: limits memory usage, provides backpressure to producers
+var bounded = Channel.CreateBounded<int>(new BoundedChannelOptions(1000)
+{
+    FullMode = BoundedChannelFullMode.Wait,     // Producer awaits when full (backpressure)
+    // FullMode = BoundedChannelFullMode.DropOldest, // Drop oldest item (lossy)
+    // FullMode = BoundedChannelFullMode.DropNewest, // Drop newest item (lossy)
+    // FullMode = BoundedChannelFullMode.DropWrite,  // Fail the write (lossy)
+});
+
+// UNBOUNDED: unlimited capacity — producer never blocks
+// Use only when you know the producer is bounded or the consumer is always fast enough
+var unbounded = Channel.CreateUnbounded<int>(new UnboundedChannelOptions
+{
+    SingleReader = true, // Optimize internal data structure when you know there's one consumer
+    SingleWriter = true  // Optimize when you know there's one producer
+});
+```
+
+**Default to bounded**. Unbounded channels can silently consume all available memory if the producer outpaces the consumer.
+
+---
+
+## Producer Pattern
+
+```csharp
+// Producer: writes items, completes the channel when done
+public async Task ProduceAsync(
+    ChannelWriter<WorkItem> writer,
+    IEnumerable<WorkRequest> requests,
+    CancellationToken ct)
+{
+    try
+    {
+        foreach (var request in requests)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var item = PrepareWorkItem(request);
+
+            // WriteAsync awaits if the channel is full (bounded with Wait mode)
+            await writer.WriteAsync(item, ct);
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // Cancelled — propagate as fault so consumers know
+        writer.TryComplete(new OperationCanceledException());
+        throw;
+    }
+    catch (Exception ex)
+    {
+        // Fault the channel — consumers will see this exception
+        writer.TryComplete(ex);
+        throw;
+    }
+    finally
+    {
+        // Signal no more items — CRITICAL: without this, consumers wait forever
+        writer.TryComplete();
+    }
+}
+```
+
+<Callout type="warning">
+**Always call `writer.TryComplete()` or `writer.Complete()`** when the producer is done. If you don't, consumers waiting on `ReadAllAsync()` or `ReadAsync()` will wait forever — the channel is never marked as done. Wrap it in a `try/finally` to guarantee completion even on exceptions.
 </Callout>
+
+---
+
+## Consumer Pattern
+
+```csharp
+// Consumer: reads items until channel is completed
+public async Task ConsumeAsync(
+    ChannelReader<int> reader,
+    CancellationToken ct)
+{
+    // ReadAllAsync yields items as they become available
+    // Completes (returns) when the channel is marked complete AND empty
+    await foreach (var item in reader.ReadAllAsync(ct))
+    {
+        await ProcessItemAsync(item, ct);
+    }
+}
+
+// Alternative: manual loop with TryRead for low-latency hot paths
+public async Task ConsumeManualAsync(ChannelReader<int> reader, CancellationToken ct)
+{
+    while (await reader.WaitToReadAsync(ct)) // Returns false when channel is complete
+    {
+        while (reader.TryRead(out int item)) // Synchronously drain available items
+        {
+            await ProcessItemAsync(item, ct);
+        }
+    }
+}
+```
+
+The `WaitToReadAsync` + `TryRead` pattern is more efficient when you want to drain all available items before going async again — reduces await overhead in high-throughput scenarios.
+
+---
+
+## Multi-Producer Multi-Consumer Pipeline
+
+```csharp
+// Real-world pipeline: N producers → bounded channel → M consumers
+public class OrderProcessingPipeline
+{
+    private readonly Channel<Order> _channel = Channel.CreateBounded<Order>(
+        new BoundedChannelOptions(500) { FullMode = BoundedChannelFullMode.Wait });
+
+    public async Task RunAsync(CancellationToken ct)
+    {
+        // Start 3 producers in parallel
+        var producers = Enumerable.Range(0, 3)
+            .Select(i => ProduceOrdersAsync(i, _channel.Writer, ct))
+            .ToArray();
+
+        // Start 5 consumers in parallel
+        var consumers = Enumerable.Range(0, 5)
+            .Select(i => ConsumeOrdersAsync(i, _channel.Reader, ct))
+            .ToArray();
+
+        // Wait for all producers to finish, then complete the channel
+        await Task.WhenAll(producers);
+        _channel.Writer.Complete();
+
+        // Wait for consumers to drain remaining items
+        await Task.WhenAll(consumers);
+    }
+
+    private async Task ProduceOrdersAsync(int producerId, ChannelWriter<Order> writer, CancellationToken ct)
+    {
+        await foreach (var order in _orderSource.GetOrdersAsync(producerId, ct))
+            await writer.WriteAsync(order, ct);
+    }
+
+    private async Task ConsumeOrdersAsync(int consumerId, ChannelReader<Order> reader, CancellationToken ct)
+    {
+        await foreach (var order in reader.ReadAllAsync(ct))
+            await _processor.ProcessAsync(order, ct);
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Channel vs BlockingCollection vs ConcurrentQueue**
+
+Choosing the right queue for async scenarios:
+
+```csharp
+// ConcurrentQueue<T>: thread-safe but synchronous — no async support
+// Use when: pure CPU, no async consumers, no backpressure needed
+var cq = new ConcurrentQueue<int>();
+cq.Enqueue(1);
+cq.TryDequeue(out int item);
+
+// BlockingCollection<T>: wraps ConcurrentQueue, supports blocking Take()
+// Use when: legacy code, synchronous producers/consumers only
+// NEVER use with async — Take() blocks threads, causes starvation
+var bc = new BlockingCollection<int>(boundedCapacity: 100);
+bc.Add(1);         // Blocks if full
+int i = bc.Take(); // Blocks if empty — BAD in async context
+
+// Channel<T>: fully async, efficient, with backpressure support
+// Use when: any async producer or consumer
+// The modern default for producer/consumer patterns in async code
+
+// Performance benchmark (rough numbers on modern hardware):
+// Channel unbounded:  ~200M ops/sec (lock-free on single-producer path)
+// Channel bounded:    ~100M ops/sec
+// BlockingCollection: ~10M ops/sec (heavy lock usage)
+// ConcurrentQueue:    ~150M ops/sec (but no async)
+```
+
+Channels use highly optimized lock-free structures internally (especially with `SingleReader`/`SingleWriter` options set). For single-producer single-consumer scenarios, they're among the fastest data structures in .NET.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Channel.CreateUnbounded is always faster than bounded"
+  reality="Unbounded channels can be faster in micro-benchmarks, but in production they're a risk: if the producer outpaces the consumer, memory grows without limit until the process crashes. Bounded channels with Wait mode provide backpressure — slowing the producer when the consumer falls behind. This is almost always the correct behavior for production workloads. Use Unbounded only when you have a hard guarantee that the producer can never significantly outpace the consumer."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/channels/challenge-1"
+  title="Channel Completion Bug"
+  description="This producer/consumer setup has a bug that causes consumers to wait forever. Find it."
+  code={`var channel = Channel.CreateBounded<int>(100);
+
+// Producer task
+var producer = Task.Run(async () =>
+{
+    for (int i = 0; i < 1000; i++)
+        await channel.Writer.WriteAsync(i);
+    // Producer done
+});
+
+// Consumer task
+var consumer = Task.Run(async () =>
+{
+    await foreach (var item in channel.Reader.ReadAllAsync())
+        Console.WriteLine(item);
+});
+
+await Task.WhenAll(producer, consumer);`}
+  options={[
+    "Task.WhenAll will deadlock because producer and consumer use the same channel",
+    "The producer never calls channel.Writer.Complete() — the consumer's ReadAllAsync() waits forever for more items that will never come",
+    "BoundedChannel does not support ReadAllAsync — use WaitToReadAsync instead",
+    "Task.Run should not be used with async lambdas"
+  ]}
+  correctAnswer={1}
+  explanation="The producer writes all 1000 items but never calls channel.Writer.Complete() or channel.Writer.TryComplete(). ReadAllAsync() uses the channel's completion signal to know when to stop iterating. Without Complete(), the consumer waits indefinitely for more items after reading all 1000, and Task.WhenAll never returns. Fix: add channel.Writer.TryComplete() in a finally block after the producer loop."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/channels/quiz-1"
+  question="What happens when a producer calls WriteAsync() on a full bounded channel with FullMode = BoundedChannelFullMode.Wait?"
+  options={[
+    "An InvalidOperationException is thrown immediately",
+    "The item is dropped and WriteAsync returns false",
+    "WriteAsync returns a Task that completes only when space becomes available in the channel",
+    "The oldest item is removed to make room for the new one"
+  ]}
+  correctAnswer={2}
+  explanation="With BoundedChannelFullMode.Wait, WriteAsync() returns an incomplete ValueTask when the channel is at capacity. The producer is suspended (awaiting the ValueTask) until a consumer reads an item and frees space. This is backpressure: the producer rate is naturally throttled by the consumer rate. This is the safest and most common mode for production pipelines where you cannot afford to drop items."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "System.Threading.Channels docs", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels" },
+    { label: "Channel\<T\> API", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.channels.channel-1" },
+    { label: "An Introduction to System.Threading.Channels (Stephen Toub)", url: "https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/" },
+    { label: "BoundedChannelOptions", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.channels.boundedchanneloptions" },
+  ]}
+/>

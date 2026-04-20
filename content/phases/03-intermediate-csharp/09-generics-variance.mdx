@@ -1,24 +1,248 @@
 ---
-title: "Generic Variance: in / out"
+title: "Generic Variance: Covariance and Contravariance"
 slug: "generics-variance"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["covariance", "contravariance", "IEnumerable", "IComparer", "out", "in", "generic variance", "type safety"]
+summary: "Covariance (out T) lets you use a more-derived type where a base is expected; contravariance (in T) lets you use a less-derived type — understanding both prevents cast errors and enables flexible API design."
+docsLinks:
+  - label: "Covariance and Contravariance in Generics"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/generics/covariance-and-contravariance"
+  - label: "IEnumerable<T> — covariant"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "IComparer<T> — contravariant"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Invariant Generics
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Without variance, generic types are **invariant** — `List<Dog>` is not assignable to `List<Animal>`, even though `Dog` inherits from `Animal`. This surprises many developers:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+class Animal { public string Name { get; set; } = ""; }
+class Dog : Animal { public void Bark() => Console.WriteLine("Woof"); }
+
+// Arrays are covariant (and this is DANGEROUS — a runtime flaw):
+Animal[] animals = new Dog[3]; // compiles — arrays are covariant
+animals[0] = new Animal();     // THROWS at runtime: ArrayTypeMismatchException
+
+// Generic classes are INVARIANT — safer:
+List<Animal> list = new List<Dog>(); // COMPILE ERROR — invariant
+// This is good! It prevents the array problem above.
+
+// BUT: what about interfaces? IEnumerable<T> is covariant:
+IEnumerable<Animal> seq = new List<Dog>(); // WORKS — IEnumerable is covariant
+// Safe because IEnumerable only produces T — you can't add a Cat to it
+```
+
+---
+
+## Covariance: `out T`
+
+**Covariance** means you can assign a `IFoo<Derived>` to a `IFoo<Base>` variable. It's declared with the `out` keyword on the type parameter.
+
+The `out` constraint says: "this type parameter only appears in **output** positions (return types, out parameters). We promise never to accept a `T` as input."
+
+```csharp
+// IEnumerable<out T> is covariant — T only comes OUT of it
+// Definition (from BCL):
+public interface IEnumerable<out T>
+{
+    IEnumerator<T> GetEnumerator(); // T is returned, never accepted
+}
+
+// So you CAN assign:
+IEnumerable<Dog>    dogs    = new List<Dog> { new Dog(), new Dog() };
+IEnumerable<Animal> animals = dogs; // WORKS — covariant!
+
+// Safe because IEnumerable<Animal> will only produce Animals (Dogs are Animals)
+// You can't accidentally add a Cat through this interface — there's no Add method
+
+// More examples of covariant interfaces:
+IReadOnlyList<Dog> readOnlyDogs = new List<Dog>();
+IReadOnlyList<Animal> readOnlyAnimals = readOnlyDogs; // WORKS — covariant
+
+// Func return type is covariant (position: out):
+Func<Dog> getDog = () => new Dog();
+Func<Animal> getAnimal = getDog; // WORKS — Dog can satisfy Animal return type
+```
+
+### Defining Your Own Covariant Interface
+
+```csharp
+// Custom covariant interface — T only in output positions
+public interface IProducer<out T>
+{
+    T Produce();             // OK — T is returned (output)
+    IEnumerable<T> ProduceMany(); // OK — T in output of return type
+    // void Consume(T item); // WOULD FAIL — T in input position, violates 'out'
+}
+
+public class DogProducer : IProducer<Dog>
+{
+    public Dog Produce() => new Dog();
+    public IEnumerable<Dog> ProduceMany() => Enumerable.Repeat(new Dog(), 5);
+}
+
+// Usage: DogProducer can be used as IProducer<Animal>
+IProducer<Animal> animalProducer = new DogProducer(); // covariance!
+Animal a = animalProducer.Produce(); // returns a Dog, cast to Animal
+```
+
+---
+
+## Contravariance: `in T`
+
+**Contravariance** means you can assign a `IFoo<Base>` to a `IFoo<Derived>` variable — the opposite direction. Declared with `in`.
+
+The `in` constraint says: "this type parameter only appears in **input** positions (method parameters). We promise never to return a `T`."
+
+```csharp
+// IComparer<in T> is contravariant — T only comes IN to it
+// Definition (from BCL):
+public interface IComparer<in T>
+{
+    int Compare(T x, T y); // T is accepted as input, never returned
+}
+
+// An Animal comparer can be used where a Dog comparer is needed
+IComparer<Animal> animalComparer = Comparer<Animal>.Create(
+    (a, b) => a.Name.CompareTo(b.Name));
+
+IComparer<Dog> dogComparer = animalComparer; // WORKS — contravariant!
+// Safe: the Animal comparer can handle any Animal, including Dogs
+
+// Sort dogs using a general Animal comparer
+var dogs = new List<Dog> { new Dog { Name = "Rex" }, new Dog { Name = "Buddy" } };
+dogs.Sort(dogComparer); // dogComparer is really an Animal comparer — safe
+
+// Action is contravariant on its parameter (position: in):
+Action<Animal> processAnimal = a => Console.WriteLine(a.Name);
+Action<Dog>    processDog    = processAnimal; // WORKS — contravariant!
+// Dog is more specific than Animal, so an Animal handler can handle a Dog
+```
+
+### Defining Your Own Contravariant Interface
+
+```csharp
+// Custom contravariant interface — T only in input positions
+public interface IConsumer<in T>
+{
+    void Consume(T item);            // OK — T is an input parameter
+    void ConsumeMany(IEnumerable<T> items); // OK — T in input of parameter type
+    // T Produce();  // WOULD FAIL — T in output position, violates 'in'
+}
+
+public class AnimalLogger : IConsumer<Animal>
+{
+    public void Consume(Animal item) => Console.WriteLine(item.Name);
+    public void ConsumeMany(IEnumerable<Animal> items)
+        => items.ToList().ForEach(Consume);
+}
+
+IConsumer<Dog> dogLogger = new AnimalLogger(); // contravariance!
+dogLogger.Consume(new Dog { Name = "Rex" }); // Rex
+```
+
+---
+
+<ComparisonTable
+  headers={["Concept", "Keyword", "Direction", "Intuition", "BCL example"]}
+  rows={[
+    ["Covariance", "out T", "Derived → Base", "Producers: output flows up", "IEnumerable<out T>, IReadOnlyList<out T>"],
+    ["Contravariance", "in T", "Base → Derived", "Consumers: input flows down", "IComparer<in T>, Action<in T>"],
+    ["Invariance", "(none)", "Exact match only", "Both producer and consumer", "List\<T\>, ICollection\<T\>"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/generics-variance/challenge-1"
+  title="Which Assignment Compiles?"
+  description="Which of these assignments is valid in C#?"
+  code={`class Shape {}
+class Circle : Shape {}
+
+// A:
+List\<Shape\> a = new List\<Circle\>();
+
+// B:
+IEnumerable\<Shape\> b = new List\<Circle\>();
+
+// C:
+IComparer\<Circle\> c = Comparer\<Shape\>.Default;
+
+// D:
+Action\<Circle\> d = new Action\<Shape\>(s => Console.WriteLine(s));`}
+  options={[
+    "A only — List<T> is covariant",
+    "B only — only IEnumerable is covariant",
+    "B and C — IEnumerable is covariant, IComparer is contravariant",
+    "B, C, and D — IEnumerable covariant, IComparer and Action contravariant"
+  ]}
+  correctAnswer={3}
+  explanation="A is invalid — List<T> is invariant (no in/out annotation). B is valid — IEnumerable<out T> is covariant, so IEnumerable<Shape> can hold a List<Circle>. C is valid — IComparer<in T> is contravariant, so a Comparer<Shape> (which can compare any Shape) satisfies IComparer<Circle> (which needs to compare Circles, which are Shapes). D is valid — Action<in T> is contravariant in its type parameter, so Action<Shape> can be assigned to Action<Circle>. All three directions reflect the producer/consumer intuition."
+/>
+
+---
+
+<Callout type="trap">
+**Trap: Arrays Are Covariant but Unsafe**
+
+C# arrays have been covariant since v1.0 — before generics existed — and this decision is considered a design flaw:
+
+```csharp
+Dog[] dogs = { new Dog(), new Dog() };
+Animal[] animals = dogs;  // Compiles — arrays are covariant
+
+// RUNTIME EXPLOSION:
+animals[0] = new Animal(); // ArrayTypeMismatchException at runtime!
+// The array is really a Dog[], which cannot store a plain Animal
+
+// This is exactly why IEnumerable<out T> is safe while arrays are not:
+// IEnumerable has no mutation — you can't call animals.Add(new Animal())
+// Arrays DO allow mutation — hence the runtime exception
+```
+
+Generic collections with variance annotations (`out`/`in`) are safe because the compiler enforces the variance rules — either you can only read (covariant `IEnumerable`) or only write (contravariant). Arrays bypass this guarantee.
 </Callout>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Variance Is Only for Interfaces and Delegates, Not Classes**
+
+A common mistake: trying to apply variance to generic classes.
+
+```csharp
+// COMPILE ERROR: variance annotations only allowed on interfaces and delegates
+public class Producer<out T> { ... } // NOT allowed on class
+
+// WORKS: variance on interface
+public interface IProducer<out T> { T Get(); } // allowed
+
+// WORKS: variance on delegate
+public delegate T Factory<out T>();    // covariant delegate
+public delegate void Sink<in T>(T t); // contravariant delegate
+```
+
+Why? Classes have mutable state, which makes it impossible to guarantee the variance rules. Interfaces and delegates are contracts — they don't have fields that could violate the in/out constraints.
+
+In practice: when designing APIs, lean toward returning interfaces (`IEnumerable<T>`, `IReadOnlyList<T>`) rather than concrete types. Covariant return types give callers more flexibility in what they can assign the result to.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Covariance and Contravariance in Generics", url: "https://learn.microsoft.com/en-us/dotnet/standard/generics/covariance-and-contravariance" },
+    { label: "IEnumerable\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1" },
+    { label: "IComparer\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1" },
+    { label: "Variance in Delegates", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/covariance-contravariance/variance-in-delegates" },
+  ]}
+/>

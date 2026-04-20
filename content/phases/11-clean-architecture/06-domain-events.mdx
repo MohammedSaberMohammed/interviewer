@@ -1,24 +1,280 @@
 ---
-title: "Domain Events"
+title: "Domain Events: Raising, Dispatching & MediatR Notifications"
 slug: "domain-events"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["domain events", "DDD", "MediatR", "notifications", "integration events", "event-driven", "INotification"]
+summary: "Domain events capture 'something important happened in the domain.' They decouple side effects from business logic and are dispatched after the transaction commits."
+docsLinks:
+  - label: "Implement domain events (.NET Microservices)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation"
+  - label: "MediatR — notifications"
+    url: "https://github.com/jbogard/MediatR/wiki"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Domain Events?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A domain event is a record of something meaningful that happened within the domain — expressed in past tense ("OrderConfirmed", "CustomerRegistered", "PaymentFailed"). They:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. Are **raised inside the aggregate** (the domain decides what's noteworthy)
+2. Are **dispatched outside the aggregate** (after the transaction commits)
+3. Allow side effects (emails, notifications, audit logs) to be **decoupled** from the aggregate
+
+Without domain events, you'd stuff all side effects into the command handler:
+
+```csharp
+// BAD: handler doing too much — couples business logic with side effects
+public async Task Handle(ConfirmOrderCommand cmd, CancellationToken ct)
+{
+    var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+    order.Confirm(); // domain logic
+
+    // All side effects hardcoded here — fragile, untestable independently
+    await _emailService.SendOrderConfirmedEmailAsync(order.CustomerId, ct);
+    await _inventoryService.ReserveItemsAsync(order.Lines, ct);
+    await _analyticsService.TrackOrderConfirmedAsync(order.Id, ct);
+    await _unitOfWork.SaveChangesAsync(ct);
+}
+```
+
+With domain events, the handler only saves; event handlers react:
+
+```csharp
+// GOOD: handler is minimal
+public async Task Handle(ConfirmOrderCommand cmd, CancellationToken ct)
+{
+    var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+    order.Confirm(); // raises OrderConfirmedEvent internally
+    await _unitOfWork.SaveChangesAsync(ct);
+    // Domain events dispatched automatically in SaveChangesAsync or after it
+}
+```
+
+---
+
+## Defining Domain Events
+
+```csharp
+// Domain/Common/IDomainEvent.cs
+public interface IDomainEvent : INotification  // implements MediatR INotification
+{
+    Guid EventId { get; }
+    DateTime OccurredOn { get; }
+}
+
+// Domain/Common/DomainEvent.cs
+public abstract record DomainEvent : IDomainEvent
+{
+    public Guid EventId { get; } = Guid.NewGuid();
+    public DateTime OccurredOn { get; } = DateTime.UtcNow;
+}
+
+// Domain/Events/OrderConfirmedEvent.cs
+public sealed record OrderConfirmedEvent(
+    OrderId OrderId,
+    CustomerId CustomerId,
+    Money Total) : DomainEvent;
+
+// Domain/Events/OrderCancelledEvent.cs
+public sealed record OrderCancelledEvent(
+    OrderId OrderId,
+    string Reason) : DomainEvent;
+
+// Domain/Events/CustomerRegisteredEvent.cs
+public sealed record CustomerRegisteredEvent(
+    CustomerId CustomerId,
+    Email Email,
+    Name Name) : DomainEvent;
+```
+
+---
+
+## Raising Events Inside the Aggregate
+
+```csharp
+// Domain/Entities/Order.cs
+public sealed class Order : AggregateRoot<OrderId>
+{
+    // ...
+
+    public void Confirm()
+    {
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("Order is already confirmed.");
+        if (!_lines.Any())
+            throw new DomainException("Cannot confirm an empty order.");
+
+        Status = OrderStatus.Confirmed;
+
+        // Raise the event — stays in the aggregate's list until dispatched
+        Raise(new OrderConfirmedEvent(Id, CustomerId, Total));
+    }
+
+    public void Cancel(string reason)
+    {
+        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)
+            throw new DomainException("Cannot cancel a shipped or delivered order.");
+
+        Status = OrderStatus.Cancelled;
+        Raise(new OrderCancelledEvent(Id, reason));
+    }
+}
+```
+
+Events are stored in a list on the aggregate root — they are NOT published to a message bus yet. They're in-process, transient, and dispatched after the transaction commits.
+
+---
+
+## Dispatching via EF Core's SaveChangesAsync
+
+The cleanest integration point is to dispatch events in a custom `SaveChangesAsync` override or via a MediatR pipeline behavior:
+
+```csharp
+// Infrastructure/Persistence/AppDbContext.cs
+public class AppDbContext : DbContext
+{
+    private readonly IPublisher _publisher; // MediatR IPublisher
+
+    public AppDbContext(DbContextOptions options, IPublisher publisher) : base(options)
+        => _publisher = publisher;
+
+    public override async Task<int> SaveChangesAsync(CancellationToken ct = default)
+    {
+        // 1. Save to DB first
+        var result = await base.SaveChangesAsync(ct);
+
+        // 2. Then dispatch domain events (after successful commit)
+        await DispatchDomainEventsAsync(ct);
+
+        return result;
+    }
+
+    private async Task DispatchDomainEventsAsync(CancellationToken ct)
+    {
+        var aggregates = ChangeTracker
+            .Entries<AggregateRoot>()
+            .Where(e => e.Entity.DomainEvents.Any())
+            .Select(e => e.Entity)
+            .ToList();
+
+        var events = aggregates
+            .SelectMany(a => a.DomainEvents)
+            .ToList();
+
+        // Clear before dispatching — so re-entrant saves don't re-dispatch
+        aggregates.ForEach(a => a.ClearDomainEvents());
+
+        foreach (var domainEvent in events)
+            await _publisher.Publish(domainEvent, ct);
+    }
+}
+```
+
+---
+
+## Writing Domain Event Handlers
+
+Each handler is a separate class implementing `INotificationHandler<TEvent>`:
+
+```csharp
+// Application/Orders/EventHandlers/OrderConfirmedEmailHandler.cs
+public sealed class OrderConfirmedEmailHandler
+    : INotificationHandler<OrderConfirmedEvent>
+{
+    private readonly ICustomerRepository _customers;
+    private readonly IEmailService _emailService;
+
+    public OrderConfirmedEmailHandler(
+        ICustomerRepository customers,
+        IEmailService emailService)
+    {
+        _customers = customers;
+        _emailService = emailService;
+    }
+
+    public async Task Handle(OrderConfirmedEvent notification, CancellationToken ct)
+    {
+        var customer = await _customers.GetByIdAsync(notification.CustomerId, ct);
+        if (customer is null) return;
+
+        await _emailService.SendAsync(
+            to: customer.Email,
+            subject: "Your order is confirmed!",
+            body: $"Order {notification.OrderId} for {notification.Total} has been confirmed.",
+            ct: ct);
+    }
+}
+
+// Application/Orders/EventHandlers/OrderConfirmedInventoryHandler.cs
+public sealed class OrderConfirmedInventoryHandler
+    : INotificationHandler<OrderConfirmedEvent>
+{
+    private readonly IInventoryService _inventory;
+
+    public OrderConfirmedInventoryHandler(IInventoryService inventory)
+        => _inventory = inventory;
+
+    public async Task Handle(OrderConfirmedEvent notification, CancellationToken ct)
+    {
+        // Reserve inventory for each line — different handler, same event
+        // MediatR publishes to ALL handlers for a given event
+        await _inventory.ReserveForOrderAsync(notification.OrderId, ct);
+    }
+}
+```
+
+MediatR dispatches `OrderConfirmedEvent` to both handlers concurrently (or sequentially, depending on configuration). The aggregate doesn't know either handler exists.
+
+---
+
+## Domain Events vs Integration Events
+
+<ComparisonTable
+  headers={["Aspect", "Domain Event", "Integration Event"]}
+  rows={[
+    ["Scope", "Within a single bounded context / service", "Across bounded contexts or services"],
+    ["Transport", "In-process (MediatR IPublisher)", "Message broker (RabbitMQ, Azure Service Bus, Kafka)"],
+    ["Timing", "Dispatched after DB commit, same process", "Published after DB commit, over the wire"],
+    ["Delivery guarantee", "At-most-once (in-process)", "At-least-once (broker guarantees, idempotency needed)"],
+    ["Schema coupling", "Can reference domain types directly", "Must use serializable DTOs, versioned carefully"],
+    ["When to use", "Decoupling side effects within same service", "Notifying external services of state changes"],
+    ["Example", "OrderConfirmedEvent → send email (same service)", "OrderConfirmedIntegrationEvent → notify Shipping service"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**The Dispatch Timing Problem: Before or After Commit?**
+
+There are two schools of thought on when to dispatch domain events:
+
+**Dispatch AFTER commit** (recommended): Events only fire if the DB write succeeds. No spurious emails/notifications for rolled-back transactions. The risk: if dispatch fails (e.g., email service down), the event is lost. Mitigate with the Outbox Pattern — persist events to a DB table in the same transaction, then a background worker publishes them.
+
+**Dispatch BEFORE commit**: Events can trigger changes that participate in the same transaction. Simpler consistency, but if the commit fails, side effects may have already fired (partial failure).
+
+For in-process domain events (same service, same DB), dispatching after commit is generally correct. For integration events going to external systems, you must use the Outbox Pattern to guarantee at-least-once delivery — storing the integration event in the DB atomically with the state change, then a background job publishes it to the message broker.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Domain events are the same as integration events"
+  reality="Domain events are in-process signals about what happened in the domain — dispatched via MediatR within the same service. Integration events are messages sent over a broker (Service Bus, Kafka) to other services. Often, a domain event handler creates and publishes an integration event. They are two separate patterns serving different purposes."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Implement domain events (.NET Microservices Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation" },
+    { label: "eShopOnContainers — domain events implementation", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+    { label: "MediatR notifications", url: "https://github.com/jbogard/MediatR/wiki" },
+  ]}
+/>

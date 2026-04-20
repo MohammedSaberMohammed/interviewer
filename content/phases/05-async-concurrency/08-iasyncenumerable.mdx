@@ -1,24 +1,281 @@
 ---
-title: "IAsyncEnumerable<T>"
+title: "IAsyncEnumerable<T>: Async Streams"
 slug: "iasyncenumerable"
 order: 8
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["IAsyncEnumerable", "async streams", "yield", "await foreach", "C# 8", "streaming", "EF Core"]
+summary: "IAsyncEnumerable<T> lets you yield items asynchronously one at a time — perfect for streaming large datasets without loading everything into memory."
+docsLinks:
+  - label: "Async streams tutorial"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream"
+  - label: "IAsyncEnumerable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1"
+  - label: "Iterating with async foreach"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/iteration-statements#await-foreach"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: All-or-Nothing Async
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before `IAsyncEnumerable<T>` (C# 8 / .NET Core 3.0), async methods returned all results at once:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// OLD PATTERN: loads ALL rows into memory before returning
+public async Task<List<Order>> GetAllOrdersAsync(CancellationToken ct)
+{
+    var orders = new List<Order>();
+    await using var reader = await _db.ExecuteReaderAsync("SELECT * FROM Orders", ct);
+    while (await reader.ReadAsync(ct))
+        orders.Add(MapOrder(reader));
+    return orders; // Returns 1 million orders at once — OOM risk
+}
+
+// Caller has to wait for ALL data before processing any of it
+var orders = await GetAllOrdersAsync(ct);
+foreach (var order in orders) // Only starts here, after full load
+    Process(order);
+```
+
+This has two problems: memory pressure (everything buffered) and latency (processing can't start until everything is loaded).
+
+---
+
+## IAsyncEnumerable\<T\> — Streaming Results
+
+With async streams, results flow one at a time:
+
+```csharp
+// NEW PATTERN: yields rows as they arrive from the database
+public async IAsyncEnumerable<Order> StreamOrdersAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    await using var reader = await _db.ExecuteReaderAsync("SELECT * FROM Orders", ct);
+    while (await reader.ReadAsync(ct))
+        yield return MapOrder(reader); // Each row streamed as it's read
+}
+
+// Caller processes each item as it arrives — no buffering
+await foreach (var order in StreamOrdersAsync(cancellationToken))
+{
+    await ProcessOrderAsync(order, cancellationToken);
+}
+```
+
+The database read and the processing are interleaved. Caller processes row 1 while the DB is reading row 2.
+
+---
+
+## The [EnumeratorCancellation] Attribute
+
+When using `await foreach` with `WithCancellation()`, pass the token correctly:
+
+```csharp
+// Method declares token with [EnumeratorCancellation]
+public async IAsyncEnumerable<Item> GetItemsAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    for (int i = 0; i < 1000; i++)
+    {
+        ct.ThrowIfCancellationRequested(); // Manual check for CPU-bound parts
+        yield return await FetchItemAsync(i, ct);
+    }
+}
+
+// Caller can cancel via WithCancellation()
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+await foreach (var item in GetItemsAsync()
+    .WithCancellation(cts.Token)
+    .ConfigureAwait(false))
+{
+    Process(item);
+}
+```
+
+`[EnumeratorCancellation]` makes the compiler merge the token passed via `WithCancellation()` with the one in the method signature. Without it, you'd have to pass the token directly to the method call.
+
+---
+
+## ConfigureAwait on IAsyncEnumerable
+
+```csharp
+// Library code: suppress context capture on the whole enumeration
+await foreach (var item in source.ConfigureAwait(false))
+{
+    // Each MoveNextAsync() resumes without capturing context
+    Process(item);
+}
+
+// Combine ConfigureAwait and WithCancellation:
+await foreach (var item in source
+    .WithCancellation(ct)
+    .ConfigureAwait(false))
+{
+    Process(item);
+}
+```
+
+---
+
+## Writing a Custom IAsyncEnumerable
+
+```csharp
+// Custom producer: reads messages from a queue asynchronously
+public async IAsyncEnumerable<Message> ReadMessagesAsync(
+    string queueName,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        Message? message = await _queue.TryDequeueAsync(
+            timeout: TimeSpan.FromSeconds(1),
+            cancellationToken: ct);
+
+        if (message is null)
+        {
+            await Task.Delay(100, ct); // Back-off when queue is empty
+            continue;
+        }
+
+        yield return message;
+    }
+}
+
+// Usage in a background service:
+public class MessageProcessor : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await foreach (var msg in ReadMessagesAsync("orders", stoppingToken))
+        {
+            await HandleMessageAsync(msg, stoppingToken);
+        }
+    }
+}
+```
+
+---
+
+## IAsyncEnumerable vs Task\<IEnumerable\<T\>>
+
+<ComparisonTable
+  headers={["", "Task<List<T>>", "IAsyncEnumerable<T>"]}
+  rows={[
+    ["Memory", "All items buffered before first is processed", "One item in memory at a time"],
+    ["Latency to first item", "Wait for all items", "Immediate — first item available as soon as produced"],
+    ["Cancellation", "Cancels the whole fetch", "Cancels mid-stream at any yield point"],
+    ["Error handling", "Exception from method propagates on await", "Exception can occur on any MoveNextAsync()"],
+    ["Best for", "Small result sets, need random access", "Large datasets, streaming, real-time feeds"],
+  ]}
+/>
+
+---
+
+## EF Core Integration
+
+EF Core supports `IAsyncEnumerable<T>` natively via `AsAsyncEnumerable()`:
+
+```csharp
+// Stream all large records without loading into memory
+public async IAsyncEnumerable<Report> ExportReportsAsync(
+    DateTime since,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    // AsAsyncEnumerable() streams rows from the database
+    await foreach (var row in _dbContext.Reports
+        .Where(r => r.CreatedAt >= since)
+        .AsAsyncEnumerable()
+        .WithCancellation(ct))
+    {
+        yield return _mapper.Map<Report>(row);
+    }
+}
+```
+
+<Callout type="warning">
+**DbContext lifetime with async streams**: when streaming from EF Core, the `DbContext` must stay alive for the entire iteration. Don't use `using var context = new MyDbContext()` inside the async iterator — it will be disposed before the caller finishes iterating. Use dependency-injected scoped context and control the scope at the caller level.
 </Callout>
+
+---
+
+<Callout type="senior">
+**Senior Insight: IAsyncEnumerable and backpressure**
+
+`IAsyncEnumerable<T>` provides natural backpressure: the producer's `yield return` doesn't execute until the consumer calls `MoveNextAsync()`. If the consumer is slow (e.g., writing to a slow disk), the producer slows down proportionally — no unbounded buffering.
+
+This is unlike `Channel<T>` or `Subject<T>` where the producer can get ahead of the consumer and fill unbounded memory. For true flow-controlled pipelines with decoupled producer/consumer, combine `Channel<T>` with `IAsyncEnumerable<T>` as covered in lessons 09 and 15.
+
+```csharp
+// IAsyncEnumerable provides implicit backpressure:
+// producer only runs when consumer calls MoveNextAsync()
+public async IAsyncEnumerable<ProcessedItem> ProcessPipelineAsync(
+    IAsyncEnumerable<RawItem> source,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    await foreach (var raw in source.WithCancellation(ct))
+    {
+        // Expensive processing — consumer waits for this
+        var processed = await ExpensiveTransformAsync(raw, ct);
+        yield return processed; // Consumer's MoveNextAsync() unblocks here
+    }
+}
+```
+</Callout>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/iasyncenumerable/challenge-1"
+  title="Spot the Lifetime Bug"
+  description="This EF Core async stream has a common bug. What will happen when the caller iterates it?"
+  code={`[HttpGet("export")]
+public async IAsyncEnumerable\<OrderDto\> ExportOrders(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    using var context = new AppDbContext(_options); // Disposed at end of method?
+
+    await foreach (var order in context.Orders
+        .AsAsyncEnumerable()
+        .WithCancellation(ct))
+    {
+        yield return _mapper.Map\<OrderDto\>(order);
+    }
+}`}
+  options={[
+    "It works correctly — using disposes after the foreach completes",
+    "The DbContext is disposed when the method returns its IAsyncEnumerable<T>, before the caller iterates — causing ObjectDisposedException",
+    "It will deadlock because yield return cannot be used with using",
+    "It works but leaks the DbContext because yield prevents disposal"
+  ]}
+  correctAnswer={0}
+  explanation="Actually this code is correct! With async iterators (IAsyncEnumerable<T>), the 'using' block's disposal is deferred — the using block exits (and context.Dispose() is called) only AFTER the entire foreach loop completes, not when the iterator method body returns. The iterator method body doesn't run to its end until MoveNextAsync() returns false. So the DbContext stays alive for the full iteration. The real bug would be if you used a scoped DbContext from DI and the scope was disposed externally before iteration completed."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/iasyncenumerable/quiz-1"
+  question="What does [EnumeratorCancellation] do on an IAsyncEnumerable parameter?"
+  options={[
+    "It makes the parameter required — the caller must always pass a CancellationToken",
+    "It tells the compiler to merge the token passed via WithCancellation() at the call site with the parameter's token",
+    "It registers an automatic cancellation callback on the returned IAsyncEnumerable",
+    "It has no runtime effect — it is documentation only"
+  ]}
+  correctAnswer={1}
+  explanation="[EnumeratorCancellation] is a compiler hint. When a caller uses .WithCancellation(token) on the returned IAsyncEnumerable<T>, the compiler synthesizes code to pass that token to the decorated parameter. Without this attribute, the token passed via WithCancellation() would be ignored by the iterator method — a common bug. With it, both the direct parameter token and the WithCancellation() token are combined via a linked token source."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async streams tutorial", url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream" },
+    { label: "IAsyncEnumerable\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1" },
+    { label: "EnumeratorCancellationAttribute", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.enumeratorcancellationattribute" },
+    { label: "EF Core async streaming", url: "https://learn.microsoft.com/en-us/ef/core/querying/async" },
+  ]}
+/>

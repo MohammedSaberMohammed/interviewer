@@ -3,22 +3,317 @@ title: "Problem Details (RFC 7807)"
 slug: "problem-details"
 order: 18
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["problem details", "RFC 7807", "ProblemDetails", "IProblemDetailsService", "error responses", "asp.net core 7"]
+summary: "Problem Details is the IETF standard for HTTP API error responses. ASP.NET Core 7 made it the default error format — know how to use and extend it for consistent, machine-readable errors."
+docsLinks:
+  - label: "Handle errors in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/error-handling"
+  - label: "Problem Details for HTTP APIs (RFC 7807)"
+    url: "https://datatracker.ietf.org/doc/html/rfc7807"
+  - label: "IProblemDetailsService"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/error-handling#iproblemdetailsservice"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Problem Details?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+RFC 7807 defines a standard JSON format for HTTP API error responses. Instead of ad-hoc error shapes, all errors follow the same schema that clients can parse predictably:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```json
+{
+  "type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "The 'email' field must be a valid email address.",
+  "instance": "/api/users",
+  "traceId": "00-1234567890abcdef-abcdef1234567890-00",
+  "errors": {
+    "email": ["The 'email' field is not a valid e-mail address."],
+    "name": ["The 'name' field is required."]
+  }
+}
+```
+
+**Standard fields:**
+- `type` — URI reference to the problem type (human-readable doc)
+- `title` — Short human-readable summary (stable across instances)
+- `status` — HTTP status code
+- `detail` — Human-readable explanation for this specific occurrence
+- `instance` — URI identifying this specific occurrence
+- Additional members — custom extensions for your domain
+
+---
+
+## ASP.NET Core 7: Problem Details as Default
+
+ASP.NET Core 7 made `ProblemDetails` the default error format with `AddProblemDetails()`:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddProblemDetails(options =>
+{
+    // Customize the problem details for all responses
+    options.CustomizeProblemDetails = ctx =>
+    {
+        ctx.ProblemDetails.Instance =
+            $"{ctx.HttpContext.Request.Method} {ctx.HttpContext.Request.Path}";
+
+        ctx.ProblemDetails.Extensions["traceId"] =
+            Activity.Current?.Id ?? ctx.HttpContext.TraceIdentifier;
+
+        ctx.ProblemDetails.Extensions["environment"] =
+            ctx.HttpContext.RequestServices
+                .GetRequiredService<IHostEnvironment>().EnvironmentName;
+
+        // Add request ID for distributed tracing
+        if (ctx.HttpContext.Request.Headers.TryGetValue("X-Correlation-Id", out var correlationId))
+            ctx.ProblemDetails.Extensions["correlationId"] = correlationId.ToString();
+    };
+});
+
+builder.Services.AddControllers(); // [ApiController] uses ProblemDetails for validation errors
+
+var app = builder.Build();
+
+// UseExceptionHandler with ProblemDetails for all unhandled exceptions
+app.UseExceptionHandler();  // Uses IProblemDetailsService when AddProblemDetails() is called
+app.UseStatusCodePages();   // Converts 404, 405, etc. to ProblemDetails
+```
+
+---
+
+## Returning ProblemDetails from Controllers
+
+```csharp
+[ApiController]
+[Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    // ControllerBase has built-in helpers
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<OrderDto>> GetById(int id, IOrderService service)
+    {
+        var order = await service.GetByIdAsync(id);
+        if (order is null)
+            return NotFound(); // Returns ProblemDetails 404 automatically with [ApiController]
+
+        return Ok(order);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create(CreateOrderRequest request, IOrderService service)
+    {
+        // Custom problem details
+        if (!await service.IsInventoryAvailableAsync(request))
+        {
+            return Problem(
+                type: "https://api.myapp.com/errors/insufficient-inventory",
+                title: "Insufficient Inventory",
+                detail: "The requested quantity is not available.",
+                statusCode: StatusCodes.Status409Conflict,
+                instance: HttpContext.Request.Path);
+        }
+
+        // Validation problem (for manual validation scenarios)
+        if (request.TotalAmount < 0)
+        {
+            ModelState.AddModelError("totalAmount", "Amount cannot be negative");
+            return ValidationProblem(); // Returns ValidationProblemDetails (extends ProblemDetails)
+        }
+
+        var order = await service.CreateAsync(request);
+        return CreatedAtAction(nameof(GetById), new { id = order.Id }, order);
+    }
+}
+```
+
+---
+
+## IProblemDetailsService: Writing Problems from Anywhere
+
+```csharp
+// Middleware or service can use IProblemDetailsService directly
+public class GlobalExceptionMiddleware : IMiddleware
+{
+    private readonly IProblemDetailsService _problemDetails;
+    private readonly ILogger<GlobalExceptionMiddleware> _logger;
+
+    public GlobalExceptionMiddleware(
+        IProblemDetailsService problemDetails,
+        ILogger<GlobalExceptionMiddleware> logger)
+    {
+        _problemDetails = problemDetails;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (NotFoundException ex)
+        {
+            _logger.LogWarning(ex, "Resource not found");
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await _problemDetails.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                ProblemDetails =
+                {
+                    Type = "https://api.myapp.com/errors/not-found",
+                    Title = "Resource Not Found",
+                    Detail = ex.Message,
+                    Status = 404
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unhandled exception");
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await _problemDetails.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                Exception = ex,
+                ProblemDetails =
+                {
+                    Type = "https://api.myapp.com/errors/server-error",
+                    Title = "Internal Server Error"
+                }
+            });
+        }
+    }
+}
+```
+
+---
+
+## Custom Problem Types with Extensions
+
+```csharp
+// Extend ProblemDetails for domain-specific errors
+public class ValidationProblemDetailsExtended : ProblemDetails
+{
+    public IReadOnlyDictionary<string, string[]> ValidationErrors { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+
+    public ValidationProblemDetailsExtended(
+        ModelStateDictionary modelState,
+        string correlationId)
+    {
+        Type = "https://api.myapp.com/errors/validation-failed";
+        Title = "Validation Failed";
+        Status = StatusCodes.Status422UnprocessableEntity;
+        CorrelationId = correlationId;
+        ValidationErrors = modelState
+            .Where(e => e.Value?.Errors.Count > 0)
+            .ToDictionary(
+                k => k.Key,
+                v => v.Value!.Errors.Select(e => e.ErrorMessage).ToArray());
+
+        Extensions["correlationId"] = correlationId;
+        Extensions["errorCount"] = ValidationErrors.Sum(e => e.Value.Length);
+    }
+}
+```
+
+---
+
+## Minimal API Problem Details
+
+```csharp
+// Results.Problem() and TypedResults.Problem() for Minimal APIs
+app.MapGet("/products/{id:int}", async (int id, IProductService svc) =>
+{
+    var product = await svc.GetByIdAsync(id);
+    if (product is null)
+        return Results.Problem(
+            type: "https://api.myapp.com/errors/product-not-found",
+            title: "Product Not Found",
+            detail: $"No product exists with ID {id}",
+            statusCode: 404);
+
+    return Results.Ok(product);
+});
+
+// ValidationProblem for validation errors
+app.MapPost("/orders", async (CreateOrderRequest request, IValidator<CreateOrderRequest> validator) =>
+{
+    var result = await validator.ValidateAsync(request);
+    if (!result.IsValid)
+        return Results.ValidationProblem(result.ToDictionary()); // Returns 400 ValidationProblemDetails
+
+    return Results.Ok();
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Problem Type URIs and API Documentation**
+
+The `type` field in ProblemDetails should be a URI that resolves to human-readable documentation about the error. This turns error responses into self-documenting API contracts:
+
+```csharp
+// Define error types as constants — not magic strings
+public static class ProblemTypes
+{
+    private const string BaseUri = "https://api.myapp.com/errors";
+
+    public const string NotFound = $"{BaseUri}/not-found";
+    public const string ValidationFailed = $"{BaseUri}/validation-failed";
+    public const string InsufficientInventory = $"{BaseUri}/insufficient-inventory";
+    public const string PaymentDeclined = $"{BaseUri}/payment-declined";
+    public const string Unauthorized = $"{BaseUri}/unauthorized";
+    public const string RateLimitExceeded = $"{BaseUri}/rate-limit-exceeded";
+}
+
+// Usage
+return Problem(
+    type: ProblemTypes.InsufficientInventory,
+    title: "Insufficient Inventory",
+    detail: $"Only {available} units available for product {productId}",
+    statusCode: 409,
+    instance: HttpContext.Request.Path);
+```
+
+Host documentation at those URIs (or return 404 with a friendly message) so developers can navigate directly from an error response to its documentation. This is the full RFC 7807 intent — problem types as stable machine-readable identifiers, not just strings.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/problem-details/quiz-1"
+  question="What is the difference between ProblemDetails and ValidationProblemDetails?"
+  options={[
+    "They are the same type — ValidationProblemDetails is just an alias",
+    "ValidationProblemDetails extends ProblemDetails with an Errors dictionary mapping field names to error arrays, and uses status 400 by default",
+    "ValidationProblemDetails is used for 500 errors, ProblemDetails for 400 errors",
+    "ProblemDetails requires a type URI, ValidationProblemDetails does not"
+  ]}
+  correctAnswer={1}
+  explanation="ValidationProblemDetails extends ProblemDetails with an Errors property (Dictionary<string, string[]>) that maps field names to their validation error messages — matching the shape returned by [ApiController] on model validation failure. It defaults to HTTP 400 Bad Request. ProblemDetails is the base class for all problem types with just type, title, status, detail, and instance."
+/>
+
+---
+
+<MythBuster
+  myth="You should return a custom JSON error format tailored to your app's needs instead of RFC 7807"
+  truth="Custom error formats force every API consumer to write custom error parsing code. RFC 7807 is supported by HTTP client libraries, API gateways, and monitoring tools. You can extend ProblemDetails with additional fields while keeping the standard shape. Standard types also make it easier to communicate error semantics with client teams — both know what 'type', 'title', and 'detail' mean."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Handle errors in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/error-handling" },
+    { label: "Problem Details: IProblemDetailsService", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/error-handling#iproblemdetailsservice" },
+    { label: "RFC 7807: Problem Details for HTTP APIs", url: "https://datatracker.ietf.org/doc/html/rfc7807" },
+    { label: "ValidationProblemDetails", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.mvc.validationproblemdetails" },
+  ]}
+/>

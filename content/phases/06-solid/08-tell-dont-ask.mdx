@@ -3,22 +3,302 @@ title: "Tell-Don't-Ask"
 slug: "tell-dont-ask"
 order: 8
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["Tell-Don't-Ask", "anemic domain model", "encapsulation", "OOP", "design principles"]
+summary: "Tell objects what to do rather than asking them for data to make decisions yourself. Learn to push behavior into domain objects, spot anemic domain models, and write richer, more encapsulated C# classes."
+docsLinks:
+  - label: "Object-oriented programming — C# guide"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/"
+  - label: "Encapsulation (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/encapsulation"
+  - label: ".NET domain-driven design patterns"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Tell-Don't-Ask?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Tell-Don't-Ask (TDA) is an object-oriented principle that says:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+> **Tell** an object what to do. Don't **ask** it for data, make a decision, and then tell it the result.
+
+The "ask" pattern pulls data out of an object, makes a decision in external code, and acts on the object from outside. The "tell" pattern pushes the decision-making responsibility into the object itself, where it belongs.
+
+TDA directly supports encapsulation: if you ask for data to make a decision, the class's internal data is effectively public knowledge — you have broken encapsulation even if the property has a `private set`.
+
+---
+
+## The Ask Pattern: Anemic Domain Model
+
+```csharp
+// BAD: Anemic domain model — Order is just a data bag
+// All behavior lives in the service, not in the object that owns the data
+
+public class Order
+{
+    public int Id { get; set; }
+    public OrderStatus Status { get; set; }
+    public List<LineItem> LineItems { get; set; } = new();
+    public decimal TotalAmount { get; set; }
+    public DateTime? ShippedAt { get; set; }
+    public string TrackingNumber { get; set; } = "";
+}
+
+// The service asks Order for its data, makes decisions, then modifies Order
+public class OrderService
+{
+    public void ShipOrder(Order order, string trackingNumber)
+    {
+        // Asking: is the order confirmed?
+        if (order.Status != OrderStatus.Confirmed)
+            throw new InvalidOperationException("Only confirmed orders can be shipped");
+
+        // Asking: does it have items?
+        if (!order.LineItems.Any())
+            throw new InvalidOperationException("Cannot ship empty order");
+
+        // Making decisions and setting data from outside
+        order.Status = OrderStatus.Shipped;
+        order.ShippedAt = DateTime.UtcNow;
+        order.TrackingNumber = trackingNumber;
+    }
+
+    public void CancelOrder(Order order, string reason)
+    {
+        // Asking again
+        if (order.Status == OrderStatus.Shipped)
+            throw new InvalidOperationException("Cannot cancel a shipped order");
+
+        if (order.Status == OrderStatus.Cancelled)
+            throw new InvalidOperationException("Order is already cancelled");
+
+        // Setting from outside
+        order.Status = OrderStatus.Cancelled;
+    }
+}
+```
+
+The `Order` class is a **data bag** — it holds data but no behavior. The service duplicates business rules across methods and must know Order's internal state to make every decision. This scatters business logic across the codebase.
+
+---
+
+## The Tell Pattern: Rich Domain Model
+
+```csharp
+// GOOD: Rich domain model — Order knows its own business rules
+
+public class Order
+{
+    public int Id { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public DateTime? ShippedAt { get; private set; }
+    public string TrackingNumber { get; private set; } = "";
+
+    private readonly List<LineItem> _lineItems = new();
+    public IReadOnlyList<LineItem> LineItems => _lineItems;
+
+    // Tell the order to add an item — it validates itself
+    public void AddLineItem(LineItem item)
+    {
+        if (item is null) throw new ArgumentNullException(nameof(item));
+        if (Status != OrderStatus.Draft)
+            throw new InvalidOperationException("Can only add items to a draft order");
+        _lineItems.Add(item);
+    }
+
+    // Tell the order to confirm itself — it knows the rules
+    public void Confirm()
+    {
+        if (!_lineItems.Any())
+            throw new InvalidOperationException("Cannot confirm an empty order");
+        if (Status != OrderStatus.Draft)
+            throw new InvalidOperationException("Only draft orders can be confirmed");
+
+        Status = OrderStatus.Confirmed;
+    }
+
+    // Tell the order to ship — it validates its own state
+    public void Ship(string trackingNumber)
+    {
+        if (string.IsNullOrWhiteSpace(trackingNumber))
+            throw new ArgumentException("Tracking number is required", nameof(trackingNumber));
+        if (Status != OrderStatus.Confirmed)
+            throw new InvalidOperationException("Only confirmed orders can be shipped");
+
+        Status = OrderStatus.Shipped;
+        ShippedAt = DateTime.UtcNow;
+        TrackingNumber = trackingNumber;
+    }
+
+    // Tell the order to cancel — it knows when it is too late
+    public void Cancel()
+    {
+        if (Status == OrderStatus.Shipped)
+            throw new InvalidOperationException("Cannot cancel a shipped order");
+        if (Status == OrderStatus.Cancelled)
+            throw new InvalidOperationException("Order is already cancelled");
+
+        Status = OrderStatus.Cancelled;
+    }
+}
+
+// The service becomes trivial — it just coordinates, not decides
+public class OrderService
+{
+    private readonly IOrderRepository _repository;
+
+    public OrderService(IOrderRepository repository) => _repository = repository;
+
+    public void ShipOrder(int orderId, string trackingNumber)
+    {
+        var order = _repository.GetById(orderId)
+            ?? throw new KeyNotFoundException($"Order {orderId} not found");
+
+        order.Ship(trackingNumber); // TELL — Order handles the validation
+        _repository.Save(order);
+    }
+
+    public void CancelOrder(int orderId)
+    {
+        var order = _repository.GetById(orderId)
+            ?? throw new KeyNotFoundException($"Order {orderId} not found");
+
+        order.Cancel(); // TELL — Order handles the validation
+        _repository.Save(order);
+    }
+}
+```
+
+The service no longer needs to know **anything** about the internal rules of Order. Business rules are in one place: inside `Order`.
+
+---
+
+## Spotting the Ask Pattern in Code
+
+```csharp
+// These patterns signal "asking" instead of "telling":
+
+// 1. Reading state to make a decision about the object
+if (account.Balance >= amount)
+    account.Balance -= amount;       // ASK then act
+// vs.
+account.Withdraw(amount);            // TELL
+
+// 2. Reading multiple properties to compute something the class should compute
+decimal discount = product.IsOnSale
+    ? product.OriginalPrice * product.DiscountPercent / 100m
+    : 0m;                            // ASK (3 properties) to compute
+// vs.
+decimal discount = product.CurrentDiscount(); // TELL
+
+// 3. Type-checking to decide behavior (also an LSP smell)
+if (shape is Circle c)
+    area = Math.PI * c.Radius * c.Radius;
+else if (shape is Rectangle r)
+    area = r.Width * r.Height;      // ASK what type, then compute
+// vs.
+area = shape.Area();                 // TELL
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: TDA and Domain-Driven Design**
+
+Tell-Don't-Ask is the practical OOP expression of the DDD principle of **rich domain models**. Eric Evans' seminal Domain-Driven Design book argues that the domain model should contain both data *and* behavior — the rules that govern that data.
+
+The anemic domain model — data bags + service classes that do all the work — is one of the most common patterns in .NET codebases and one of the most-criticized by experienced engineers. Martin Fowler calls it an anti-pattern because it distributes business logic across services rather than encapsulating it in the domain objects that own the data.
+
+In practice, the trade-off is real: anemic models are easy to serialize, easy to map with ORMs like Entity Framework, and easy to reason about in isolation. This is why they proliferate in CRUD-heavy apps.
+
+The right balance: apply TDA and rich models in the **core domain** — the parts of the system where business rules are complex, frequently evolving, and central to the application's purpose. For simple CRUD operations on reference data, an anemic model with a thin service may be pragmatic.
+
+Entity Framework Core works well with rich domain models when you use **private setters** (EF can set them via reflection) and configure navigation properties in `OnModelCreating` rather than exposing public collections directly.
 </Callout>
+
+---
+
+<MythBuster
+  myth="TDA means services should never read data from domain objects"
+  reality="TDA does not prohibit reading data from objects. It targets the pattern of reading data specifically to make a decision that should be made inside the object. Reading `order.TrackingNumber` to display it in a view is perfectly fine — you are consuming the result of an object's state, not interrogating it to make a mutation decision on its behalf. The smell is: reading state → making a decision → calling a setter or mutating the object."
+/>
+
+---
+
+## Code Challenge: Apply Tell-Don't-Ask
+
+<CodeChallenge
+  id="06-solid/tell-dont-ask/challenge-1"
+  title="Refactor to Tell-Don't-Ask"
+  description="This BankAccount code uses the Ask pattern. Which refactoring correctly applies Tell-Don't-Ask?"
+  code={`// Current code (Ask pattern):
+public class BankAccount
+{
+    public decimal Balance { get; set; }
+    public bool IsActive { get; set; }
+}
+
+public class AccountService
+{
+    public void Withdraw(BankAccount account, decimal amount)
+    {
+        if (!account.IsActive)
+            throw new InvalidOperationException("Account is not active");
+        if (account.Balance < amount)
+            throw new InvalidOperationException("Insufficient funds");
+
+        account.Balance -= amount;
+    }
+}`}
+  options={[
+    "Add a CanWithdraw(decimal amount) method to BankAccount that returns bool",
+    "Move Withdraw(decimal amount) into BankAccount with private setters on Balance and IsActive",
+    "Add a static BankAccount.Withdraw(BankAccount account, decimal amount) method",
+    "Make Balance and IsActive internal instead of public"
+  ]}
+  correctAnswer={1}
+  explanation="Moving Withdraw(decimal amount) into BankAccount is the correct Tell-Don't-Ask refactoring. The account owns its Balance and IsActive state, so it should also own the rules about when withdrawal is valid. AccountService then just tells the account: account.Withdraw(amount). Private setters ensure nothing external can bypass the rules. Option A (CanWithdraw) is still the Ask pattern — you still make the decision externally. Option C (static method) is just moving code around without encapsulating it. Option D (internal) does not move behavior into the class."
+/>
+
+---
+
+<Quiz
+  id="06-solid/tell-dont-ask/quiz-1"
+  questions={[
+    {
+      question: "What is an anemic domain model?",
+      options: [
+        "A domain model with too many classes",
+        "A domain model where objects hold data but all behavior lives in separate service classes",
+        "A domain model that uses interfaces for every type",
+        "A domain model optimized for database performance"
+      ],
+      correctAnswer: 1,
+      explanation: "An anemic domain model has domain objects (Order, Customer, Product) that are essentially data containers — only properties, no meaningful business methods. All business logic lives in service classes that reach into the domain objects, read their state, make decisions, and set properties. This scatters business rules across the codebase and violates TDA and encapsulation."
+    },
+    {
+      question: "Which of these is NOT an Ask pattern violation?",
+      options: [
+        "Reading order.Status to decide whether to call order.Cancel()",
+        "Reading order.Id to pass it to a logging statement",
+        "Reading account.Balance to decide whether to call account.Debit()",
+        "Reading product.IsOnSale to compute a discount in a service method"
+      ],
+      correctAnswer: 1,
+      explanation: "Reading order.Id to pass to a logging statement is fine — you are consuming the object's data for display/reporting purposes, not making a decision about how to mutate it. The Ask pattern anti-pattern is specifically: read state → make a decision → mutate the same object. Reading data to display it, log it, or pass to another system is normal and expected."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Object-oriented programming in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/" },
+    { label: "Encapsulation (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/encapsulation" },
+    { label: "Domain model in microservices architecture", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model" },
+    { label: "DDD aggregate design patterns", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model" },
+  ]}
+/>

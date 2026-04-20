@@ -1,24 +1,298 @@
 ---
-title: "using / using var / await using"
+title: "using Statements, using Declarations, and await using"
 slug: "using-statements"
 order: 6
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["using", "IDisposable", "IAsyncDisposable", "await using", "resource management", "C# 8"]
+summary: "The using statement is the foundation of deterministic resource cleanup in C#. Learn the difference between using statements and declarations, how they compile, and the async using pattern."
+docsLinks:
+  - label: "using statement (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/using"
+  - label: "IAsyncDisposable interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.iasyncdisposable"
+  - label: "Implement DisposeAsync method"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-disposeasync"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The using Statement: What It Compiles To
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The `using` statement is syntactic sugar for a try/finally block. The compiler guarantees `Dispose()` is called even when an exception is thrown:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// What you write:
+using (var conn = new SqlConnection(connectionString))
+{
+    conn.Open();
+    // ... use conn
+} // Dispose() called here
+
+// What the compiler generates (approximately):
+SqlConnection conn = new SqlConnection(connectionString);
+try
+{
+    conn.Open();
+    // ... use conn
+}
+finally
+{
+    // Dispose is called even if an exception is thrown above
+    if (conn != null)
+        ((IDisposable)conn).Dispose();
+}
+```
+
+The `finally` block guarantees execution regardless of how the `try` block exits — normal return, exception, or even a `goto`.
+
+---
+
+## using Declarations (C# 8.0+)
+
+C# 8 introduced **using declarations** — the variable is disposed when it goes out of scope (end of the enclosing block), without the extra nesting level:
+
+```csharp
+// Classic using statement — adds a nesting level
+public void ProcessFile(string path)
+{
+    using (var file = File.OpenRead(path))
+    using (var reader = new StreamReader(file))
+    {
+        var content = reader.ReadToEnd();
+        // Process content...
+    } // Both disposed here
+}
+
+// C# 8 using declaration — cleaner, same semantics
+public void ProcessFileModern(string path)
+{
+    using var file = File.OpenRead(path);
+    using var reader = new StreamReader(file);
+    // No extra nesting needed
+
+    var content = reader.ReadToEnd();
+    // Process content...
+} // Both disposed here at end of method
+
+// IMPORTANT: disposal order is REVERSE of declaration order
+// reader is disposed FIRST, then file — same as nested using statements
+```
+
+The using declaration compiles to the same try/finally pattern — the scope just extends to the end of the enclosing block rather than an explicit `{ }`.
+
+---
+
+## Nested using and Disposal Order
+
+```csharp
+// Disposal always happens in reverse acquisition order
+public async Task ExportDataAsync(string outputPath)
+{
+    using var file = File.Create(outputPath);    // acquired 1st
+    using var gzip = new GZipStream(file, CompressionLevel.Optimal); // 2nd
+    using var writer = new StreamWriter(gzip);   // 3rd
+
+    // Disposal: writer → gzip → file (reverse order)
+    // This is critical: GZipStream must flush before FileStream closes,
+    // and StreamWriter must flush before GZipStream disposes
+
+    await foreach (var record in GetRecordsAsync())
+    {
+        await writer.WriteLineAsync(record.ToString());
+    }
+} // writer.Dispose(), then gzip.Dispose(), then file.Dispose()
+```
+
+---
+
+## await using: Async Disposal
+
+When a resource needs async cleanup, use `await using` with `IAsyncDisposable`:
+
+```csharp
+// IAsyncDisposable: async cleanup for resources that need it
+public interface IAsyncDisposable
+{
+    ValueTask DisposeAsync();
+}
+
+// await using — calls DisposeAsync() with await
+public async Task ProcessWithAsyncResourceAsync()
+{
+    await using var session = new DatabaseSession(connectionString);
+    // DisposeAsync() is awaited at scope end
+
+    var results = await session.QueryAsync("SELECT ...");
+    return results;
+}
+
+// Compiles to approximately:
+DatabaseSession session = new DatabaseSession(connectionString);
+try
+{
+    var results = await session.QueryAsync("SELECT ...");
+    return results;
+}
+finally
+{
+    if (session != null)
+        await ((IAsyncDisposable)session).DisposeAsync();
+}
+```
+
+---
+
+## When a Type Implements Both IDisposable and IAsyncDisposable
+
+```csharp
+// Many BCL types implement both — prefer async when in async context
+var writer = new StreamWriter(path); // implements both
+
+// In async context — use await using:
+await using var asyncWriter = new StreamWriter(path); // DisposeAsync() called
+
+// In sync context — use using:
+using var syncWriter = new StreamWriter(path); // Dispose() called
+
+// If you must manually handle both in one object:
+public async ValueTask CleanupAsync(IAsyncDisposable resource)
+{
+    await resource.DisposeAsync();
+}
+public void Cleanup(IDisposable resource)
+{
+    resource.Dispose();
+}
+```
+
+---
+
+## Common Pitfalls
+
+```csharp
+// PITFALL 1: Returning from inside a using — Dispose still runs (fine!)
+public StreamReader GetReader(string path)
+{
+    using var file = File.OpenRead(path);
+    return new StreamReader(file); // WRONG: file disposed before StreamReader uses it
+    // This is a common bug — StreamReader wraps file, but file is disposed on return
+}
+
+// Fix: don't use 'using' when transferring ownership
+public StreamReader GetReader(string path)
+{
+    var file = File.OpenRead(path);       // caller responsible for disposal
+    return new StreamReader(file, leaveOpen: false); // StreamReader owns file
+}
+
+// PITFALL 2: using with null — safe, Dispose won't be called on null
+SqlConnection? conn = MightReturnNull();
+using (conn) // if conn is null, nothing happens — compiler checks
+{
+    conn?.Open(); // still need null check inside
+}
+
+// PITFALL 3: Using a variable after disposal (catches at runtime, not compile time)
+var reader = new StreamReader(path);
+reader.Dispose();
+reader.ReadLine(); // throws ObjectDisposedException
+// Fix: let using statements handle lifetime automatically
+```
+
+---
+
+<MythBuster
+  myth="using statements are just try/finally with Dispose() — they have no performance cost."
+  reality="That's mostly true — the try/finally overhead is negligible. But there are subtleties: (1) In async methods, the compiler turns try/finally blocks into state machine transitions, adding some overhead. (2) using var in async methods can generate slightly different code than using{} blocks. (3) The real cost is that every using statement creates a scope that the compiler must track for definite assignment analysis. These are compiler concerns, not runtime costs — the generated IL is essentially identical."
+  example={`// Both generate essentially the same IL:
+public void WithBlock()
+{
+    using (var r = new StreamReader(path)) { Process(r); }
+}
+
+public void WithDeclaration()
+{
+    using var r = new StreamReader(path);
+    Process(r);
+} // r disposed here
+
+// In async methods, compiler generates state machine — using still works:
+public async Task AsyncWithUsing()
+{
+    using var conn = new SqlConnection(cs);
+    await conn.OpenAsync();
+    // ... await operations across state machine transitions
+} // Dispose() called in finally block of generated state machine`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: IAsyncDisposable in ASP.NET Core DI**
+
+Starting with .NET 6, ASP.NET Core's DI container automatically calls `DisposeAsync()` on scoped and transient services that implement `IAsyncDisposable`. This is transparent but important to understand:
+
+```csharp
+// Register a service that needs async cleanup:
+builder.Services.AddScoped<IMyService, MyService>();
+
+public class MyService : IAsyncDisposable
+{
+    private readonly DbConnection _connection;
+
+    public MyService(DbConnection connection)
+    {
+        _connection = connection;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _connection.DisposeAsync();
+        GC.SuppressFinalize(this);
+    }
+}
+// At the end of each request scope, the DI container calls DisposeAsync()
+// automatically — you don't need to manage this manually.
+
+// GOTCHA: If your service implements IDisposable but not IAsyncDisposable,
+// the DI container will call Dispose() — which is synchronous and blocks.
+// In async contexts (ASP.NET Core), always implement IAsyncDisposable
+// when your cleanup needs to be async.
+
+// Diagnostic: set DOTNET_ENVIRONMENT=Development and check for:
+// "Unhandled exception in DisposeAsync" in console logs
+// This often means an exception in async cleanup that was swallowed
+```
+
+The key rule: in any async-first codebase (ASP.NET Core, Worker Services), prefer `IAsyncDisposable` and `await using` whenever the resource has any async cleanup requirements — database connections, HTTP clients with pending requests, managed queues that need draining.
 </Callout>
+
+---
+
+## Quiz: using Statement Behavior
+
+<Quiz
+  id="04-memory-gc/using-statements/quiz-1"
+  question="You have three using declarations in a method: 'using var a = ...', 'using var b = ...', 'using var c = ...'. In what order are they disposed when the method returns normally?"
+  options={[
+    "a, then b, then c — same order as declaration",
+    "c, then b, then a — reverse order of declaration",
+    "All three simultaneously on the GC thread",
+    "Order is undefined and implementation-specific"
+  ]}
+  correctAnswer={1}
+  explanation="using declarations are disposed in reverse order of declaration — c first, then b, then a. This mirrors the semantics of nested using statements where the innermost (last-declared) is disposed first. The reverse order ensures that resources depending on each other (e.g., a StreamWriter wrapping a GZipStream wrapping a FileStream) are torn down safely: the outer layer flushes before the inner closes."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "using statement (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/statements/using" },
+    { label: "IAsyncDisposable interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.iasyncdisposable" },
+    { label: "Implement DisposeAsync method", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-disposeasync" },
+    { label: "IDisposable interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.idisposable" },
+  ]}
+/>

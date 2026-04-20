@@ -1,24 +1,354 @@
 ---
-title: "CQRS with MediatR"
+title: "CQRS with MediatR: Commands, Queries & Pipeline Behaviors"
 slug: "cqrs-mediatr"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["CQRS", "MediatR", "commands", "queries", "pipeline behaviors", "handlers", "clean architecture"]
+summary: "CQRS separates read and write models. MediatR provides the in-process messaging bus — and its pipeline behaviors let you add cross-cutting concerns without touching handlers."
+docsLinks:
+  - label: "CQRS pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+  - label: ".NET Microservices Architecture — CQRS and DDD"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/apply-simplified-microservice-cqrs-ddd-patterns"
+  - label: "MediatR — Getting started"
+    url: "https://github.com/jbogard/MediatR/wiki"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## CQRS: The Core Idea
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+**CQRS** (Command Query Responsibility Segregation) separates operations that change state (commands) from operations that read state (queries):
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Command**: changes state, returns nothing useful (or just a confirmation/ID)
+- **Query**: reads state, changes nothing
+
+This separation allows you to optimize reads and writes independently, use different data models for each, and apply different validation rules.
+
+```
+User action
+    │
+    ├─→ Command ─→ Domain Model ─→ Write DB (normalized, EF Core entities)
+    │
+    └─→ Query  ─→ Query Model  ─→ Read DB (denormalized, Dapper/raw SQL)
+```
+
+---
+
+## Commands with MediatR
+
+```csharp
+// Application/Orders/Commands/PlaceOrder/PlaceOrderCommand.cs
+// Commands are records: immutable, value-equality, descriptive names
+public sealed record PlaceOrderCommand(
+    Guid CustomerId,
+    string Street,
+    string City,
+    string PostalCode,
+    string Country,
+    IReadOnlyList<PlaceOrderCommandItem> Items) : IRequest<PlaceOrderResult>;
+
+public sealed record PlaceOrderCommandItem(Guid ProductId, int Quantity);
+public sealed record PlaceOrderResult(Guid OrderId);
+
+// Application/Orders/Commands/PlaceOrder/PlaceOrderHandler.cs
+public sealed class PlaceOrderHandler : IRequestHandler<PlaceOrderCommand, PlaceOrderResult>
+{
+    private readonly IOrderRepository _orders;
+    private readonly IProductRepository _products;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public PlaceOrderHandler(
+        IOrderRepository orders,
+        IProductRepository products,
+        IUnitOfWork unitOfWork)
+    {
+        _orders = orders;
+        _products = products;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<PlaceOrderResult> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        var address = new Address(cmd.Street, cmd.City, cmd.PostalCode, cmd.Country);
+        var order = Order.Place(new CustomerId(cmd.CustomerId), address);
+
+        foreach (var item in cmd.Items)
+        {
+            var product = await _products.GetByIdAsync(new ProductId(item.ProductId), ct)
+                ?? throw new NotFoundException($"Product {item.ProductId} not found.");
+
+            order.AddLine(product.Id, product.Name, product.Price, item.Quantity);
+        }
+
+        await _orders.AddAsync(order, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return new PlaceOrderResult(order.Id.Value);
+    }
+}
+```
+
+---
+
+## Queries with MediatR
+
+Queries can bypass the domain model entirely — they often use raw SQL or a separate read model for performance:
+
+```csharp
+// Application/Orders/Queries/GetOrderDetail/GetOrderDetailQuery.cs
+public sealed record GetOrderDetailQuery(Guid OrderId) : IRequest<OrderDetailDto?>;
+
+public sealed record OrderDetailDto(
+    Guid OrderId,
+    string CustomerName,
+    string Status,
+    decimal Total,
+    string Currency,
+    IReadOnlyList<OrderLineDto> Lines);
+
+public sealed record OrderLineDto(
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice,
+    decimal Subtotal);
+
+// Application/Orders/Queries/GetOrderDetail/GetOrderDetailHandler.cs
+public sealed class GetOrderDetailHandler
+    : IRequestHandler<GetOrderDetailQuery, OrderDetailDto?>
+{
+    private readonly IOrderReadRepository _readRepo;
+
+    public GetOrderDetailHandler(IOrderReadRepository readRepo)
+        => _readRepo = readRepo;
+
+    public Task<OrderDetailDto?> Handle(GetOrderDetailQuery query, CancellationToken ct)
+        => _readRepo.GetOrderDetailAsync(query.OrderId, ct);
+}
+
+// Infrastructure/Persistence/ReadRepositories/OrderReadRepository.cs
+// Uses Dapper for fast reads — no EF entities, no domain model
+public sealed class OrderReadRepository : IOrderReadRepository
+{
+    private readonly IDbConnection _db;
+
+    public OrderReadRepository(IDbConnection db) => _db = db;
+
+    public async Task<OrderDetailDto?> GetOrderDetailAsync(Guid orderId, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT
+                o.Id           AS OrderId,
+                c.FullName     AS CustomerName,
+                o.Status,
+                o.TotalAmount  AS Total,
+                o.Currency,
+                ol.ProductName,
+                ol.Quantity,
+                ol.UnitPrice,
+                ol.UnitPrice * ol.Quantity AS Subtotal
+            FROM Orders o
+            JOIN Customers c ON c.Id = o.CustomerId
+            JOIN OrderLines ol ON ol.OrderId = o.Id
+            WHERE o.Id = @orderId
+            """;
+
+        var lookup = new Dictionary<Guid, OrderDetailDto>();
+
+        await _db.QueryAsync<OrderDetailDto, OrderLineDto, OrderDetailDto>(
+            sql,
+            (order, line) =>
+            {
+                if (!lookup.TryGetValue(order.OrderId, out var dto))
+                {
+                    dto = order with { Lines = new List<OrderLineDto>() };
+                    lookup[order.OrderId] = dto;
+                }
+                ((List<OrderLineDto>)dto.Lines).Add(line);
+                return dto;
+            },
+            new { orderId },
+            splitOn: "ProductName");
+
+        return lookup.Values.FirstOrDefault();
+    }
+}
+```
+
+---
+
+## Pipeline Behaviors: Cross-Cutting Concerns
+
+MediatR pipeline behaviors run before and after every handler — perfect for logging, validation, transactions, and performance monitoring:
+
+```csharp
+// Application/Common/Behaviors/ValidationBehavior.cs
+public sealed class ValidationBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    private readonly IEnumerable<IValidator<TRequest>> _validators;
+
+    public ValidationBehavior(IEnumerable<IValidator<TRequest>> validators)
+        => _validators = validators;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken ct)
+    {
+        if (!_validators.Any())
+            return await next();
+
+        var context = new ValidationContext<TRequest>(request);
+        var failures = _validators
+            .Select(v => v.Validate(context))
+            .SelectMany(r => r.Errors)
+            .Where(f => f is not null)
+            .ToList();
+
+        if (failures.Any())
+            throw new ValidationException(failures);
+
+        return await next();
+    }
+}
+
+// Application/Common/Behaviors/LoggingBehavior.cs
+public sealed class LoggingBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
+
+    public LoggingBehavior(ILogger<LoggingBehavior<TRequest, TResponse>> logger)
+        => _logger = logger;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken ct)
+    {
+        var name = typeof(TRequest).Name;
+        _logger.LogInformation("Handling {RequestName}", name);
+
+        var sw = Stopwatch.StartNew();
+        var response = await next();
+        sw.Stop();
+
+        if (sw.ElapsedMilliseconds > 500)
+            _logger.LogWarning("Slow request: {RequestName} took {Elapsed}ms", name, sw.ElapsedMilliseconds);
+        else
+            _logger.LogInformation("Handled {RequestName} in {Elapsed}ms", name, sw.ElapsedMilliseconds);
+
+        return response;
+    }
+}
+
+// Application/Common/Behaviors/TransactionBehavior.cs
+// Only runs for commands (marked with ITransactional marker interface)
+public sealed class TransactionBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>, ITransactional
+{
+    private readonly IUnitOfWork _unitOfWork;
+
+    public TransactionBehavior(IUnitOfWork unitOfWork) => _unitOfWork = unitOfWork;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken ct)
+    {
+        await using var tx = await _unitOfWork.BeginTransactionAsync(ct);
+        try
+        {
+            var response = await next();
+            await tx.CommitAsync(ct);
+            return response;
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
+}
+```
+
+```csharp
+// Program.cs / DI registration — order matters!
+builder.Services.AddMediatR(cfg =>
+{
+    cfg.RegisterServicesFromAssembly(typeof(PlaceOrderHandler).Assembly);
+
+    // Pipeline behaviors run in registration order (outer to inner)
+    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+    cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(TransactionBehavior<,>));
+});
+
+// FluentValidation for PlaceOrderCommand
+builder.Services.AddValidatorsFromAssembly(typeof(PlaceOrderHandler).Assembly);
+```
+
+---
+
+## Pipeline Execution Order
+
+```
+HTTP Request
+    │
+    ▼
+Controller.Post()
+    │
+    ▼
+ISender.Send(PlaceOrderCommand)
+    │
+    ▼
+LoggingBehavior.Handle()          ← outer
+    │
+    ▼
+ValidationBehavior.Handle()       ← validates before handler runs
+    │
+    ▼
+TransactionBehavior.Handle()      ← wraps handler in transaction
+    │
+    ▼
+PlaceOrderHandler.Handle()        ← actual business logic
+    │
+    ▲ (response flows back up through behaviors)
+```
+
+---
+
+<Callout type="senior">
+**CQRS Does Not Require Separate Databases**
+
+Full CQRS with separate read/write databases (Event Sourcing, read projections) is the extreme version and comes with significant operational complexity. Most teams get 80% of the benefit from "logical CQRS" — just separating command and query handlers in code, with the same underlying database.
+
+The key insight: query handlers can use raw SQL or Dapper against the same database, returning flat DTOs instead of loading domain entities. This avoids expensive JOIN-free aggregate loading for read operations that don't need domain behavior. Commands go through the domain model; queries bypass it.
+
+Save the full CQRS + Event Sourcing + separate read stores for scenarios where you genuinely need audit trails, time-travel queries, or massive read scale. For a typical web API, logical separation of handlers with optimized query reads is the right trade-off.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="CQRS requires two separate databases"
+  reality="CQRS means separating command and query responsibilities in your code. A single database works fine — commands modify the domain model via EF Core entities, queries read flat DTOs via Dapper or EF Core projections. Separate read/write databases are an optional optimization for high-scale read scenarios, not a requirement of the pattern."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "CQRS pattern (Azure Architecture Center)", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" },
+    { label: "Apply CQRS and DDD patterns (.NET Microservices)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/apply-simplified-microservice-cqrs-ddd-patterns" },
+    { label: "MediatR wiki", url: "https://github.com/jbogard/MediatR/wiki" },
+  ]}
+/>

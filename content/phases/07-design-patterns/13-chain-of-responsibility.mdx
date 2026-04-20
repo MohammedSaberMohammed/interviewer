@@ -1,24 +1,298 @@
 ---
-title: "Chain of Responsibility"
+title: "Chain of Responsibility — ASP.NET Middleware Connection"
 slug: "chain-of-responsibility"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["chain of responsibility", "behavioral", "middleware", "pipeline", "ASP.NET Core", "handlers"]
+summary: "Chain of Responsibility passes a request along a chain of handlers — each deciding to handle it, pass it on, or do both. ASP.NET Core middleware IS this pattern."
+docsLinks:
+  - label: "ASP.NET Core middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/"
+  - label: "Write custom ASP.NET Core middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Coupling Senders to Handlers
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A request needs processing — but which handler should process it? Hard-coding the handler couples the sender to the receiver. What if multiple handlers might apply? What if the chain changes at runtime?
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Chain of Responsibility decouples the sender from the receiver by passing the request through a chain — each handler decides: handle it, pass it, or both.
+
+---
+
+## Classic Implementation
+
+```csharp
+// Handler interface
+public abstract class SupportHandler
+{
+    protected SupportHandler? _next;
+
+    public SupportHandler SetNext(SupportHandler next)
+    {
+        _next = next;
+        return next; // enables chaining: h1.SetNext(h2).SetNext(h3)
+    }
+
+    public abstract void Handle(SupportRequest request);
+}
+
+public class SupportRequest
+{
+    public string  Issue    { get; }
+    public int     Priority { get; } // 1=Low, 2=Medium, 3=High, 4=Critical
+
+    public SupportRequest(string issue, int priority)
+    {
+        Issue    = issue;
+        Priority = priority;
+    }
+}
+
+// Concrete handlers
+public class FrontlineSupport : SupportHandler
+{
+    public override void Handle(SupportRequest request)
+    {
+        if (request.Priority <= 2)
+            Console.WriteLine($"Frontline resolved: {request.Issue}");
+        else
+            _next?.Handle(request); // pass up the chain
+    }
+}
+
+public class TechnicalSupport : SupportHandler
+{
+    public override void Handle(SupportRequest request)
+    {
+        if (request.Priority == 3)
+            Console.WriteLine($"Tech support resolved: {request.Issue}");
+        else
+            _next?.Handle(request);
+    }
+}
+
+public class ManagementEscalation : SupportHandler
+{
+    public override void Handle(SupportRequest request)
+    {
+        Console.WriteLine($"ESCALATED to management: {request.Issue}");
+        // terminal handler — always handles it
+    }
+}
+
+// Build and use the chain
+var frontline  = new FrontlineSupport();
+var technical  = new TechnicalSupport();
+var management = new ManagementEscalation();
+
+frontline.SetNext(technical).SetNext(management);
+
+frontline.Handle(new SupportRequest("Password reset",  priority: 1)); // frontline
+frontline.Handle(new SupportRequest("Data corruption", priority: 3)); // technical
+frontline.Handle(new SupportRequest("Security breach", priority: 4)); // management
+```
+
+---
+
+## ASP.NET Core Middleware IS Chain of Responsibility
+
+ASP.NET Core's middleware pipeline is the Chain of Responsibility pattern built into the framework:
+
+```csharp
+// Each middleware is a handler in the chain
+// 'next' is the reference to the next handler (RequestDelegate)
+
+// Inline middleware
+app.Use(async (context, next) =>
+{
+    Console.WriteLine($"Before: {context.Request.Path}");
+    await next(context);                               // pass to next handler
+    Console.WriteLine($"After: {context.Response.StatusCode}");
+});
+
+// Class-based middleware — same concept
+public class RequestTimingMiddleware
+{
+    private readonly RequestDelegate _next; // reference to next handler
+
+    public RequestTimingMiddleware(RequestDelegate next) => _next = next;
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var sw = Stopwatch.StartNew();
+        await _next(context);           // pass request to next middleware
+        sw.Stop();
+
+        context.Response.Headers.Append(
+            "X-Response-Time-Ms",
+            sw.ElapsedMilliseconds.ToString());
+    }
+}
+
+// Build the chain in Program.cs (order matters!)
+app.UseMiddleware<RequestTimingMiddleware>(); // first in chain
+app.UseAuthentication();                      // second
+app.UseAuthorization();                       // third
+app.MapControllers();                         // terminal handler
+```
+
+---
+
+## Functional Pipeline Approach (Modern C#)
+
+```csharp
+// Func<T, Task<T>> chains — more composable, no inheritance
+public delegate Task<HttpResponseMessage> RequestHandler(HttpRequestMessage request);
+
+// Middleware functions
+RequestHandler AddAuthHeader(RequestHandler next) =>
+    async request =>
+    {
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "token");
+        return await next(request); // pass to next
+    };
+
+RequestHandler LogRequest(RequestHandler next) =>
+    async request =>
+    {
+        Console.WriteLine($"→ {request.Method} {request.RequestUri}");
+        var response = await next(request);
+        Console.WriteLine($"← {(int)response.StatusCode}");
+        return response;
+    };
+
+// Base handler (terminal)
+RequestHandler httpHandler = async request =>
+    await new HttpClient().SendAsync(request);
+
+// Build the chain
+RequestHandler pipeline = AddAuthHeader(LogRequest(httpHandler));
+
+// Execute
+var response = await pipeline(new HttpRequestMessage(HttpMethod.Get, "https://api.example.com"));
+```
+
+---
+
+<ComparisonTable
+  title="Chain of Responsibility Variants"
+  headers={["Variant", "Structure", "Stops at first handler?", ".NET Example"]}
+  rows={[
+    ["Classic GoF", "Linked handler objects", "Yes — first handler that matches", "Support escalation, approval workflows"],
+    ["Middleware pipeline", "next() delegate", "No — every handler runs (unless short-circuits)", "ASP.NET Core middleware"],
+    ["Functional pipeline", "Func<T,Task\<T\>> composition", "Depends on implementation", "HttpClient DelegatingHandlers"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/chain-of-responsibility/challenge-1"
+  title="Middleware Short-Circuiting"
+  description="In this ASP.NET Core middleware, when does the request NOT reach the controller?"
+  code={`public class ApiKeyMiddleware
+{
+    private readonly RequestDelegate _next;
+    private const string ValidKey = "secret-key-123";
+
+    public ApiKeyMiddleware(RequestDelegate next) => _next = next;
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        if (!context.Request.Headers.TryGetValue("X-Api-Key", out var key)
+            || key != ValidKey)
+        {
+            context.Response.StatusCode = 401;
+            await context.Response.WriteAsync("Invalid API key");
+            return; // NOTE: no call to _next(context)
+        }
+
+        await _next(context); // valid key — pass to next
+    }
+}`}
+  options={[
+    "The controller is skipped when _next(context) is not called — the chain is broken here",
+    "The controller always runs — middleware cannot stop the pipeline",
+    "The controller runs but with a 401 status code set",
+    "The controller runs after the response is written"
+  ]}
+  correctAnswer={0}
+  explanation="When _next(context) is NOT called, the chain is broken — subsequent middleware and the endpoint (controller) never execute. This is 'short-circuiting' the pipeline. The response (401 + body) is written and control returns back UP the chain to previous middleware. This is intentional for authorization middleware — reject invalid requests before they reach business logic."
+/>
+
+---
+
+<Callout type="senior">
+**MediatR Pipeline Behaviors — Chain of Responsibility for Commands**
+
+MediatR's `IPipelineBehavior<TRequest, TResponse>` is Chain of Responsibility for CQRS commands and queries:
+
+```csharp
+// Each behavior is a handler in the chain
+public class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    private readonly IEnumerable<IValidator<TRequest>> _validators;
+
+    public ValidationBehavior(IEnumerable<IValidator<TRequest>> validators)
+        => _validators = validators;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next, // next handler in chain
+        CancellationToken ct)
+    {
+        // Validate BEFORE passing to next handler
+        var failures = _validators
+            .SelectMany(v => v.Validate(request).Errors)
+            .Where(e => e != null)
+            .ToList();
+
+        if (failures.Any())
+            throw new ValidationException(failures);
+
+        return await next(); // pass to next behavior or actual handler
+    }
+}
+
+// Register behaviors — they form the chain
+builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<Program>());
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CachingBehavior<,>));
+
+// Chain: LoggingBehavior → ValidationBehavior → CachingBehavior → actual handler
+```
+
+This is identical in concept to ASP.NET Core middleware — each behavior can inspect/transform the request, pass it along, or short-circuit.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/chain-of-responsibility/quiz-1"
+  question="What is the key difference between the classic GoF Chain of Responsibility and ASP.NET Core middleware?"
+  options={[
+    "ASP.NET Core middleware cannot short-circuit the chain",
+    "Classic CoR stops at the first handler that handles the request; middleware runs all handlers by default (short-circuit is opt-in)",
+    "Classic CoR uses interfaces; middleware uses delegates",
+    "Middleware is only for HTTP; CoR works for any type"
+  ]}
+  correctAnswer={1}
+  explanation="Classic GoF CoR: a handler either handles the request OR passes it on — once handled, the chain stops. ASP.NET Core middleware: by default, EVERY middleware in the chain runs (you call next() to pass forward, and execution returns after). Short-circuiting (not calling next) is opt-in. This is why middleware is called a 'bidirectional pipeline' — the request flows forward through the chain, and the response flows back through the same middleware in reverse order."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ASP.NET Core Middleware overview", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/" },
+    { label: "Write custom middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write" },
+    { label: "MediatR Pipeline Behaviors", url: "https://github.com/jbogard/MediatR/wiki/Behaviors" },
+  ]}
+/>

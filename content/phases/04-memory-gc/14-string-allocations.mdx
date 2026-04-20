@@ -1,24 +1,327 @@
 ---
-title: "String Allocations & How to Avoid"
+title: "String Allocations: Interning, StringBuilder, and string.Create"
 slug: "string-allocations"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["string", "StringBuilder", "string interning", "string.Create", "allocation", "performance", "ReadOnlySpan"]
+summary: "Strings are immutable reference types — every operation that produces a new string allocates. Learn the full landscape of string allocation patterns and when each optimization is appropriate."
+docsLinks:
+  - label: "String class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string"
+  - label: "StringBuilder class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder"
+  - label: "String.Create method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.create"
+  - label: "String.Intern method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Strings Are Allocation-Heavy
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`string` is an **immutable reference type**. Every transformation creates a new string object on the heap. This is correct and safe — but in hot paths it generates significant GC pressure:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Each operation below allocates a new string:
+string s = "Hello";
+string upper = s.ToUpper();          // new string: "HELLO"
+string trimmed = upper.Trim();       // new string (if whitespace present)
+string sub = trimmed.Substring(0, 3); // new string: "HEL"
+string joined = sub + "!";           // new string: "HEL!"
+string formatted = \$"Result: {joined}"; // new string: "Result: HEL!"
+// 5 intermediate string allocations for one final result
+```
+
+In typical business code this is completely fine — strings are small, Gen 0 is fast. The concern arises at scale: parsing high-volume messages, processing millions of records, building HTTP headers for every request.
+
+---
+
+## String Interning
+
+The CLR maintains an **intern pool** — a dictionary of unique string instances. Identical string literals are automatically interned (shared). You can also explicitly intern strings:
+
+```csharp
+// Compile-time string literals are interned automatically:
+string a = "hello";
+string b = "hello";
+Console.WriteLine(ReferenceEquals(a, b)); // True — same object!
+
+// Runtime strings are NOT interned by default:
+string c = new string('h', 1) + "ello"; // runtime concatenation
+string d = "hello";
+Console.WriteLine(ReferenceEquals(c, d)); // False — different objects
+
+// Explicit interning:
+string interned = string.Intern(c);
+Console.WriteLine(ReferenceEquals(interned, d)); // True — now same object
+
+// Check if a string is already interned:
+string? existing = string.IsInterned(c);
+// Returns null if not interned, the interned instance if it is
+```
+
+**When to use interning:**
+```csharp
+// Good: parsing log levels that repeat millions of times
+public static string InternedLevel(ReadOnlySpan<char> span)
+{
+    // Convert span to string (one allocation) then intern
+    string level = span.ToString();
+    return string.IsInterned(level) ?? level; // avoid intern table growth
+}
+
+// Bad: interning unique strings (GUIDs, user IDs, random data)
+// → intern table grows unboundedly, becomes a memory leak!
+string userId = string.Intern(Guid.NewGuid().ToString()); // MEMORY LEAK
+```
+
+The intern table is a GC root — interned strings are **never collected**. Only intern strings you know will repeat frequently and have bounded variety.
+
+---
+
+## StringBuilder: When Concatenation Compounds
+
+```csharp
+// The O(n²) string concatenation anti-pattern:
+string BuildCsv(IEnumerable<Record> records)
+{
+    string result = "";
+    foreach (var record in records) // n iterations
+    {
+        result += record.ToString() + ","; // allocates new string each time
+        // Iteration 1: alloc 10 bytes
+        // Iteration 2: copy 10 bytes + alloc 20 bytes
+        // Iteration n: copy n*avg bytes → O(n²) total copies!
+    }
+    return result;
+}
+
+// StringBuilder: O(n) with internal array doubling:
+string BuildCsvFast(IEnumerable<Record> records)
+{
+    var sb = new StringBuilder(capacity: 1024); // pre-size to avoid resizes
+    foreach (var record in records)
+    {
+        sb.Append(record.ToString());
+        sb.Append(',');
+    }
+    if (sb.Length > 0) sb.Length--; // trim trailing comma
+    return sb.ToString(); // single final string allocation
+}
+```
+
+**StringBuilder best practices:**
+```csharp
+// Pre-size to avoid internal array copies:
+var sb = new StringBuilder(expectedLength);
+
+// Prefer Append over AppendFormat for simple cases:
+sb.Append("Name: ");    // faster
+sb.Append(name);
+sb.AppendLine();
+
+// vs:
+sb.AppendFormat("Name: {0}\n", name); // slower — format parsing overhead
+
+// Use AppendInterpolatedStringHandler (.NET 6+) for interpolated strings:
+sb.Append(\$"Name: {name}"); // uses handler, avoids intermediate string!
+// The compiler generates AppendInterpolatedStringHandler calls — zero intermediate string
+```
+
+---
+
+## string.Create: Zero-Intermediate-Allocation Strings
+
+`string.Create` lets you write directly into a new string's internal buffer — no intermediate `char[]` or `Span<char>` required:
+
+```csharp
+// Traditional approach: char[] intermediate allocation
+public static string FormatGuid(Guid id)
+{
+    char[] chars = new char[36]; // intermediate allocation
+    id.TryFormat(chars, out _);
+    return new string(chars);   // another allocation
+}
+
+// string.Create: single allocation, direct write:
+public static string FormatGuidFast(Guid id)
+{
+    return string.Create(36, id, static (span, state) =>
+    {
+        // 'span' is a Span<char> pointing directly into the new string's memory
+        // 'state' is the captured value (captured value to avoid closure allocation)
+        state.TryFormat(span, out _);
+    });
+    // One string allocation total — written directly, no copy
+}
+
+// string.Create with multiple values — use a tuple as state:
+public static string FormatRecord(int id, string name, decimal price)
+{
+    int length = 10 + name.Length + 12; // estimate
+    return string.Create(length, (id, name, price), static (span, state) =>
+    {
+        var (i, n, p) = state;
+        int pos = 0;
+        i.TryFormat(span[pos..], out int written); pos += written;
+        span[pos++] = ',';
+        n.AsSpan().CopyTo(span[pos..]); pos += n.Length;
+        span[pos++] = ',';
+        p.TryFormat(span[pos..], out written, "F2"); pos += written;
+        // Trim to actual length:
+        // (string.Create requires exact length — pre-compute or use a different pattern)
+    });
+}
+```
+
+---
+
+## ReadOnlySpan\<char\> for Zero-Allocation Parsing
+
+```csharp
+// Parsing WITHOUT creating substrings:
+public static (string scheme, string host, int port) ParseUrl(string url)
+{
+    ReadOnlySpan<char> span = url.AsSpan();
+
+    // Find "://"
+    int schemeEnd = span.IndexOf("://");
+    ReadOnlySpan<char> scheme = span[..schemeEnd]; // no allocation
+
+    span = span[(schemeEnd + 3)..];
+
+    // Find ":"
+    int colonIdx = span.IndexOf(':');
+    ReadOnlySpan<char> host = colonIdx >= 0 ? span[..colonIdx] : span;
+    ReadOnlySpan<char> portSpan = colonIdx >= 0 ? span[(colonIdx + 1)..] : "80".AsSpan();
+
+    int.TryParse(portSpan, out int port);
+
+    // Only allocate strings at the boundary where you must return strings:
+    return (scheme.ToString(), host.ToString(), port);
+}
+
+// Modern BCL APIs accept ReadOnlySpan<char> — check before converting to string:
+int.TryParse(span, out int n);        // no string needed
+Guid.TryParse(span, out Guid g);      // no string needed
+DateTime.TryParse(span, out DateTime dt); // no string needed
+Enum.TryParse<DayOfWeek>(span, out var day); // no string needed
+```
+
+---
+
+<ComparisonTable
+  headers={["Pattern", "Allocations", "Best For"]}
+  rows={[
+    ["+ concatenation (loop)", "O(n²) strings", "Never in loops — only for 1-2 literals"],
+    ["string.Concat / string.Join", "1 result string", "Known set of strings, no loop needed"],
+    ["StringBuilder", "1 per segment append + 1 result", "Dynamic building, loops, unknown count"],
+    ["string.Create", "1 result string (direct write)", "Known-length output, performance-critical"],
+    ["ReadOnlySpan\<char\> slicing", "0 (slice is a view)", "Parsing/inspection without producing strings"],
+    ["string.Intern", "0 after first intern", "Repeated identical strings with bounded variety"],
+    ["interpolated \$\"...\"", "1 result string (.NET 6+)", "General use — compiler-optimized in .NET 6+"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Interpolated Strings Got a Major Upgrade in .NET 6**
+
+Pre-.NET 6, `\$"Hello, {name}!"` compiled to `string.Format("Hello, {0}!", name)`, which involved:
+1. Allocating a `string.Format` args array
+2. Boxing value type arguments
+3. Calling `string.Format` with format parsing overhead
+
+.NET 6 introduced `DefaultInterpolatedStringHandler` — a compiler-generated handler that builds the string directly with no intermediate format string, no boxing, and often no intermediate allocations:
+
+```csharp
+// .NET 6+: this is NOT string.Format anymore
+string result = \$"Hello, {name}! You have {count} messages.";
+
+// Compiler transforms to approximately:
+var handler = new DefaultInterpolatedStringHandler(
+    literalLength: 22, formattedCount: 2);
+handler.AppendLiteral("Hello, ");
+handler.AppendFormatted(name);
+handler.AppendLiteral("! You have ");
+handler.AppendFormatted(count);
+handler.AppendLiteral(" messages.");
+string result = handler.ToStringAndClear();
+
+// Additionally, in .NET 6+ StringBuilder.Append(\$"...") uses
+// AppendInterpolatedStringHandler — no intermediate string is created AT ALL:
+sb.Append(\$"Row {i}: {value:F2}"); // directly appended, zero string allocation
+
+// This means \$"..." is now the preferred pattern for most cases.
+// Only reach for string.Create when you need a very specific layout
+// or the exact output length is known upfront.
+```
+
+The practical takeaway: in .NET 6+, interpolated strings with `StringBuilder.Append` are zero-intermediate-allocation. You no longer need `sb.Append("Row "); sb.Append(i); sb.Append(": ");` style code for performance.
 </Callout>
+
+---
+
+## CodeChallenge: Pick the Right String Pattern
+
+<CodeChallenge
+  id="04-memory-gc/string-allocations/challenge-1"
+  title="Optimizing a String Building Hot Path"
+  description="This method runs 100,000 times/sec building HTTP query strings. Which implementation minimizes allocations?"
+  code={`// Option A:
+string BuildQuery_A(Dictionary\<string, string\> params)
+{
+    string result = "?";
+    foreach (var kv in params)
+        result += kv.Key + "=" + kv.Value + "&";
+    return result.TrimEnd('&');
+}
+
+// Option B:
+string BuildQuery_B(Dictionary\<string, string\> params)
+    => "?" + string.Join("&", params.Select(kv => \$"{kv.Key}={kv.Value}"));
+
+// Option C:
+string BuildQuery_C(Dictionary\<string, string\> params)
+{
+    var sb = new StringBuilder("?", capacity: 256);
+    foreach (var (key, value) in params)
+    {
+        sb.Append(key); sb.Append('=');
+        sb.Append(value); sb.Append('&');
+    }
+    if (sb.Length > 1) sb.Length--; // trim trailing &
+    return sb.ToString();
+}
+
+// Option D:
+string BuildQuery_D(Dictionary\<string, string\> params)
+{
+    int len = 1 + params.Sum(kv => kv.Key.Length + kv.Value.Length + 2);
+    return string.Create(len - (params.Count > 0 ? 1 : 0), params,
+        static (span, p) => { /* write directly */ });
+}`}
+  options={[
+    "Option A — simplest code, compiler optimizes + operator chains",
+    "Option B — string.Join with LINQ is optimized to minimize allocations",
+    "Option C — StringBuilder with pre-sized capacity: O(n) copies, single final allocation",
+    "Option D — string.Create is the fastest since it writes directly into the string buffer"
+  ]}
+  correctAnswer={2}
+  explanation="Option C (StringBuilder with pre-sized capacity) is the best practical choice. Option A is O(n²) — each += allocates a new string and copies all previous content. Option B uses LINQ Select which allocates an IEnumerable + multiple intermediate strings. Option D (string.Create) would be fastest in theory but requires exact pre-computation of the output length, making it complex to implement correctly. StringBuilder pre-sized to 256 avoids resizing for typical query strings and produces one final string allocation — the right tradeoff between performance and maintainability."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "String class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string" },
+    { label: "StringBuilder class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder" },
+    { label: "String.Create method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.create" },
+    { label: "String.Intern method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.intern" },
+  ]}
+/>

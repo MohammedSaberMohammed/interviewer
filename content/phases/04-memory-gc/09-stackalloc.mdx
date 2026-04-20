@@ -1,24 +1,303 @@
 ---
-title: "stackalloc"
+title: "stackalloc: Explicit Stack Allocation"
 slug: "stackalloc"
 order: 9
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["stackalloc", "stack", "Span", "allocation-free", "performance", "unsafe", "fixed-size buffers"]
+summary: "stackalloc allocates arrays directly on the stack — zero GC pressure, zero heap involvement. Learn safe usage with Span<T>, the sizing limits, and when stackalloc is the right tool."
+docsLinks:
+  - label: "stackalloc expression (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc"
+  - label: "Span<T> struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.span-1"
+  - label: "Write safe and efficient C# code"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What stackalloc Does
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`stackalloc` allocates a contiguous block of memory on the **current thread's stack** rather than the heap. The memory is automatically freed when the method returns — no GC required, no `Dispose()`, no cleanup code.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Safe syntax (C# 7.2+): use with Span<T>
+Span<int> numbers = stackalloc int[16];  // 16 * 4 = 64 bytes on stack, zero heap
+
+for (int i = 0; i < numbers.Length; i++)
+    numbers[i] = i * i;
+
+int sum = 0;
+foreach (int n in numbers)
+    sum += n;
+
+// Memory is freed when method exits — automatically, instantly, no GC
+
+// Unsafe syntax (requires 'unsafe' context): use with pointer
+unsafe
+{
+    int* ptr = stackalloc int[16]; // raw pointer — more dangerous
+    ptr[0] = 42;
+}
+```
+
+The safe `Span<T>` variant is strongly preferred over the unsafe pointer variant in modern C#.
+
+---
+
+## Memory Visualizer: Stack vs Heap Allocation
+
+<MemoryVisualizer
+  stack={[
+    { name: "Method Frame", value: "---" },
+    { name: "numbers.Pointer", value: "→ Stack:0x7FFF0010", isReference: true },
+    { name: "numbers.Length", value: "16" },
+    { name: "[stackalloc block 64B]", value: "0,1,4,9,16,25..." }
+  ]}
+  heap={[
+    {
+      id: "comparison",
+      label: "Heap (NOT used with stackalloc)",
+      content: {
+        "new int[16]": "Would go here — Gen 0",
+        "GC overhead": "64 bytes + header + tracking",
+        "stackalloc": "None of this — lives on stack"
+      }
+    }
+  ]}
+  references={[
+    { from: "numbers.Pointer", to: "comparison" }
+  ]}
+/>
+
+---
+
+## Initialization Behavior
+
+```csharp
+// stackalloc ZERO-INITIALIZES by default in C# 7.3+:
+Span<int> zeroed = stackalloc int[8];
+// All elements are 0 — safe and predictable
+
+// To skip zero-initialization (performance optimization, use carefully):
+// Only valid if you will write every element before reading it
+Span<int> uninitialized = stackalloc int[8];
+// As of C# 7.3+, even this is zero-initialized
+// True uninitialized stackalloc requires unsafe code:
+unsafe
+{
+    int* raw = stackalloc int[8]; // NOT zero-initialized in unsafe context
+    // You must initialize before reading!
+}
+
+// Inline initialization (C# 7.3+):
+Span<byte> lookup = stackalloc byte[] { 0x48, 0x65, 0x6C, 0x6C, 0x6F }; // "Hello"
+```
+
+---
+
+## Stack Size Limits and Safe Usage
+
+The thread stack is typically **1MB on Windows** (8MB on Linux by default). Exceeding it causes a `StackOverflowException` — which crashes the process.
+
+```csharp
+// DANGEROUS: large stackalloc can cause StackOverflowException
+Span<byte> huge = stackalloc byte[500_000]; // 500KB — dangerous!
+
+// Pattern 1: use stackalloc for small buffers, fall back to heap for large:
+const int StackThreshold = 1024; // 1KB threshold
+
+static void ProcessData(int size)
+{
+    // Conditional allocation: stack for small, heap for large
+    byte[]? heapBuffer = size > StackThreshold ? new byte[size] : null;
+    Span<byte> buffer = heapBuffer ?? stackalloc byte[StackThreshold];
+
+    // Now 'buffer' works regardless of where the memory came from
+    DoWork(buffer[..size]);
+}
+
+// Pattern 2: C# 8+ cleaner syntax
+static void ProcessDataClean(int size)
+{
+    Span<byte> buffer = size <= 256
+        ? stackalloc byte[256]
+        : new byte[size];
+
+    DoWork(buffer[..size]);
+}
+
+// Rule of thumb: stackalloc is appropriate for ≤ 1KB in production code
+// Never use stackalloc inside recursive methods — each call adds to stack usage
+```
+
+---
+
+## Practical Patterns
+
+```csharp
+// Pattern: cryptography scratch space (no heap allocation)
+static byte[] ComputeHash(ReadOnlySpan<byte> data)
+{
+    Span<byte> hashBuffer = stackalloc byte[32]; // SHA-256 output size
+    SHA256.HashData(data, hashBuffer);
+    return hashBuffer.ToArray(); // only allocation: the returned byte[]
+}
+
+// Pattern: parsing without substring allocation
+static int ParseFirstInt(ReadOnlySpan<char> csv)
+{
+    int comma = csv.IndexOf(',');
+    ReadOnlySpan<char> firstField = comma >= 0 ? csv[..comma] : csv;
+    return int.Parse(firstField); // no string allocation
+}
+
+// Pattern: formatting to UTF-8 bytes for network/file output
+static int FormatRecord(Span<byte> output, int id, ReadOnlySpan<char> name)
+{
+    // Temp stack space for intermediate formatting:
+    Span<char> charBuffer = stackalloc char[128];
+    int charsWritten = 0;
+
+    charsWritten += "id=".AsSpan().Length;
+    "id=".AsSpan().CopyTo(charBuffer[charsWritten..]);
+    id.TryFormat(charBuffer[charsWritten..], out int idLen);
+    charsWritten += idLen;
+
+    charBuffer[charsWritten++] = ',';
+    name.CopyTo(charBuffer[charsWritten..]);
+    charsWritten += name.Length;
+
+    return Encoding.UTF8.GetBytes(charBuffer[..charsWritten], output);
+}
+```
+
+---
+
+## stackalloc in Conditionals
+
+```csharp
+// You can use stackalloc in a ternary, but the SIZE must be constant
+// if you want the compiler to enforce stack limits:
+static void Example(bool useSmall)
+{
+    // Both branches are valid (compiler knows max possible stack usage):
+    Span<byte> buf = useSmall
+        ? stackalloc byte[32]
+        : stackalloc byte[128];
+
+    // Not allowed: stackalloc inside a loop (would grow stack unboundedly):
+    for (int i = 0; i < 10; i++)
+    {
+        // This is legal but each iteration still uses stack space until method returns!
+        // The stack frame for the entire method is allocated upfront.
+        // stackalloc in a loop does NOT free memory between iterations.
+        Span<byte> loopBuf = stackalloc byte[64];
+        Process(loopBuf);
+    }
+    // After loop: 640 bytes of stack used (not 64 bytes reused)
+}
+```
+
+---
+
+<MythBuster
+  myth="stackalloc memory is freed when the variable goes out of scope."
+  reality="stackalloc memory is freed when the METHOD RETURNS, not when the variable goes out of scope. If you use stackalloc inside a loop, each iteration's allocation persists until the method exits. This means stackalloc in tight loops can blow the stack even with small individual allocations. The safe pattern: allocate outside the loop and reuse the same span."
+  example={`// DANGEROUS: 64 bytes * 10000 iterations = 640KB stack usage!
+for (int i = 0; i < 10_000; i++)
+{
+    Span\<byte\> buf = stackalloc byte[64]; // each still occupies stack
+    Process(buf);
+}
+
+// SAFE: allocate once, reuse across iterations
+Span\<byte\> buf = stackalloc byte[64];
+for (int i = 0; i < 10_000; i++)
+{
+    buf.Clear(); // reset contents
+    Process(buf);
+}`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: stackalloc and the Prolog Cost**
+
+The JIT compiler handles `stackalloc` in a specific way: the stack space is typically reserved at **method entry** (in the function prolog), not lazily when the `stackalloc` line is reached. This means:
+
+1. Even if a code path skips the `stackalloc` (e.g., inside an `if` block), the stack space may still be reserved at method entry.
+2. The JIT can often prove that two non-overlapping `stackalloc` blocks can share space (stack frame slots are reused).
+3. In very tight inner loops, prefer to `stackalloc` outside the loop and pass the `Span` in.
+
+You can verify JIT decisions using `dotnet/BenchmarkDotNet` with `[DisassemblyDiagnoser]` — look for the `sub rsp, N` instruction in the prolog to see how much stack space is reserved.
+
+```csharp
+// Good pattern for hot code: stackalloc at method boundary, pass down
+public void ProcessBatch(ReadOnlySpan<Record> records)
+{
+    Span<byte> workBuffer = stackalloc byte[512]; // allocated once in prolog
+
+    foreach (var record in records)
+    {
+        workBuffer.Clear();
+        ProcessSingle(record, workBuffer); // reuses same stack memory
+    }
+}
+
+// Avoid: stackalloc inside the loop
+public void ProcessBatchSlow(ReadOnlySpan<Record> records)
+{
+    foreach (var record in records)
+    {
+        Span<byte> workBuffer = stackalloc byte[512]; // technically safe but...
+        // stack space accumulates — runtime behavior depends on JIT
+        ProcessSingle(record, workBuffer);
+    }
+}
+```
 </Callout>
+
+---
+
+## CodeChallenge: Safe vs Unsafe stackalloc Usage
+
+<CodeChallenge
+  id="04-memory-gc/stackalloc/challenge-1"
+  title="Spot the stackalloc Problem"
+  description="This recursive method uses stackalloc. What is the problem?"
+  code={`public static int ParseRecursive(ReadOnlySpan<char> input, int depth)
+{
+    if (depth > 10 || input.IsEmpty) return 0;
+
+    // Temp buffer for processing this level
+    Span\<char\> buffer = stackalloc char[256];
+    input[..Math.Min(input.Length, 256)].CopyTo(buffer);
+
+    int value = ExtractValue(buffer);
+    int nested = ParseRecursive(input[value..], depth + 1);
+    return value + nested;
+}`}
+  options={[
+    "stackalloc cannot be used with ReadOnlySpan<char> parameters",
+    "Each recursive call adds 256 * 2 = 512 bytes to the stack, and 10+ levels deep risks a StackOverflowException",
+    "The buffer is not zero-initialized, leading to incorrect parsing",
+    "buffer.CopyTo() doesn't work with ReadOnlySpan<char> as the source"
+  ]}
+  correctAnswer={1}
+  explanation="Each recursive call allocates 256 chars (512 bytes) on the stack with stackalloc. Unlike loop iterations where the same method frame is reused, recursive calls each get their own stack frame. With up to 10 levels of recursion, that's 10 * 512 = 5,120 bytes of stackalloc alone — plus each frame's other local variables, return addresses, and saved registers. In a tight recursive algorithm, this compounds quickly. The fix: pass a pre-allocated buffer from the top-level caller, or switch to an iterative approach with a single stackalloc."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "stackalloc expression (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc" },
+    { label: "Span\<T\> struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.span-1" },
+    { label: "Write safe and efficient C# code", url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code" },
+    { label: "SHA256.HashData with Span", url: "https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.sha256.hashdata" },
+  ]}
+/>

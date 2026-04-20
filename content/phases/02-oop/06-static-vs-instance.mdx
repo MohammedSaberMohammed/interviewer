@@ -3,22 +3,293 @@ title: "Static vs Instance Members"
 slug: "static-vs-instance"
 order: 6
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["static", "instance", "threading", "testability", "singleton", "static class", "state"]
+summary: "Static state is shared across all callers and threads — that power comes with concurrency risks and testability costs that instance members avoid entirely."
+docsLinks:
+  - label: "Static classes and static class members"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/static-classes-and-static-class-members"
+  - label: "Thread safety in static members"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/thread-safety"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Static vs Instance: The Core Difference
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+**Instance members** belong to a specific object. Each object has its own copy of instance state, and instance methods operate on that object's state.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+**Static members** belong to the type itself. There is exactly one copy, shared across all instances, all threads, and the entire lifetime of the application domain.
+
+```csharp
+public class Counter
+{
+    // Instance state — each Counter object has its own Count
+    private int _count;
+    public int Count => _count;
+    public void Increment() => _count++;
+
+    // Static state — ONE copy, shared by ALL Counter objects and ALL code
+    private static int _totalCreated;
+    public static int TotalCreated => _totalCreated;
+
+    public Counter()
+    {
+        _totalCreated++; // Static field incremented on every construction
+    }
+}
+
+var a = new Counter();
+var b = new Counter();
+a.Increment();
+a.Increment();
+b.Increment();
+
+Console.WriteLine(a.Count);          // 2 — a's own state
+Console.WriteLine(b.Count);          // 1 — b's own state
+Console.WriteLine(Counter.TotalCreated); // 2 — shared static, counts both instances
+```
+
+---
+
+## When Static Is the Right Choice
+
+Static members are appropriate for:
+- **Pure functions** — methods that depend only on their parameters, with no side effects
+- **Factory methods** on value types or sealed types
+- **Extension methods** — must be static
+- **Constants and utility groupings** — `Math.PI`, `Path.Combine`, `File.ReadAllText`
+- **Application-wide singletons** managed by a DI container (but favor DI over manual statics)
+
+```csharp
+// Good static: pure functions, no state
+public static class StringExtensions
+{
+    public static string ToTitleCase(this string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        return string.Join(" ", s.Split(' ')
+            .Select(word => word.Length > 0
+                ? char.ToUpper(word[0]) + word[1..].ToLower()
+                : word));
+    }
+
+    public static bool IsValidEmail(this string s)
+        => !string.IsNullOrEmpty(s) && s.Contains('@') && s.Contains('.');
+}
+
+// Good static: math/conversion utilities
+public static class TemperatureConverter
+{
+    public static double CelsiusToFahrenheit(double c) => c * 9.0 / 5.0 + 32;
+    public static double FahrenheitToCelsius(double f) => (f - 32) * 5.0 / 9.0;
+}
+```
+
+---
+
+## Static State and Threading: The Danger Zone
+
+Because static state is shared, it is a prime source of **race conditions** in multi-threaded code:
+
+```csharp
+// DANGEROUS: non-thread-safe static state
+public static class RequestCounter
+{
+    private static int _count; // shared mutable state!
+
+    // BUG: _count++ is NOT atomic — it's read + increment + write
+    // Two threads can read the same value, both increment, and write the same result
+    public static void Increment() => _count++;         // RACE CONDITION
+    public static int GetCount()   => _count;
+}
+
+// SAFE option 1: Interlocked for simple counters
+public static class SafeCounter
+{
+    private static int _count;
+
+    public static void Increment() => Interlocked.Increment(ref _count);
+    public static int GetCount()   => Interlocked.CompareExchange(ref _count, 0, 0); // atomic read
+    // Or simply: return Volatile.Read(ref _count);
+}
+
+// SAFE option 2: lock for complex operations
+public static class SafeCache
+{
+    private static readonly Dictionary<string, string> _cache = new();
+    private static readonly object _lock = new();
+
+    public static string GetOrAdd(string key, Func<string, string> factory)
+    {
+        lock (_lock)
+        {
+            if (!_cache.TryGetValue(key, out var value))
+            {
+                value = factory(key);
+                _cache[key] = value;
+            }
+            return value;
+        }
+    }
+}
+
+// SAFE option 3: ConcurrentDictionary for high-throughput caches
+public static class BetterCache
+{
+    private static readonly ConcurrentDictionary<string, string> _cache = new();
+
+    public static string GetOrAdd(string key, Func<string, string> factory)
+        => _cache.GetOrAdd(key, factory);
+}
+```
+
+---
+
+<Callout type="critical">
+**Static mutable state is the #1 cause of non-deterministic test failures.** Static fields persist across test runs within the same process. If test A sets a static field, test B can see that mutated state — even though B was written to start clean. This causes "tests pass in isolation but fail when run together" bugs that take hours to diagnose. Prefer instance state managed via DI containers wherever possible.
 </Callout>
+
+---
+
+## Testability: Static vs Instance
+
+The testability cost of static is real. Methods with static dependencies cannot be unit-tested without actually running the dependency:
+
+```csharp
+// HARD TO TEST: static dependency
+public class OrderService
+{
+    public decimal CalculateDiscount(Order order)
+    {
+        // DateTime.Now is static — tests that run at different times behave differently
+        if (DateTime.Now.DayOfWeek == DayOfWeek.Friday)
+            return order.Total * 0.1m; // Friday discount!
+        return 0;
+    }
+}
+
+// TESTABLE: inject a time provider
+public interface ITimeProvider
+{
+    DateTime Now { get; }
+}
+
+public class SystemTimeProvider : ITimeProvider
+{
+    public DateTime Now => DateTime.Now;
+}
+
+public class OrderService
+{
+    private readonly ITimeProvider _time;
+    public OrderService(ITimeProvider time) => _time = time;
+
+    public decimal CalculateDiscount(Order order)
+    {
+        if (_time.Now.DayOfWeek == DayOfWeek.Friday)
+            return order.Total * 0.1m;
+        return 0;
+    }
+}
+
+// In tests:
+var fakeTime = new Mock<ITimeProvider>();
+fakeTime.Setup(t => t.Now).Returns(new DateTime(2024, 1, 5)); // A Friday
+var service = new OrderService(fakeTime.Object);
+Assert.Equal(10m, service.CalculateDiscount(new Order { Total = 100m }));
+```
+
+---
+
+<Quiz
+  id="02-oop/static-vs-instance/quiz-1"
+  question="You have a static class with a private static readonly Dictionary initialized in a static constructor. Is this thread-safe to read from multiple threads simultaneously after initialization?"
+  options={[
+    "No — Dictionary is never thread-safe, even for reads",
+    "Yes — readonly prevents modification after initialization, and static constructors run exactly once before any access",
+    "Only if you lock every read operation",
+    "Only on .NET 5+ due to CLR improvements"
+  ]}
+  correctAnswer={1}
+  explanation="Yes, this is safe. Two facts combine: (1) Dictionary<K,V> is safe for concurrent reads — multiple threads can read simultaneously with no issue. Unsafety arises only when one thread writes while another reads or writes. (2) Static constructors (type initializers) are guaranteed to run exactly once, before any member of the type is accessed, under a lock managed by the CLR itself. So by the time any thread accesses your static class, the static constructor has already completed. The dictionary is fully initialized and will only be read afterward — thread-safe. If you also need writes after initialization, switch to ConcurrentDictionary."
+/>
+
+---
+
+## Static Classes
+
+A `static class` is a class where all members must be static and no instance can be created:
+
+```csharp
+// Compiler enforces: all members static, cannot be instantiated or inherited
+public static class MathHelper
+{
+    public static double Clamp(double value, double min, double max)
+        => Math.Max(min, Math.Min(max, value));
+
+    public static double Lerp(double a, double b, double t)
+        => a + (b - a) * t;
+
+    // Static classes CAN have static constructors
+    static MathHelper()
+    {
+        // One-time initialization
+    }
+}
+
+// Cannot do:
+// var m = new MathHelper(); // COMPILE ERROR
+// class Derived : MathHelper { }  // COMPILE ERROR
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Static Local Functions (C# 8)**
+
+Regular local functions capture the enclosing method's variables. Static local functions are explicitly opt-out of capturing — the compiler enforces that they don't accidentally capture `this` or any local variable. This prevents accidental closure allocations and makes the intent clear:
+
+```csharp
+public IEnumerable<int> GetEvenNumbers(IEnumerable<int> source)
+{
+    return source.Where(IsEven);
+
+    // static: cannot capture 'source' or 'this' — enforced by compiler
+    static bool IsEven(int n) => n % 2 == 0;
+}
+
+// Without 'static', the local function COULD capture variables:
+public decimal ApplyDiscount(IEnumerable<Order> orders, decimal rate)
+{
+    return orders.Sum(Calculate);
+
+    // 'rate' is captured — this creates a closure allocation!
+    decimal Calculate(Order o) => o.Total * rate;
+
+    // With static — compiler ERROR if you accidentally reference 'rate':
+    // static decimal Calculate(Order o) => o.Total * rate; // ERROR — captures
+}
+```
+
+In hot paths (LINQ inside tight loops), static local functions eliminate the closure allocation. It's a small but meaningful optimization when processing millions of items. Add `static` to any local function that doesn't need to capture.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Static methods are faster than instance methods because there's no 'this' pointer overhead."
+  reality="The performance difference between static and instance method calls is negligible — effectively zero in modern .NET. The JIT handles both identically in most cases. The real costs of static are concurrency safety (shared mutable state needs synchronization) and testability (hard to substitute). Never choose static over instance for 'performance reasons' — choose based on semantics (does this belong to the type or to an instance?)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Static classes and static class members", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/static-classes-and-static-class-members" },
+    { label: "Interlocked class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.interlocked" },
+    { label: "ConcurrentDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2" },
+    { label: "Static local functions", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/local-functions#static-local-functions" },
+  ]}
+/>

@@ -1,24 +1,288 @@
 ---
-title: "Authentication: Cookies & OAuth"
+title: "Cookie Auth, OAuth2, and OpenID Connect"
 slug: "auth-cookies-oauth"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["cookies", "OAuth2", "OIDC", "OpenIdConnect", "authentication", "Google", "Microsoft Entra", "asp.net core"]
+summary: "Cookie authentication is the foundation for web UIs. OAuth2 delegates authentication to external providers. OIDC adds identity on top of OAuth2. Know when to use each and how they interact."
+docsLinks:
+  - label: "Cookie authentication in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/cookie"
+  - label: "OAuth2 and OpenID Connect in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/social/"
+  - label: "External OAuth authentication providers"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/social/other-logins"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Cookie Authentication
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Cookie authentication stores the user's identity in an encrypted cookie. On each request, the middleware decrypts the cookie and populates `HttpContext.User`. It is the default for web apps with Razor Pages or MVC UIs.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = "MyApp.Auth";
+        options.Cookie.HttpOnly = true;       // Not accessible via JS (XSS protection)
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always; // HTTPS only
+        options.Cookie.SameSite = SameSiteMode.Strict; // CSRF protection
+
+        options.LoginPath = "/auth/login";    // Redirect to this path if not authenticated
+        options.LogoutPath = "/auth/logout";
+        options.AccessDeniedPath = "/auth/forbidden";
+
+        options.ExpireTimeSpan = TimeSpan.FromDays(7); // Sliding expiry
+        options.SlidingExpiration = true;              // Reset expiry on activity
+
+        options.Events = new CookieAuthenticationEvents
+        {
+            OnValidatePrincipal = async context =>
+            {
+                // Called on every request — can validate/refresh user data
+                var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                // Example: check if user was banned since cookie was issued
+                var userService = context.HttpContext.RequestServices
+                    .GetRequiredService<IUserService>();
+                if (await userService.IsBannedAsync(userId))
+                    context.RejectPrincipal(); // Invalidate this cookie
+            }
+        };
+    });
+
+var app = builder.Build();
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+**Signing in and out:**
+
+```csharp
+[HttpPost("login")]
+public async Task<IActionResult> Login(LoginRequest request)
+{
+    var user = await _userService.ValidateAsync(request.Email, request.Password);
+    if (user is null) return Unauthorized();
+
+    var claims = new List<Claim>
+    {
+        new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+        new(ClaimTypes.Name, user.UserName),
+        new(ClaimTypes.Email, user.Email),
+        new(ClaimTypes.Role, user.Role),
+    };
+
+    var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+    var principal = new ClaimsPrincipal(identity);
+
+    await HttpContext.SignInAsync(
+        CookieAuthenticationDefaults.AuthenticationScheme,
+        principal,
+        new AuthenticationProperties
+        {
+            IsPersistent = request.RememberMe,
+            ExpiresUtc = DateTimeOffset.UtcNow.AddDays(request.RememberMe ? 30 : 1)
+        });
+
+    return Redirect("/dashboard");
+}
+
+[HttpPost("logout")]
+public async Task<IActionResult> Logout()
+{
+    await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    return Redirect("/");
+}
+```
+
+---
+
+## OAuth2: Delegated Authorization
+
+OAuth2 is an **authorization** framework — it allows your app to access resources on behalf of a user at a third-party provider (GitHub, Google). It does NOT define how to get user identity (that is OIDC's job).
+
+```
+OAuth2 Authorization Code Flow (simplified):
+
+1. User clicks "Login with GitHub"
+2. App redirects to GitHub's auth endpoint with:
+   client_id, redirect_uri, scope, state (CSRF token)
+3. GitHub authenticates user and asks for consent
+4. GitHub redirects back to redirect_uri with authorization code
+5. App exchanges code for access_token (server-to-server, never client-visible)
+6. App uses access_token to call GitHub API (e.g., get user profile)
+```
+
+---
+
+## OpenID Connect (OIDC)
+
+OIDC extends OAuth2 with identity. It adds:
+- An **ID token** (JWT containing user identity claims)
+- A standard `/.well-known/openid-configuration` discovery endpoint
+- Standard claims: `sub`, `email`, `name`, `picture`
+
+```csharp
+// ASP.NET Core with Microsoft Entra ID (Azure AD)
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+})
+.AddCookie()
+.AddOpenIdConnect(options =>
+{
+    options.Authority = "https://login.microsoftonline.com/{tenantId}/v2.0";
+    options.ClientId = builder.Configuration["AzureAd:ClientId"];
+    options.ClientSecret = builder.Configuration["AzureAd:ClientSecret"];
+    options.ResponseType = "code";             // Authorization Code flow
+
+    options.Scope.Clear();
+    options.Scope.Add("openid");
+    options.Scope.Add("profile");
+    options.Scope.Add("email");
+    options.Scope.Add("offline_access");       // To get a refresh token
+
+    options.SaveTokens = true;                 // Saves tokens in the auth cookie
+    options.GetClaimsFromUserInfoEndpoint = true;
+
+    options.CallbackPath = "/signin-oidc";     // Must match in Entra app registration
+    options.SignedOutCallbackPath = "/signout-callback-oidc";
+
+    options.TokenValidationParameters = new()
+    {
+        NameClaimType = "name",
+        RoleClaimType = "roles"
+    };
+
+    options.Events = new OpenIdConnectEvents
+    {
+        OnTokenValidated = ctx =>
+        {
+            // Add custom claims or transform existing ones
+            var identity = ctx.Principal!.Identity as ClaimsIdentity;
+            identity?.AddClaim(new Claim("custom_app_role", "reviewer"));
+            return Task.CompletedTask;
+        }
+    };
+});
+```
+
+---
+
+## Social Login (Google, GitHub)
+
+```csharp
+// Google OAuth2 — install Microsoft.AspNetCore.Authentication.Google
+builder.Services.AddAuthentication()
+    .AddCookie()
+    .AddGoogle(options =>
+    {
+        options.ClientId = builder.Configuration["Google:ClientId"]!;
+        options.ClientSecret = builder.Configuration["Google:ClientSecret"]!;
+        options.Scope.Add("https://www.googleapis.com/auth/userinfo.email");
+        options.Scope.Add("https://www.googleapis.com/auth/userinfo.profile");
+        options.SaveTokens = true;
+        options.ClaimActions.MapJsonKey("picture", "picture");
+    })
+    .AddGitHub(options =>
+    {
+        options.ClientId = builder.Configuration["GitHub:ClientId"]!;
+        options.ClientSecret = builder.Configuration["GitHub:ClientSecret"]!;
+        options.Scope.Add("user:email");
+    });
+```
+
+---
+
+## Multiple Authentication Schemes
+
+ASP.NET Core supports multiple schemes simultaneously — useful for APIs that accept both JWT (for machine clients) and cookies (for browsers):
+
+```csharp
+builder.Services.AddAuthentication(options =>
+{
+    // Default for web UI
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+})
+.AddCookie()
+.AddJwtBearer(options => { /* ... */ });
+
+// Per-endpoint override:
+[Authorize(AuthenticationSchemes =
+    JwtBearerDefaults.AuthenticationScheme + "," +
+    CookieAuthenticationDefaults.AuthenticationScheme)]
+public class ApiController : ControllerBase { }
+
+// Or use policy-based scheme selection
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("ApiOrCookie", policy =>
+        policy.AddAuthenticationSchemes(
+            JwtBearerDefaults.AuthenticationScheme,
+            CookieAuthenticationDefaults.AuthenticationScheme)
+        .RequireAuthenticatedUser());
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: PKCE and Why Public Clients Must Use It**
+
+The Authorization Code flow with a client secret is only safe for **confidential clients** (server-side apps that can keep a secret). Single-page apps and mobile apps are **public clients** — they cannot safely store a client secret.
+
+**PKCE (Proof Key for Code Exchange)** solves this:
+
+1. App generates a random `code_verifier`
+2. App hashes it to get `code_challenge` (SHA256)
+3. Auth request includes `code_challenge`
+4. Token exchange includes `code_verifier` — server verifies the hash matches
+5. An attacker who intercepts the authorization code cannot exchange it without the original `code_verifier`
+
+```csharp
+// ASP.NET Core's AddOpenIdConnect automatically uses PKCE for public clients
+options.UsePkce = true; // Default: true in .NET 7+
+```
+
+For APIs, use the **Client Credentials** flow (no user, machine-to-machine) or **Device Code** flow (headless devices). Never use the implicit flow — it was deprecated in OAuth 2.1.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/auth-cookies-oauth/quiz-1"
+  question="What is the primary difference between OAuth2 and OpenID Connect (OIDC)?"
+  options={[
+    "OAuth2 is for APIs, OIDC is for web apps",
+    "OAuth2 is an authorization framework for accessing resources; OIDC is an identity layer on top of OAuth2 for authenticating users",
+    "OIDC is more secure because it uses HTTPS while OAuth2 does not require it",
+    "OAuth2 uses cookies; OIDC uses JWT tokens"
+  ]}
+  correctAnswer={1}
+  explanation="OAuth2 is an authorization protocol — it grants access to resources without revealing user identity. OpenID Connect (OIDC) is built on top of OAuth2 and adds authentication — it provides an ID token (JWT) containing user identity claims like sub, email, and name. OIDC is how apps verify who the user is, while OAuth2 defines what they can access."
+/>
+
+---
+
+<MythBuster
+  myth="OAuth2 login means the user is authenticated — you know who they are"
+  truth="OAuth2 alone only proves the user consented to let your app access their resources at the provider. It does not give you verified identity. OIDC adds the ID token which contains verified identity claims. Many OAuth2 providers add non-standard user profile endpoints, but these are not part of the OAuth2 spec — only OIDC standardizes identity claims."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Cookie authentication in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/cookie" },
+    { label: "Google OAuth2 in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/social/google-logins" },
+    { label: "Microsoft Entra ID with ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/azure-active-directory/" },
+    { label: "OIDC in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/social/" },
+  ]}
+/>

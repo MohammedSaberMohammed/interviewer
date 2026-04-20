@@ -1,24 +1,333 @@
 ---
-title: "Lock Types: lock, Monitor, Semaphore, RWLock"
+title: "Lock Primitives: lock, Monitor, SemaphoreSlim, ReaderWriterLockSlim"
 slug: "lock-types"
 order: 10
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 17
+status: "published"
+tags: ["lock", "Monitor", "SemaphoreSlim", "ReaderWriterLockSlim", "synchronization", "mutex", "concurrency", "thread safety"]
+summary: "Each lock primitive has specific strengths — knowing when to use SemaphoreSlim vs lock vs ReaderWriterLockSlim separates good concurrency code from naive code."
+docsLinks:
+  - label: "Overview of synchronization primitives"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/threading/overview-of-synchronization-primitives"
+  - label: "SemaphoreSlim class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.semaphoreslim"
+  - label: "ReaderWriterLockSlim class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.readerwriterlockslim"
+  - label: "Monitor class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.monitor"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Primitive Landscape
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+.NET provides several synchronization primitives. Choosing the wrong one has real consequences for throughput, correctness, and debuggability:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+<ComparisonTable
+  headers={["Primitive", "Async-compatible", "Reentrant", "Best for"]}
+  rows={[
+    ["lock / Monitor", "No", "Yes", "Short critical sections, single-threaded access"],
+    ["SemaphoreSlim", "Yes (WaitAsync)", "No", "Async code, throttling concurrency (N > 1)"],
+    ["ReaderWriterLockSlim", "No", "Yes (read)", "Read-heavy scenarios with occasional writes"],
+    ["Mutex", "No", "Yes", "Cross-process synchronization"],
+    ["SpinLock", "No", "No", "Extremely short critical sections, no contention"],
+    ["Channel\<T\>", "Yes", "N/A", "Producer/consumer, prefer over explicit locking"],
+  ]}
+/>
+
+---
+
+## lock and Monitor
+
+`lock(obj) { ... }` is syntactic sugar for `Monitor.Enter` / `Monitor.Exit`:
+
+```csharp
+private readonly object _syncRoot = new object();
+private int _count;
+
+// lock keyword — always prefer this over raw Monitor for simple cases
+public void Increment()
+{
+    lock (_syncRoot)
+    {
+        _count++;
+    }
+}
+
+// Equivalent Monitor code (what lock compiles to):
+public void IncrementViaMonitor()
+{
+    bool lockTaken = false;
+    try
+    {
+        Monitor.Enter(_syncRoot, ref lockTaken);
+        _count++;
+    }
+    finally
+    {
+        if (lockTaken) Monitor.Exit(_syncRoot);
+    }
+}
+
+// Monitor.TryEnter — non-blocking attempt with timeout
+public bool TryIncrement(TimeSpan timeout)
+{
+    if (Monitor.TryEnter(_syncRoot, timeout))
+    {
+        try
+        {
+            _count++;
+            return true;
+        }
+        finally
+        {
+            Monitor.Exit(_syncRoot);
+        }
+    }
+    return false; // Could not acquire — contended
+}
+```
+
+<Callout type="trap">
+**Never lock on `this`, `typeof(T)`, or a string literal.** These are public objects — external code can lock on the same object, creating deadlock opportunities you cannot control. Always lock on a **private `readonly object`** field created specifically for synchronization.
 </Callout>
+
+---
+
+## lock Cannot Be Used with await
+
+This is a critical limitation — the compiler prevents it:
+
+```csharp
+// This does NOT compile:
+public async Task UpdateAsync()
+{
+    lock (_syncRoot)
+    {
+        await DoWorkAsync(); // CS1996: Cannot await in the body of a lock statement
+    }
+}
+
+// Why? The lock is held by the current thread.
+// After await, execution resumes on a potentially DIFFERENT thread.
+// Monitor.Exit on a different thread throws SynchronizationLockException.
+```
+
+The solution is `SemaphoreSlim`:
+
+```csharp
+private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1); // mutex (count 1)
+
+public async Task UpdateAsync()
+{
+    await _semaphore.WaitAsync(); // Async acquire
+    try
+    {
+        await DoWorkAsync(); // Safe to await while semaphore is held
+    }
+    finally
+    {
+        _semaphore.Release(); // Always release — threads change between await points
+    }
+}
+```
+
+---
+
+## SemaphoreSlim: More Than Just an Async Lock
+
+`SemaphoreSlim(initialCount, maxCount)` is a counting semaphore — up to `maxCount` concurrent acquirers:
+
+```csharp
+// As an async mutex (count=1): mutual exclusion for async code
+private readonly SemaphoreSlim _mutex = new SemaphoreSlim(1, 1);
+
+// As a concurrency limiter (count=N): throttle parallel operations
+private readonly SemaphoreSlim _throttle = new SemaphoreSlim(5, 5); // Max 5 concurrent
+
+// Throttled parallel HTTP calls
+public async Task<string[]> FetchManyAsync(string[] urls, CancellationToken ct)
+{
+    var tasks = urls.Select(async url =>
+    {
+        await _throttle.WaitAsync(ct);
+        try
+        {
+            return await _httpClient.GetStringAsync(url, ct);
+        }
+        finally
+        {
+            _throttle.Release();
+        }
+    });
+
+    return await Task.WhenAll(tasks);
+}
+
+// WaitAsync with timeout
+bool acquired = await _semaphore.WaitAsync(TimeSpan.FromSeconds(5), ct);
+if (!acquired)
+    throw new TimeoutException("Could not acquire semaphore");
+```
+
+---
+
+## ReaderWriterLockSlim: Read-Heavy Workloads
+
+When reads vastly outnumber writes, `ReaderWriterLockSlim` allows multiple concurrent readers but exclusive writers:
+
+```csharp
+private readonly ReaderWriterLockSlim _rwLock = new ReaderWriterLockSlim();
+private Dictionary<string, User> _cache = new();
+
+// Multiple threads can read simultaneously
+public User? GetUser(string id)
+{
+    _rwLock.EnterReadLock();
+    try
+    {
+        return _cache.TryGetValue(id, out var user) ? user : null;
+    }
+    finally
+    {
+        _rwLock.ExitReadLock();
+    }
+}
+
+// Only one thread can write at a time — all readers blocked during write
+public void AddUser(User user)
+{
+    _rwLock.EnterWriteLock();
+    try
+    {
+        _cache[user.Id] = user;
+    }
+    finally
+    {
+        _rwLock.ExitWriteLock();
+    }
+}
+
+// Upgradeable read: "maybe write" — check then conditionally upgrade
+public void EnsureUser(User user)
+{
+    _rwLock.EnterUpgradeableReadLock();
+    try
+    {
+        if (!_cache.ContainsKey(user.Id))
+        {
+            _rwLock.EnterWriteLock();
+            try
+            {
+                _cache[user.Id] = user; // Double-checked inside write lock
+            }
+            finally
+            {
+                _rwLock.ExitWriteLock();
+            }
+        }
+    }
+    finally
+    {
+        _rwLock.ExitUpgradeableReadLock();
+    }
+}
+```
+
+<Callout type="warning">
+**ReaderWriterLockSlim is not async-compatible** — the same thread must acquire and release the lock. Don't use it with async methods. For async read-heavy scenarios, consider `ConcurrentDictionary` (which uses fine-grained internal locks) or an immutable replacement pattern.
+</Callout>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Prefer lock-free data structures and immutability**
+
+The best lock is often no lock at all:
+
+```csharp
+// Option 1: ConcurrentDictionary — lock-free reads, fine-grained write locks
+private readonly ConcurrentDictionary<string, User> _cache = new();
+
+public User GetOrAdd(string id, Func<string, User> factory)
+    => _cache.GetOrAdd(id, factory); // Thread-safe, often lock-free for reads
+
+// Option 2: ImmutableDictionary with Interlocked.CompareExchange (snapshot replacement)
+private volatile ImmutableDictionary<string, User> _cache = ImmutableDictionary<string, User>.Empty;
+
+public void AddUser(User user)
+{
+    ImmutableDictionary<string, User> current, updated;
+    do
+    {
+        current = _cache;
+        updated = current.Add(user.Id, user);
+    } while (Interlocked.CompareExchange(ref _cache, updated, current) != current);
+    // No lock — wait-free snapshot replacement
+}
+
+// Option 3: Channel<T> — eliminate shared state by message passing
+// Producers write commands to a channel; a single consumer owns the state
+// No locking needed because only one consumer touches the state
+```
+
+The immutable snapshot pattern works well for read-heavy data that changes infrequently (config, feature flags). Reads are completely lock-free — they just read the current `_cache` reference.
+</Callout>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/lock-types/challenge-1"
+  title="Choose the Right Primitive"
+  description="An in-memory cache is read 10,000 times per second and written once per minute. Readers need consistent snapshots. Which primitive is best?"
+  code={`// Option A: lock
+private readonly object _lock = new();
+private Dictionary\<string, object\> _cache = new();
+public object Get(string key) { lock(_lock) { return _cache[key]; } }
+public void Set(string key, object val) { lock(_lock) { _cache[key] = val; } }
+
+// Option B: ReaderWriterLockSlim
+private readonly ReaderWriterLockSlim _rwLock = new();
+public object Get(string key) { _rwLock.EnterReadLock(); try { return _cache[key]; } finally { _rwLock.ExitReadLock(); } }
+public void Set(string key, object val) { _rwLock.EnterWriteLock(); try { _cache[key] = val; } finally { _rwLock.ExitWriteLock(); } }
+
+// Option C: ImmutableDictionary with volatile
+private volatile ImmutableDictionary\<string, object\> _cache = ImmutableDictionary\<string, object\>.Empty;
+public object Get(string key) => _cache[key]; // lock-free!
+public void Set(string key, object val) { /* CAS loop to replace */ }`}
+  options={[
+    "Option A — lock is the simplest and safest choice for all scenarios",
+    "Option B — ReaderWriterLockSlim is ideal because reads dominate and can run concurrently",
+    "Option C — ImmutableDictionary gives completely lock-free reads with safe atomic replacements",
+    "Option B and C are equivalent — choose based on team familiarity"
+  ]}
+  correctAnswer={2}
+  explanation="For 10,000 reads/second with 1 write/minute, Option C (ImmutableDictionary with volatile/Interlocked) is optimal. Reads are completely lock-free — they just dereference the volatile field and use the immutable dictionary with no synchronization at all. Option B (ReaderWriterLockSlim) allows concurrent reads but still acquires a read lock on every read — 10,000 lock acquisitions per second. Option A blocks all readers during writes and only allows one reader at a time. Lock-free reads win at this read/write ratio."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/lock-types/quiz-1"
+  question="Why can't you use 'lock' with 'await' inside the locked region?"
+  options={[
+    "Performance reasons — the compiler disallows it to prevent slowdowns",
+    "After an await, execution may resume on a different thread, but Monitor.Exit must be called on the same thread that called Monitor.Enter",
+    "lock uses a kernel object that doesn't support async operations",
+    "await requires a SynchronizationContext, which is incompatible with lock"
+  ]}
+  correctAnswer={1}
+  explanation="Monitor.Enter and Monitor.Exit are thread-affine: Exit must be called from the same thread that called Enter. After an await point, the code can resume on a different ThreadPool thread. If you could await inside a lock, the Monitor.Exit in the finally block would run on the wrong thread and throw SynchronizationLockException. This is why the C# compiler makes it a compile error. SemaphoreSlim.WaitAsync() / Release() have no thread affinity — they work correctly across thread switches."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Overview of synchronization primitives", url: "https://learn.microsoft.com/en-us/dotnet/standard/threading/overview-of-synchronization-primitives" },
+    { label: "SemaphoreSlim class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.semaphoreslim" },
+    { label: "ReaderWriterLockSlim class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.readerwriterlockslim" },
+    { label: "Monitor class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.monitor" },
+  ]}
+/>

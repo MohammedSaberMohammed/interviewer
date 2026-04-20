@@ -1,24 +1,296 @@
 ---
-title: "Async Streams & Backpressure"
+title: "Async Streams with Backpressure: Channel vs IAsyncEnumerable"
 slug: "async-streams-backpressure"
 order: 15
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["backpressure", "IAsyncEnumerable", "Channel", "async streams", "producer consumer", "flow control", "pipeline"]
+summary: "Backpressure prevents fast producers from overwhelming slow consumers — IAsyncEnumerable gives implicit backpressure, while Channel gives explicit flow control with decoupled lifetimes."
+docsLinks:
+  - label: "System.Threading.Channels"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels"
+  - label: "Async streams (IAsyncEnumerable)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream"
+  - label: "An Introduction to System.Threading.Channels"
+    url: "https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Backpressure?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+**Backpressure** is the mechanism by which a slow consumer signals to a fast producer to slow down. Without backpressure, a fast producer fills memory without bound until the process crashes.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+Without backpressure:
+Producer ──[unbounded buffer]──────────────────────→ Consumer
+         (fills up, OOM crash)
+
+With backpressure:
+Producer ──[bounded buffer]──→ (buffer full?) ──→ Consumer
+         ← slow down signal ←
+
+```
+
+In .NET, you have two main tools: `IAsyncEnumerable<T>` (implicit backpressure) and `Channel<T>` (explicit backpressure).
+
+---
+
+## IAsyncEnumerable: Implicit Backpressure
+
+`IAsyncEnumerable<T>` is a **pull-based** model. The consumer controls the pace. The producer only runs when the consumer calls `MoveNextAsync()`:
+
+```csharp
+// Producer runs ONE step per consumer MoveNextAsync() call
+public async IAsyncEnumerable<int> ProduceAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    for (int i = 0; i < 1_000_000; i++)
+    {
+        // Each iteration is gated by the consumer calling MoveNextAsync()
+        // If consumer is slow, this loop is slow — natural backpressure
+        await Task.Delay(1, ct); // Simulate some async production
+        yield return i;
+    }
+}
+
+// Consumer — its pace controls the producer
+await foreach (var item in ProduceAsync(ct))
+{
+    await ProcessSlowlyAsync(item, ct); // If this is slow, producer slows down
+}
+```
+
+This is clean and elegant, but has a constraint: **producer and consumer are tightly coupled** — they run on the same logical "thread" (the async chain). The producer cannot run ahead to pre-fetch items.
+
+---
+
+## Channel: Explicit Backpressure with Decoupled Lifetimes
+
+`Channel<T>` is a **push-based** model with an explicit buffer. Producer and consumer run independently and concurrently:
+
+```csharp
+// Decoupled: producer and consumer run independently in parallel
+public async Task RunPipelineAsync(CancellationToken ct)
+{
+    var channel = Channel.CreateBounded<WorkItem>(new BoundedChannelOptions(50)
+    {
+        FullMode = BoundedChannelFullMode.Wait // Backpressure: producer awaits when full
+    });
+
+    // Producer runs concurrently — can pre-fetch up to 50 items ahead
+    var producer = Task.Run(async () =>
+    {
+        try
+        {
+            await foreach (var item in _source.StreamAsync(ct))
+                await channel.Writer.WriteAsync(item, ct); // Backpressure here
+        }
+        finally { channel.Writer.Complete(); }
+    }, ct);
+
+    // Consumer runs independently — processes at its own pace
+    var consumer = Task.Run(async () =>
+    {
+        await foreach (var item in channel.Reader.ReadAllAsync(ct))
+            await ProcessAsync(item, ct);
+    }, ct);
+
+    await Task.WhenAll(producer, consumer);
+}
+```
+
+The channel's bounded buffer allows the producer to be N items ahead, improving throughput when there's latency variance in either stage.
+
+---
+
+## Head-to-Head Comparison
+
+<ComparisonTable
+  headers={["Property", "IAsyncEnumerable<T>", "Channel<T>"]}
+  rows={[
+    ["Coupling", "Tight — producer awaits consumer at each item", "Loose — producer and consumer run concurrently"],
+    ["Buffering", "Zero (one item at a time)", "Configurable (0 to N items)"],
+    ["Backpressure", "Implicit — consumer pace gates producer", "Explicit — BoundedChannelFullMode.Wait"],
+    ["Throughput", "Lower — no pipelining possible", "Higher — producer can pre-fetch during consumer processing"],
+    ["Complexity", "Simple — just async foreach", "More complex — explicit producer/consumer tasks"],
+    ["Multiple consumers", "Requires manual coordination", "Native — multiple readers on same ChannelReader"],
+    ["Best for", "Sequential streaming, simple pipelines", "High-throughput pipelines, fanout, multi-stage"],
+  ]}
+/>
+
+---
+
+## The Hybrid Pattern: Channel as IAsyncEnumerable Source
+
+You can bridge the two worlds — use a Channel internally but expose `IAsyncEnumerable<T>` to callers:
+
+```csharp
+// Channel powers the internal pipeline; IAsyncEnumerable exposed as the API
+public async IAsyncEnumerable<ProcessedResult> ProcessStreamAsync(
+    IAsyncEnumerable<RawData> input,
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    // Internal bounded buffer: decouple I/O reading from processing
+    var channel = Channel.CreateBounded<ProcessedResult>(new BoundedChannelOptions(20)
+    {
+        FullMode = BoundedChannelFullMode.Wait
+    });
+
+    // Background producer: processes input and writes to channel
+    var producer = Task.Run(async () =>
+    {
+        try
+        {
+            await foreach (var raw in input.WithCancellation(ct))
+            {
+                var result = await TransformAsync(raw, ct); // CPU-heavy transform
+                await channel.Writer.WriteAsync(result, ct);
+            }
+        }
+        finally { channel.Writer.TryComplete(); }
+    }, ct);
+
+    // Yield results to caller as IAsyncEnumerable
+    await foreach (var result in channel.Reader.ReadAllAsync(ct))
+        yield return result;
+
+    // Ensure producer completed (and propagate exceptions)
+    await producer;
+}
+```
+
+---
+
+## Multi-Stage Pipeline with Backpressure
+
+```csharp
+// 3-stage pipeline: Fetch → Transform → Persist
+// Each stage has its own bounded buffer providing backpressure between stages
+public async Task RunMultiStagePipelineAsync(CancellationToken ct)
+{
+    // Stage 1 → Stage 2 buffer
+    var fetchToTransform = Channel.CreateBounded<RawItem>(
+        new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.Wait });
+
+    // Stage 2 → Stage 3 buffer
+    var transformToPersist = Channel.CreateBounded<ProcessedItem>(
+        new BoundedChannelOptions(50) { FullMode = BoundedChannelFullMode.Wait });
+
+    // Stage 1: Fetch (1 producer, fast network reader)
+    var fetch = Task.Run(async () =>
+    {
+        try
+        {
+            await foreach (var item in _api.StreamItemsAsync(ct))
+                await fetchToTransform.Writer.WriteAsync(item, ct);
+        }
+        finally { fetchToTransform.Writer.TryComplete(); }
+    }, ct);
+
+    // Stage 2: Transform (3 parallel workers, CPU-heavy)
+    var transforms = Enumerable.Range(0, 3).Select(_ => Task.Run(async () =>
+    {
+        await foreach (var raw in fetchToTransform.Reader.ReadAllAsync(ct))
+        {
+            var processed = await TransformAsync(raw, ct);
+            await transformToPersist.Writer.WriteAsync(processed, ct);
+        }
+    }, ct)).ToArray();
+
+    // Stage 3: Persist (2 parallel workers, slow DB writes)
+    var persists = Enumerable.Range(0, 2).Select(_ => Task.Run(async () =>
+    {
+        await foreach (var item in transformToPersist.Reader.ReadAllAsync(ct))
+            await _db.InsertAsync(item, ct);
+    }, ct)).ToArray();
+
+    // Complete stage 2's channel when all transform workers finish
+    await Task.WhenAll(transforms);
+    transformToPersist.Writer.TryComplete();
+
+    // Wait for all stages
+    await Task.WhenAll(fetch);
+    await Task.WhenAll(persists);
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Backpressure propagation and flow control**
+
+The multi-stage pipeline above has automatic backpressure propagation:
+- If `persists` (stage 3) are slow, `transformToPersist` fills up
+- Full `transformToPersist` causes `transforms` (stage 2) workers to await on `WriteAsync`
+- Blocked `transforms` workers stop reading from `fetchToTransform`
+- Full `fetchToTransform` causes `fetch` (stage 1) to await on `WriteAsync`
+- Stage 1 stops fetching from the network
+
+This is the reactive backpressure model in action — slowdown propagates backward through the pipeline without polling, overflow, or manual signaling. The bounded buffers are the key: each one acts as a speed governor between its two adjacent stages.
+
+For production pipelines, tuning buffer sizes is important:
+- **Too small**: excessive context switching (producer and consumer wake each other constantly)
+- **Too large**: high memory usage; slow consumers fall far behind before backpressure engages
+- **Rule of thumb**: buffer size = (producer throughput per second) × (acceptable latency in seconds)
 </Callout>
+
+---
+
+<MythBuster
+  myth="IAsyncEnumerable and Channel solve the same problem"
+  reality="They solve different problems. IAsyncEnumerable is a pull-based streaming API — consumer-driven, zero buffer, tight coupling between producer and consumer. Channel is a push-based communication primitive with configurable buffering and decoupled producer/consumer lifetimes. IAsyncEnumerable is ideal for sequential processing where simplicity matters. Channel is ideal for high-throughput pipelines where producer and consumer speed differ and you need concurrent processing."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/async-streams-backpressure/challenge-1"
+  title="Design a Backpressure Strategy"
+  description="A service reads messages from an external API at 1,000/sec. Each message takes ~5ms to process (200/sec max). Without backpressure, what happens after 10 seconds?"
+  code={`// Scenario: fast producer (1000/sec), slow consumer (200/sec)
+// After 10 seconds:
+// - Produced:  10,000 messages
+// - Consumed:  2,000 messages
+// - Buffered: ??? messages
+
+// Option A: IAsyncEnumerable\<T\> (pull-based, zero buffer)
+// Option B: Channel.CreateUnbounded\<T\> (push-based, no backpressure)
+// Option C: Channel.CreateBounded\<T\>(capacity: 500, FullMode.Wait) (push-based, backpressure)
+// Option D: Channel.CreateBounded\<T\>(capacity: 500, FullMode.DropOldest) (push-based, lossy)`}
+  options={[
+    "Option A — IAsyncEnumerable naturally limits to 200/sec since consumer drives the pace",
+    "Option B — Unbounded channel handles any speed mismatch without issues",
+    "Option C — Bounded channel with Wait causes producer to block when buffer fills, slowing API reads to match consumer rate",
+    "Option D — DropOldest is always better than Wait because it never blocks"
+  ]}
+  correctAnswer={2}
+  explanation="Option C is correct for most production scenarios. After ~2.5 seconds, the 500-item buffer fills (at a net rate of 800 items/sec surplus). The producer then awaits on WriteAsync(), which limits its read rate from the external API to match the consumer's 200/sec. Option A also works but cannot pre-fetch or buffer — any variance in consumer speed causes the producer to pause. Option B (unbounded) accumulates 8,000 unbuffered items after 10 seconds — OOM risk. Option D (DropOldest) silently loses messages — only for lossy-tolerant scenarios."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/async-streams-backpressure/quiz-1"
+  question="In a Channel<T> pipeline with BoundedChannelFullMode.Wait, when is backpressure actually applied?"
+  options={[
+    "When the consumer reads slower than the producer writes, causing the channel to fill, causing WriteAsync to return an incomplete Task that suspends the producer",
+    "Immediately — the producer always waits for the consumer to read before writing",
+    "When the channel has any items in it (even one)",
+    "Only when the consumer explicitly signals the producer to slow down"
+  ]}
+  correctAnswer={0}
+  explanation="Backpressure with BoundedChannelFullMode.Wait engages when the channel reaches its capacity. At that point, WriteAsync() returns an incomplete ValueTask — the producer is suspended (awaiting) until a consumer reads an item and frees a slot. Below capacity, WriteAsync() completes synchronously with no delay. This is the natural flow control: producer runs freely when there's buffer space, slows to match consumer rate when the buffer is full."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "System.Threading.Channels", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels" },
+    { label: "Async streams (IAsyncEnumerable)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream" },
+    { label: "An Introduction to System.Threading.Channels", url: "https://devblogs.microsoft.com/dotnet/an-introduction-to-system-threading-channels/" },
+    { label: "BoundedChannelFullMode enum", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.channels.boundedchannelfullmode" },
+  ]}
+/>

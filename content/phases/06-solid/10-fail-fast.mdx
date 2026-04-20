@@ -3,22 +3,324 @@ title: "Fail Fast"
 slug: "fail-fast"
 order: 10
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["fail fast", "guard clauses", "defensive programming", "ArgumentException", "validation", "exceptions"]
+summary: "Detect and report errors at the earliest possible point — learn guard clauses, defensive programming patterns, and how failing fast in C# produces code that is easier to debug and reason about."
+docsLinks:
+  - label: "Exceptions and exception handling (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/exceptions/"
+  - label: "ArgumentException class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.argumentexception"
+  - label: "ArgumentNullException.ThrowIfNull (NET 6+)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.argumentnullexception.throwifnull"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Fail Fast?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The fail-fast principle says: **detect errors and report them as soon as possible, at the point closest to the cause.**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The alternative — failing late — means an invalid value propagates through layers of code before eventually causing a cryptic `NullReferenceException` or corrupted database record five call frames away from where the bad value entered the system.
+
+Fail fast produces:
+- Exceptions with meaningful messages at the point of invalid input
+- Stack traces that point directly at the problem
+- Systems that don't corrupt state with partial writes from invalid data
+- Code that is dramatically easier to debug
+
+---
+
+## Failing Late: The Silent Corruption Pattern
+
+```csharp
+// BAD: Failing late — invalid data silently propagates
+
+public class OrderService
+{
+    private readonly IOrderRepository _repo;
+    private readonly IEmailService _email;
+
+    public OrderService(IOrderRepository repo, IEmailService email)
+    {
+        // No validation — null dependencies accepted silently
+        _repo = repo;
+        _email = email;
+    }
+
+    public void PlaceOrder(Order order)
+    {
+        // No validation — what if order is null? What if CustomerEmail is empty?
+        order.PlacedAt = DateTime.UtcNow;
+        order.Status = OrderStatus.Confirmed;
+
+        _repo.Save(order); // NullReferenceException here if _repo is null
+                           // Or NullReferenceException on order.PlacedAt if order is null
+
+        // If Save() succeeded with an invalid order, the DB now has corrupt data
+        _email.SendConfirmation(order.CustomerEmail); // InvalidOperationException if email is empty
+    }
+}
+```
+
+When `_repo` is null and the `NullReferenceException` fires in `Save()`, the stack trace points at the persistence layer — not at the constructor where the null was accepted. You spend 10 minutes debugging the wrong place.
+
+---
+
+## Failing Fast: Guard Clauses
+
+```csharp
+// GOOD: Fail at the earliest possible point with a useful message
+
+public class OrderService
+{
+    private readonly IOrderRepository _repo;
+    private readonly IEmailService _email;
+
+    public OrderService(IOrderRepository repo, IEmailService email)
+    {
+        // Fail here — at the point of construction — not 3 layers later
+        _repo  = repo  ?? throw new ArgumentNullException(nameof(repo));
+        _email = email ?? throw new ArgumentNullException(nameof(email));
+    }
+
+    public void PlaceOrder(Order order)
+    {
+        // Guard clauses first — validate all inputs before doing anything
+        ArgumentNullException.ThrowIfNull(order);               // .NET 6+
+
+        if (string.IsNullOrWhiteSpace(order.CustomerEmail))
+            throw new ArgumentException("CustomerEmail is required", nameof(order));
+
+        if (!order.LineItems.Any())
+            throw new ArgumentException("Order must have at least one line item", nameof(order));
+
+        // Now we can proceed knowing inputs are valid
+        order.PlacedAt = DateTime.UtcNow;
+        order.Status = OrderStatus.Confirmed;
+        _repo.Save(order);
+        _email.SendConfirmation(order.CustomerEmail);
+    }
+}
+```
+
+Now if you pass a null `order`, the exception fires immediately in `PlaceOrder`, with a clear message: `"Value cannot be null. (Parameter 'order')"` — not a cryptic NRE five methods deep.
+
+---
+
+## Modern Guard Clause APIs (.NET 6+)
+
+.NET 6 added static throw helpers to make guard clauses concise:
+
+```csharp
+// .NET 6+: ArgumentNullException.ThrowIfNull
+public void Process(Order order)
+{
+    ArgumentNullException.ThrowIfNull(order);
+    // Equivalent to: if (order is null) throw new ArgumentNullException(nameof(order));
+}
+
+// .NET 8+: ArgumentException.ThrowIfNullOrWhiteSpace
+public void SetEmail(string email)
+{
+    ArgumentException.ThrowIfNullOrWhiteSpace(email);
+    // Equivalent to: if (string.IsNullOrWhiteSpace(email)) throw new ArgumentException(...)
+}
+
+// .NET 8+: ArgumentOutOfRangeException.ThrowIfNegative, ThrowIfZero, ThrowIfGreaterThan
+public void SetQuantity(int quantity)
+{
+    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+    // Equivalent to: if (quantity <= 0) throw new ArgumentOutOfRangeException(...)
+}
+
+// All of these capture the parameter name automatically via CallerArgumentExpression
+// No need to type nameof(param) — the compiler fills it in
+```
+
+---
+
+## Guard Clauses: Pattern and Placement
+
+Guard clauses follow the **early return** pattern: validate inputs at the top of the method, return (or throw) immediately, and have the happy path run without nesting:
+
+```csharp
+// BAD: Arrow-head code — deeply nested, hard to follow
+public decimal CalculateDiscount(Order order, Customer customer)
+{
+    if (order != null)
+    {
+        if (customer != null)
+        {
+            if (order.LineItems.Any())
+            {
+                if (customer.MembershipLevel == MembershipLevel.Premium)
+                {
+                    return order.Subtotal * 0.2m;
+                }
+            }
+        }
+    }
+    return 0m;
+}
+
+// GOOD: Guard clauses flatten the structure — happy path is obvious
+public decimal CalculateDiscount(Order order, Customer customer)
+{
+    ArgumentNullException.ThrowIfNull(order);
+    ArgumentNullException.ThrowIfNull(customer);
+
+    if (!order.LineItems.Any())
+        return 0m;
+
+    if (customer.MembershipLevel != MembershipLevel.Premium)
+        return 0m;
+
+    return order.Subtotal * 0.2m; // Happy path — clearly visible
+}
+```
+
+---
+
+## Choosing the Right Exception Type
+
+```csharp
+// ArgumentNullException — parameter is null when it shouldn't be
+public void Process(string input)
+{
+    ArgumentNullException.ThrowIfNull(input);
+}
+
+// ArgumentException — parameter is non-null but invalid
+public void SetAge(int age)
+{
+    if (age < 0 || age > 150)
+        throw new ArgumentException($"Age must be between 0 and 150, got {age}.", nameof(age));
+}
+
+// ArgumentOutOfRangeException — numeric parameter is outside valid range
+public void SetQuantity(int quantity)
+{
+    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity, nameof(quantity));
+}
+
+// InvalidOperationException — operation is invalid given current object STATE
+public void Ship(Order order)
+{
+    if (order.Status != OrderStatus.Confirmed)
+        throw new InvalidOperationException(
+            $"Cannot ship an order in status {order.Status}. Order must be Confirmed.");
+}
+
+// NotSupportedException — operation is not supported by this implementation
+// (Use rarely — often signals an LSP violation)
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Fail Fast at System Boundaries**
+
+Fail fast is most important at **system boundaries** — the edges where data enters your system from the outside world:
+
+- **API endpoints** — validate request models before processing. Use FluentValidation or `[ApiController]` auto-validation so invalid requests get 400 responses, not 500s.
+- **Domain model constructors** — use factory methods or constructor guards to ensure domain objects can never be in an invalid state.
+- **Service constructors** — guard null dependencies so configuration mistakes surface at startup, not at first use.
+- **Event/message handlers** — validate incoming messages before processing. A malformed message that gets partially processed is much harder to recover from than one that fails immediately.
+
+The opposite of fail fast is **defensive coding** where you null-check everywhere to "handle" problems rather than reject them: `if (order?.Customer?.Email != null) sendEmail(order.Customer.Email)`. This hides bugs. Fail fast says: the email should never be null at this point — if it is, that is a bug, and I want to know immediately.
+
+One practical pattern in ASP.NET Core: use `IOptions<T>` with `ValidateDataAnnotations()` and `ValidateOnStart()` to validate configuration at startup:
+
+```csharp
+builder.Services.AddOptions<SmtpSettings>()
+    .BindConfiguration("Smtp")
+    .ValidateDataAnnotations()
+    .ValidateOnStart(); // Fails fast at app startup if config is invalid
+```
+
+This means a misconfigured SMTP host fails at startup with a clear error, not at the first email send attempt in production.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Fail fast means throw exceptions everywhere and let the caller deal with it"
+  reality="Fail fast is about detecting invalid inputs and invariant violations at the earliest point — not about being cavalier with exceptions. Expected business conditions (e.g., 'user not found', 'payment declined') should be handled with return values, Result types, or domain events — not exceptions. Fail fast with exceptions is for truly invalid states: null arguments, violated invariants, impossible states. Use exceptions for 'this should never happen' scenarios, not for 'this sometimes happens in the normal flow.'"
+/>
+
+---
+
+## Code Challenge: Apply Guard Clauses
+
+<CodeChallenge
+  id="06-solid/fail-fast/challenge-1"
+  title="Add the Missing Guard Clauses"
+  description="This constructor accepts null dependencies silently. Which set of guard clauses correctly applies fail fast?"
+  code={`public class PaymentProcessor
+{
+    private readonly IPaymentGateway _gateway;
+    private readonly ILogger\<PaymentProcessor\> _logger;
+    private readonly string _merchantId;
+
+    public PaymentProcessor(
+        IPaymentGateway gateway,
+        ILogger\<PaymentProcessor\> logger,
+        string merchantId)
+    {
+        _gateway = gateway;
+        _logger = logger;
+        _merchantId = merchantId;
+    }
+}`}
+  options={[
+    "No guards needed — the DI container ensures non-null dependencies",
+    "Guard only _gateway since it is the most critical dependency",
+    "Guard all three: ThrowIfNull for gateway and logger, ThrowIfNullOrWhiteSpace for merchantId",
+    "Use try/catch in the methods that use these fields instead"
+  ]}
+  correctAnswer={2}
+  explanation="All three parameters should be guarded at the point of construction. ArgumentNullException.ThrowIfNull(gateway) and ArgumentNullException.ThrowIfNull(logger) ensure object references are valid. ArgumentException.ThrowIfNullOrWhiteSpace(merchantId) catches both null and empty/whitespace strings (an empty merchant ID is just as invalid as a null one). The DI container normally provides non-null dependencies, but guards protect against direct instantiation (tests, factories) and make the class's requirements explicit and self-documenting. try/catch in methods (Option D) is fail-late, not fail-fast."
+/>
+
+---
+
+<Quiz
+  id="06-solid/fail-fast/quiz-1"
+  questions={[
+    {
+      question: "Which exception type is most appropriate when a method is called when the object is in a state that doesn't support the operation?",
+      options: [
+        "ArgumentException",
+        "ArgumentNullException",
+        "InvalidOperationException",
+        "NotSupportedException"
+      ],
+      correctAnswer: 2,
+      explanation: "InvalidOperationException is for operations that are invalid given the current state of the object — e.g., calling Ship() on an Order that isn't confirmed. ArgumentException and ArgumentNullException are for invalid arguments passed to the method. NotSupportedException signals that the operation is not implemented at all (use rarely, as it often indicates an LSP violation)."
+    },
+    {
+      question: "What is the advantage of ArgumentNullException.ThrowIfNull(param) over if (param is null) throw new ArgumentNullException(nameof(param))?",
+      options: [
+        "ThrowIfNull is faster at runtime",
+        "ThrowIfNull captures the parameter name automatically via CallerArgumentExpression — less boilerplate",
+        "ThrowIfNull also checks for empty strings",
+        "ThrowIfNull works with value types too"
+      ],
+      correctAnswer: 1,
+      explanation: "ArgumentNullException.ThrowIfNull() uses the [CallerArgumentExpression] attribute to automatically capture the expression passed as the argument — so it knows the parameter name without you writing nameof(param) manually. This reduces boilerplate while still producing the correct exception message. It does not check for empty strings (use ThrowIfNullOrWhiteSpace for that) and does not work with non-nullable value types."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Exceptions and exception handling (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/exceptions/" },
+    { label: "ArgumentNullException.ThrowIfNull (.NET 6+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.argumentnullexception.throwifnull" },
+    { label: "ArgumentException.ThrowIfNullOrWhiteSpace (.NET 8+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.argumentexception.throwifnullorwhitespace" },
+    { label: "Options validation — ValidateOnStart", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/options#options-validation" },
+  ]}
+/>

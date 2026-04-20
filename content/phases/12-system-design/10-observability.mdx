@@ -1,24 +1,281 @@
 ---
-title: "Observability: Logs, Metrics, Traces"
+title: "Observability: Logs, Metrics, Traces, and OpenTelemetry in .NET"
 slug: "observability"
 order: 10
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["observability", "OpenTelemetry", "logs", "metrics", "traces", "Application Insights", "monitoring", ".NET"]
+summary: "The three pillars of observability — logs, metrics, and traces — serve different debugging needs. OpenTelemetry standardizes all three in .NET and sends them to any backend without vendor lock-in."
+docsLinks:
+  - label: "OpenTelemetry in .NET — overview"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
+  - label: "Azure Monitor — Application Insights"
+    url: "https://learn.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview"
+  - label: ".NET observability with OpenTelemetry"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Three Pillars of Observability
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Observability is the ability to understand the internal state of a system from its external outputs. The three signals are complementary — each answers a different class of question:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+| Signal | Question It Answers | Granularity |
+|--------|---------------------|-------------|
+| **Logs** | "What exactly happened, and when?" | Per-event, high detail |
+| **Metrics** | "How is the system performing over time?" | Aggregated, low detail |
+| **Traces** | "Which path did this request take?" | Per-request, causally linked |
+
+A system with only logs and no metrics makes it hard to detect trends. A system with only metrics and no traces makes it impossible to diagnose why p99 latency spiked. All three signals are needed.
+
+---
+
+## Logs: Structured Is the Only Option
+
+**Unstructured logs** (plain text) are hard to query at scale. **Structured logs** emit key-value pairs that tools like Kibana, Seq, and Application Insights can index and filter.
+
+```csharp
+// BAD — unstructured, impossible to query by orderId
+_logger.LogInformation(\$"Order {order.Id} placed for customer {order.CustomerId}");
+
+// GOOD — structured log with named properties
+_logger.LogInformation("Order placed. OrderId={OrderId} CustomerId={CustomerId} Amount={Amount}",
+    order.Id, order.CustomerId, order.TotalAmount);
+// Emits: { "OrderId": "abc-123", "CustomerId": "cust-456", "Amount": 99.99 }
+// Now filterable: where OrderId = 'abc-123'
+
+// Using Serilog for richer structured logging
+Log.ForContext("OrderId", order.Id)
+   .ForContext("CustomerId", order.CustomerId)
+   .Information("Order placed for {Amount}", order.TotalAmount);
+```
+
+**Log levels — use them correctly**:
+- `Trace/Debug`: Development only, never in production (too verbose)
+- `Information`: Key business events (order placed, user logged in)
+- `Warning`: Recoverable anomalies (retry triggered, cache miss, validation failure)
+- `Error`: Failures requiring investigation (unhandled exception, external service error)
+- `Critical`: System is unusable (database connection lost, startup failure)
+
+---
+
+## Metrics: Aggregate Performance Data
+
+Metrics are numeric measurements aggregated over time. They are cheap to collect, compact to store, and excellent for dashboards and alerts.
+
+**.NET Meters API** (the foundation for OpenTelemetry metrics):
+
+```csharp
+// Define metrics at service level (singleton)
+public class OrderMetrics
+{
+    private readonly Counter<long> _ordersPlaced;
+    private readonly Histogram<double> _orderProcessingDuration;
+    private readonly ObservableGauge<int> _pendingOrderCount;
+    private readonly IOrderRepository _repo;
+
+    public OrderMetrics(IMeterFactory meterFactory, IOrderRepository repo)
+    {
+        _repo = repo;
+        var meter = meterFactory.Create("MyApp.Orders");
+
+        _ordersPlaced = meter.CreateCounter<long>(
+            "orders.placed",
+            unit: "{orders}",
+            description: "Total number of orders placed"
+        );
+
+        _orderProcessingDuration = meter.CreateHistogram<double>(
+            "orders.processing.duration",
+            unit: "ms",
+            description: "Time to process an order"
+        );
+
+        // Observable gauge — value queried on demand (no push)
+        _pendingOrderCount = meter.CreateObservableGauge(
+            "orders.pending.count",
+            () => _repo.GetPendingCountSync(),
+            unit: "{orders}",
+            description: "Current number of pending orders"
+        );
+    }
+
+    public void RecordOrderPlaced(string region, decimal amount)
+    {
+        _ordersPlaced.Add(1, new TagList
+        {
+            { "region", region },
+            { "amount.bucket", amount > 100 ? "large" : "small" }
+        });
+    }
+
+    public void RecordProcessingDuration(double milliseconds, string status)
+    {
+        _orderProcessingDuration.Record(milliseconds, new TagList
+        {
+            { "status", status }
+        });
+    }
+}
+```
+
+**Key metric types**:
+- **Counter**: Monotonically increasing (requests served, errors)
+- **Gauge**: Point-in-time value (current queue depth, active connections)
+- **Histogram**: Distribution of values (request latency p50/p95/p99)
+
+---
+
+## Traces: Request Flow Across Services
+
+A trace represents the end-to-end journey of a request through your system. A trace contains **spans** — individual units of work.
+
+```
+Trace: user-request-abc
+  ├── Span: POST /api/orders (5ms)            [API Gateway]
+  │     ├── Span: OrderService.PlaceOrder (80ms)  [Order Service]
+  │     │     ├── Span: SELECT * FROM Orders (12ms)   [SQL Server]
+  │     │     ├── Span: InventoryService.Reserve (30ms) [HTTP call]
+  │     │     │     └── Span: SELECT * FROM Stock (8ms)  [SQL Server]
+  │     │     └── Span: Publish OrderPlaced (5ms)      [Service Bus]
+  │     └── Span: Response serialization (2ms)
+```
+
+**.NET Activity API** (the tracing primitive):
+
+```csharp
+// Define an ActivitySource (named, versioned)
+private static readonly ActivitySource _activitySource = new("MyApp.Orders", "1.0");
+
+public async Task<Order> PlaceOrderAsync(CreateOrderCommand cmd)
+{
+    // Start a span — automatically linked to the current trace context
+    using var activity = _activitySource.StartActivity("OrderService.PlaceOrder");
+
+    // Add span attributes for filtering in Jaeger / Application Insights
+    activity?.SetTag("order.customer_id", cmd.CustomerId);
+    activity?.SetTag("order.item_count", cmd.Items.Count);
+
+    try
+    {
+        var order = await _repo.SaveAsync(cmd);
+
+        activity?.SetTag("order.id", order.Id);
+        activity?.SetStatus(ActivityStatusCode.Ok);
+
+        return order;
+    }
+    catch (Exception ex)
+    {
+        activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+        activity?.RecordException(ex); // attaches stack trace to span
+        throw;
+    }
+}
+```
+
+---
+
+## OpenTelemetry: One SDK to Rule Them All
+
+OpenTelemetry (OTel) is the CNCF standard for collecting and exporting all three signals. In .NET:
+
+```csharp
+// Install:
+// Install-Package OpenTelemetry.Extensions.Hosting
+// Install-Package OpenTelemetry.Instrumentation.AspNetCore
+// Install-Package OpenTelemetry.Instrumentation.Http
+// Install-Package OpenTelemetry.Instrumentation.SqlClient
+// Install-Package OpenTelemetry.Exporter.OpenTelemetryProtocol (OTLP → Jaeger, Grafana)
+// Install-Package Azure.Monitor.OpenTelemetry.AspNetCore (→ Application Insights)
+
+builder.Services.AddOpenTelemetry()
+    // Traces
+    .WithTracing(tracing =>
+    {
+        tracing
+            .AddSource("MyApp.Orders")          // custom ActivitySource
+            .AddAspNetCoreInstrumentation()     // auto-instruments HTTP requests
+            .AddHttpClientInstrumentation()     // auto-instruments outgoing HTTP
+            .AddSqlClientInstrumentation(o =>   // auto-instruments SQL queries
+            {
+                o.SetDbStatementForText = true; // include SQL text in spans (dev only)
+            })
+            .AddOtlpExporter(o =>               // export to Jaeger, Grafana Tempo, etc.
+            {
+                o.Endpoint = new Uri("http://localhost:4317");
+            });
+    })
+    // Metrics
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddMeter("MyApp.Orders")           // custom Meter
+            .AddAspNetCoreInstrumentation()     // HTTP request metrics
+            .AddRuntimeInstrumentation()        // GC, thread pool, CPU
+            .AddPrometheusExporter();           // expose /metrics endpoint
+    })
+    // Logs (correlates with traces via TraceId/SpanId)
+    .WithLogging(logging =>
+    {
+        logging.AddOtlpExporter();
+    });
+```
+
+---
+
+<ComparisonTable
+  headers={["Signal", "Storage Cost", "Query Speed", "Best Tool", "When to Use"]}
+  rows={[
+    ["Logs", "High (per-event)", "Slow at scale", "Elasticsearch, Seq, App Insights", "Debugging specific errors, audit trails"],
+    ["Metrics", "Low (aggregated)", "Fast (time-series DB)", "Prometheus + Grafana, Azure Monitor", "Dashboards, alerts, capacity planning"],
+    ["Traces", "Medium (per-request)", "Medium", "Jaeger, Zipkin, App Insights", "Diagnosing latency, tracing request paths"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Correlation Is What Makes Observability Actually Useful**
+
+Logs, metrics, and traces are only powerful when they are **correlated**. The key is the Trace ID — a unique identifier that links all three signals for a single request:
+
+1. Every log line emitted during a request should include the `TraceId` and `SpanId`
+2. Metrics can be dimensioned by operation name (linked back to trace data)
+3. Clicking a slow trace in Jaeger should jump to the correlated logs in Kibana
+
+In .NET, this correlation happens automatically when you:
+- Use `ILogger` with OpenTelemetry (log exporter automatically injects `TraceId` and `SpanId`)
+- Use `ActivitySource` (context flows through `Activity.Current`)
+- Use `HttpClient` with instrumentation (W3C Trace Context headers propagate automatically)
+
+The interview signal: when asked "how would you debug a P1 in production?" the answer is: "Start with metrics to identify which service/endpoint is affected. Use traces to find the slow span. Use logs filtered by TraceId to see the exact sequence of events." That's the observability mental model.
 </Callout>
+
+---
+
+<Quiz
+  id="12-system-design/observability/challenge-1"
+  question="Your monitoring shows p99 latency on the /checkout endpoint spiked from 200ms to 2 seconds at 14:00. You have logs, metrics, and distributed traces. What is the most efficient investigation sequence?"
+  options={[
+    "Search logs for all ERROR entries between 13:55 and 14:05 and read them one by one",
+    "Check metrics to identify which downstream span has elevated p99, then pull a sample trace from that time window to see the slow span, then filter logs by TraceId",
+    "Restart the checkout service — latency spikes usually resolve with a restart",
+    "Add more logging to the checkout service and wait for it to reproduce"
+  ]}
+  correctAnswer={1}
+  explanation="The correct observability sequence is Metrics → Traces → Logs. Metrics tell you WHAT degraded (which service, which operation). Traces tell you WHERE in the call chain the latency lives (database? external API? serialization?). Logs filtered by a specific TraceId tell you WHY — the detailed sequence of events for that specific request. Searching raw logs (A) is O(N) and misses the causality. Restarting (C) destroys evidence and treats symptoms not causes. Adding more logging (D) is valuable for future incidents but useless now."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: ".NET observability with OpenTelemetry", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel" },
+    { label: "Azure Monitor — Application Insights overview", url: "https://learn.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview" },
+    { label: "Azure Monitor OpenTelemetry distro", url: "https://learn.microsoft.com/en-us/azure/azure-monitor/app/opentelemetry-enable" },
+    { label: ".NET Meters API — System.Diagnostics.Metrics", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/metrics-instrumentation" },
+  ]}
+/>

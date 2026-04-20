@@ -1,24 +1,269 @@
 ---
-title: "Large Object Heap Pitfalls"
+title: "Large Object Heap: Pitfalls and Fragmentation"
 slug: "loh-pitfalls"
 order: 3
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["LOH", "large object heap", "fragmentation", "85KB", "GC", "memory", "performance"]
+summary: "The Large Object Heap has special rules that can silently destroy performance. Understand the 85KB threshold, why LOH fragmentation is insidious, and how to avoid it."
+docsLinks:
+  - label: "Large Object Heap on Windows systems"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/large-object-heap"
+  - label: "GCSettings.LargeObjectHeapCompactionMode"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.gcsettings.largeobjectheapcompactionmode"
+  - label: "Garbage collection and performance"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Large Object Heap?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When an object's total size reaches **85,000 bytes or more**, the CLR allocates it directly on the **Large Object Heap (LOH)** instead of Gen 0. This threshold exists because compacting large objects is too expensive — moving a 100MB array means copying 100MB of data and updating all references to it.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Objects that land on the LOH:
+byte[] small  = new byte[84_999];   // 84,999 bytes → Gen 0 (normal heap)
+byte[] large  = new byte[85_000];   // 85,000 bytes → LOH
+
+int[]  intArr = new int[21_250];    // 21,250 * 4 = 85,000 → LOH
+double[] dbl  = new double[10_625]; // 10,625 * 8 = 85,000 → LOH
+char[] chars  = new char[42_500];   // 42,500 * 2 = 85,000 → LOH
+
+// Strings: LOH if char count approaches 42,500
+// (string object header adds ~26 bytes so practical threshold is slightly under 42,500 chars)
+
+// 2D arrays: total element count * element size matters
+double[,] matrix = new double[100, 200]; // 100*200*8 = 160,000 bytes → LOH
+```
+
+---
+
+## How LOH Allocation Works
+
+Unlike Gen 0's bump-pointer allocator, the LOH uses a **free list** — a linked list of available gaps between live LOH objects.
+
+```
+LOH memory layout after several alloc/collect cycles:
+
+[ LIVE 200KB ] [ FREE 100KB ] [ LIVE 500KB ] [ FREE 85KB ] [ LIVE 1MB ]
+                ^^^^^^^^^^^                   ^^^^^^^^^^
+                Fragmentation hole            Fragmentation hole
+```
+
+When a new large object is allocated, the LOH searches the free list for a gap large enough to fit it. If no gap fits, new virtual memory pages are committed from the OS. The key problem: **these free-list holes never shrink or merge** unless LOH compaction is explicitly triggered.
+
+---
+
+## The Fragmentation Problem in Practice
+
+```csharp
+// Anti-pattern: allocating and discarding large arrays in a tight loop
+public static async Task ProcessMessagesAsync(IAsyncEnumerable<Message> messages)
+{
+    await foreach (var message in messages)
+    {
+        // New 100KB buffer allocated on the LOH for EVERY message
+        byte[] buffer = new byte[102_400]; // → LOH
+        Deserialize(message, buffer);
+        await ProcessAsync(buffer);
+        // buffer becomes unreachable — but LOH holes persist
+        // until the next Gen 2 GC (which may be minutes away)
+    }
+}
+// After 1000 messages: ~100MB of LOH holes sitting in virtual memory
+// OOM risks even when only 100KB is live at any moment
+
+// Fix: rent from ArrayPool — no LOH involvement at all
+public static async Task ProcessMessagesFixed(IAsyncEnumerable<Message> messages)
+{
+    await foreach (var message in messages)
+    {
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(102_400); // pool-managed
+        try
+        {
+            Deserialize(message, buffer);
+            await ProcessAsync(buffer);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer); // returned to pool
+        }
+    }
+}
+```
+
+---
+
+## What Triggers an LOH Collection?
+
+LOH objects are only collected during **Gen 2 GC collections**. Gen 0 and Gen 1 collections leave the LOH entirely untouched:
+
+```csharp
+// In a service with low Gen 2 GC frequency (which is good!),
+// LOH garbage can accumulate for minutes before being collected.
+
+// Monitor LOH health with GCMemoryInfo (.NET 5+):
+GCMemoryInfo info = GC.GetGCMemoryInfo();
+Console.WriteLine(\$"Heap size:    {info.HeapSizeBytes / 1024 / 1024}MB");
+Console.WriteLine(\$"Fragmented:   {info.FragmentedBytes / 1024 / 1024}MB");
+// High FragmentedBytes relative to HeapSizeBytes → LOH fragmentation problem
+
+// Detailed per-generation info:
+foreach (var gen in info.GenerationInfo)
+{
+    Console.WriteLine(\$"  SizeBefore={gen.SizeBeforeBytes}, SizeAfter={gen.SizeAfterBytes}");
+}
+// Index 3 = LOH, Index 4 = POH
+```
+
+---
+
+## LOH Compaction: The Nuclear Option
+
+Since .NET 4.5.1, you can request LOH compaction — but it's expensive:
+
+```csharp
+// Request LOH compaction on the NEXT Gen 2 GC:
+GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+// After collection, mode automatically resets to Default (no compaction)
+
+// WARNING: LOH compaction means physically moving large objects in memory.
+// Moving a 1GB array = copying 1GB + updating all references.
+// This is a very long stop-the-world pause — potentially seconds.
+// Use ONLY during low-traffic maintenance windows, never in hot paths.
+```
+
+---
+
+## Diagnosing LOH Issues
+
+```csharp
+// 1. dotnet-counters (live monitoring)
+// dotnet-counters monitor --counters System.Runtime
+// Watch: loh-size, gc-fragmentation, gen-2-gc-count
+
+// 2. dotnet-trace for detailed GC events
+// dotnet-trace collect -p <PID> --providers Microsoft-Windows-DotNETRuntime:0x1:4
+
+// 3. Memory dump analysis with dotnet-dump
+// dotnet-dump collect -p <PID>
+// dotnet-dump analyze <dump-file>
+// > dumpheap -min 85000 -stat     # show all LOH objects by type
+// > dumpheap -min 85000 -type byte[]  # show byte[] arrays on LOH
+
+// 4. BenchmarkDotNet memory diagnostics
+[MemoryDiagnoser]
+public class AllocationBenchmark
+{
+    [Benchmark]
+    public byte[] AllocateLargeArray() => new byte[100_000]; // will show LOH alloc
+
+    [Benchmark]
+    public byte[] RentFromPool()
+    {
+        var buf = ArrayPool<byte>.Shared.Rent(100_000);
+        ArrayPool<byte>.Shared.Return(buf);
+        return buf; // just for benchmark measurement
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="LOH fragmentation is only a problem if you run out of memory."
+  reality="LOH fragmentation degrades performance long before OOM. Each new LOH allocation must linearly scan the free list to find a gap that fits. As the free list grows (potentially thousands of holes), this scan gets progressively slower. Additionally, fragmented LOH virtual memory cannot be returned to the OS — the process RSS stays high, causing container memory limit violations and pod evictions in Kubernetes even when the .NET GC reports low 'live' memory."
+  example={`// Fragmentation causes OOM even with technically enough "free" space:
+// LOH: [LIVE 1MB][FREE 90KB][LIVE 2MB][FREE 90KB][LIVE 1MB][FREE 90KB]...
+// Total free in LOH: 5MB
+// Need to allocate 200KB → no contiguous block is large enough!
+// Result: OutOfMemoryException despite "5MB free" in the LOH
+
+// The real solution: avoid LOH allocations in hot paths entirely.
+// Use ArrayPool\<byte\>.Shared for temporary large buffers.
+// Use RecyclableMemoryStream (Microsoft.IO.RecyclableMemoryStream NuGet)
+// for streaming workloads instead of MemoryStream.ToArray().`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The MemoryStream.ToArray() LOH Trap**
+
+One of the most common and invisible LOH anti-patterns in production APIs is `MemoryStream.ToArray()` used for JSON serialization or file content:
+
+```csharp
+// Common pattern — creates LOH garbage for any response > 85KB:
+public async Task<IActionResult> GetLargeReport()
+{
+    using var ms = new MemoryStream();
+    await JsonSerializer.SerializeAsync(ms, await BuildReportAsync());
+    return Ok(ms.ToArray()); // NEW byte[] allocation — LOH if report > 85KB
+}
+
+// Fix 1: Pipe directly to the response stream — zero copy, zero LOH:
+public async Task GetLargeReport()
+{
+    Response.ContentType = "application/json";
+    await JsonSerializer.SerializeAsync(Response.Body, await BuildReportAsync());
+}
+
+// Fix 2: Use RecyclableMemoryStream for intermediate buffering:
+// (Microsoft.IO.RecyclableMemoryStream NuGet package)
+private static readonly RecyclableMemoryStreamManager _manager = new();
+
+public async Task<IActionResult> GetLargeReport()
+{
+    using var ms = _manager.GetStream();
+    await JsonSerializer.SerializeAsync(ms, await BuildReportAsync());
+    ms.Position = 0;
+    return File(ms, "application/json"); // streams without ToArray()
+}
+```
+
+RecyclableMemoryStream pools its internal byte[] blocks, so even large streams never hit the LOH. For high-throughput APIs serving large payloads, this single change can eliminate LOH fragmentation entirely.
 </Callout>
+
+---
+
+## CodeChallenge: Spotting the LOH Anti-Pattern
+
+<CodeChallenge
+  id="04-memory-gc/loh-pitfalls/challenge-1"
+  title="Will This Code Cause LOH Fragmentation?"
+  description="This method is called thousands of times per minute in a document processing service. What is the primary memory problem?"
+  code={`public async Task<ProcessedDoc> ProcessDocumentAsync(Stream input)
+{
+    using var ms = new MemoryStream();
+    await input.CopyToAsync(ms);
+    byte[] content = ms.ToArray(); // documents are typically 200KB-2MB
+
+    return new ProcessedDoc
+    {
+        Text     = ExtractText(content),
+        Metadata = ExtractMetadata(content),
+    };
+}`}
+  options={[
+    "The MemoryStream itself causes LOH fragmentation as its internal buffer grows",
+    "ms.ToArray() allocates a new byte[] per document — if ≥ 85KB it lands on the LOH, causing fragmentation",
+    "ExtractText and ExtractMetadata box value type return values",
+    "CopyToAsync causes thread pool starvation under high concurrency"
+  ]}
+  correctAnswer={1}
+  explanation="ms.ToArray() copies the MemoryStream contents into a brand-new byte[] sized exactly to the content length. For documents ≥ 85KB (common for real documents), this byte[] lands on the LOH. Called thousands of times per minute, each returned array becomes LOH garbage that accumulates until the next Gen 2 GC. The fix is to use RecyclableMemoryStream which pools its internal blocks (never LOH) and avoid ToArray() entirely by passing the stream directly to your parsing code."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Large Object Heap on Windows systems", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/large-object-heap" },
+    { label: "GCSettings.LargeObjectHeapCompactionMode", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.gcsettings.largeobjectheapcompactionmode" },
+    { label: "GC.AllocateArray — Pinned Object Heap", url: "https://learn.microsoft.com/en-us/dotnet/api/system.gc.allocatearray" },
+    { label: "Garbage collection and performance", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance" },
+  ]}
+/>

@@ -3,22 +3,270 @@ title: "Lambdas & Closures: The Capture Trap"
 slug: "lambdas-closures"
 order: 3
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["lambdas", "closures", "captured variables", "closure pitfall", "anonymous methods", "compiler generated"]
+summary: "Closures capture variables by reference — not by value — and the compiler rewrites them into hidden classes, creating subtle bugs when you capture loop variables."
+docsLinks:
+  - label: "Lambda expressions (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions"
+  - label: "Anonymous functions (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/statements-expressions-operators/anonymous-functions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Lambda Expressions
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **lambda expression** is an anonymous function written inline. It can be assigned to a delegate type or used wherever a delegate is expected:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Expression lambda — single expression, implicit return
+Func<int, int>    square  = x => x * x;
+Func<int, int, int> add   = (x, y) => x + y;
+
+// Statement lambda — multiple statements, explicit return
+Func<int, string> classify = x =>
+{
+    if (x < 0)  return "negative";
+    if (x == 0) return "zero";
+    return "positive";
+};
+
+// Parameterless
+Action greet = () => Console.WriteLine("Hello");
+
+// Discards for ignored parameters (C# 9+)
+Action<int, string> logOnly = (_, msg) => Console.WriteLine(msg);
+```
+
+Lambdas compile to either:
+1. A **static method** — if the lambda captures no outer variables
+2. An **instance method on a compiler-generated class** — if the lambda captures variables (a closure)
+
+---
+
+## What Is a Closure?
+
+A **closure** is a lambda that captures variables from its surrounding scope. The captured variable is **shared by reference**, not copied:
+
+```csharp
+int count = 0;
+
+Action increment = () => count++;   // captures 'count' by reference
+Action reset     = () => count = 0; // same 'count'
+
+increment();
+increment();
+increment();
+Console.WriteLine(count); // 3
+
+reset();
+Console.WriteLine(count); // 0
+```
+
+The compiler transforms this into roughly:
+
+```csharp
+// Compiler-generated (conceptual — decompiled from IL):
+private sealed class <>c__DisplayClass
+{
+    public int count; // the captured variable is a field on a heap-allocated object
+}
+
+var closure = new <>c__DisplayClass { count = 0 };
+Action increment = closure.Increment;   // method on the closure object
+Action reset     = closure.Reset;
+```
+
+This is why captured variables live on the heap for as long as any delegate referencing them lives — even after the method that created them returns.
+
+---
+
+## The Classic Loop Capture Pitfall
+
+The most infamous closure bug: capturing a loop variable.
+
+```csharp
+// BUGGY — all actions print 5, not 0..4
+var actions = new List<Action>();
+
+for (int i = 0; i < 5; i++)
+{
+    actions.Add(() => Console.WriteLine(i)); // captures the variable 'i', not its current value
+}
+
+foreach (var a in actions) a(); // 5 5 5 5 5
+
+// WHY: there is ONE variable 'i' in the loop.
+// All 5 lambdas capture the same variable.
+// By the time they run, i == 5 (the loop ended).
+```
+
+### The Fix: Capture a Copy
+
+```csharp
+// FIX 1: introduce a loop-local variable (copy before capture)
+var actions = new List<Action>();
+
+for (int i = 0; i < 5; i++)
+{
+    int captured = i; // new variable each iteration — each lambda gets its own
+    actions.Add(() => Console.WriteLine(captured));
+}
+
+foreach (var a in actions) a(); // 0 1 2 3 4
+
+// FIX 2: use LINQ (creates a new scope per element implicitly)
+var actions2 = Enumerable.Range(0, 5)
+    .Select(i => (Action)(() => Console.WriteLine(i)))
+    .ToList();
+
+foreach (var a in actions2) a(); // 0 1 2 3 4
+
+// NOTE: foreach variables in C# 5+ are scoped per iteration,
+// so capturing a foreach variable is safe:
+var words = new[] { "a", "bb", "ccc" };
+var printers = words.Select(w => (Action)(() => Console.WriteLine(w))).ToList();
+printers.ForEach(p => p()); // a bb ccc — correct
+```
+
+<Callout type="trap">
+**Trap: Closures Keep Objects Alive Longer Than Expected**
+
+A closure extends the lifetime of everything it captures. This can cause surprising memory retention:
+
+```csharp
+void ProcessLargeData()
+{
+    byte[] largeBuffer = new byte[1024 * 1024 * 100]; // 100 MB
+
+    // Fill buffer...
+
+    // This lambda captures largeBuffer — keeps it alive as long as the delegate lives
+    Func<int> getLength = () => largeBuffer.Length;
+
+    // If getLength is stored somewhere long-lived (static field, long-lived object),
+    // largeBuffer cannot be GC'd even though you're done with it!
+    SomeLongLivedService.Register(getLength);
+
+    // Fix: only capture what you need
+    int length = largeBuffer.Length;
+    Func<int> getLength2 = () => length; // largeBuffer can now be collected
+}
+```
 </Callout>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/lambdas-closures/challenge-1"
+  title="What Does This Closure Print?"
+  description="What output does this code produce?"
+  code={`var funcs = new List<Func<int>>();
+int x = 0;
+
+while (x < 3)
+{
+    funcs.Add(() => x);
+    x++;
+}
+
+Console.WriteLine(string.Join(", ", funcs.Select(f => f())));`}
+  options={[
+    "0, 1, 2",
+    "3, 3, 3",
+    "1, 2, 3",
+    "0, 0, 0"
+  ]}
+  correctAnswer={1}
+  explanation="All three lambdas capture the same variable x by reference (not by value). By the time the lambdas are invoked, the while loop has finished and x == 3. So all three return 3. This is the same classic loop capture pitfall as with for loops — the fix is to introduce a local copy inside the loop: int captured = x; funcs.Add(() => captured);. This creates a new variable each iteration with its own closure."
+/>
+
+---
+
+## Closures and Performance
+
+Every closure that captures variables allocates a heap object:
+
+```csharp
+// NO allocation — static lambda (no captures)
+Func<int, int> staticLambda = x => x * 2; // compiled to a static method
+
+// ALLOCATES — instance closure object per call
+void Method(int multiplier)
+{
+    Func<int, int> closure = x => x * multiplier; // new object each call
+    Process(closure);
+}
+
+// BETTER: avoid allocation by not capturing
+void Method(int multiplier)
+{
+    // Pass multiplier as state instead of capturing
+    Process(x => x * multiplier); // still allocates closure
+
+    // For repeated calls, cache the delegate:
+    // (only works when multiplier is constant)
+}
+
+// BEST for hot paths: static lambdas with explicit state
+list.Sort(static (a, b) => a.CompareTo(b)); // 'static' modifier (C# 9) — no capture possible
+```
+
+The `static` lambda modifier (C# 9+) is a compile-time guard: it prevents accidental captures and generates a static method, avoiding the closure allocation entirely.
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Compiler-Generated Closure Class and Debugging**
+
+When you capture variables across multiple lambdas in the same method, the compiler merges them into a **single shared closure class**. This means lambdas in the same scope share the same closure object:
+
+```csharp
+void Example(int x)
+{
+    int y = 10;
+
+    Action a = () => Console.WriteLine(x); // captures x
+    Action b = () => Console.WriteLine(y); // captures y
+    Action c = () => Console.WriteLine(x + y); // captures both
+
+    // The compiler generates ONE class with fields for both x and y.
+    // All three lambdas hold a reference to the SAME closure instance.
+}
+```
+
+This has a subtle implication: if lambda `a` increments `x`, lambda `c` will see the updated value — they share the same field. This makes closure bugs in complex methods hard to debug.
+
+To investigate closure captures: use a decompiler (ILSpy, dnSpy) and look at the generated `<>c__DisplayClass` types. In debugger hover tooltips, captured variables appear as fields on the closure object — which can look confusing at first glance.
+</Callout>
+
+---
+
+<ComparisonTable
+  headers={["Lambda type", "Captures?", "Allocation", "C# syntax"]}
+  rows={[
+    ["Static lambda", "No", "None (static method)", "static x => x * 2"],
+    ["Instance lambda (no capture)", "No", "Single delegate instance (cached)", "x => x * 2"],
+    ["Closure (captures locals)", "Yes", "Closure class + delegate per call", "x => x * factor"],
+    ["Closure (captures this)", "Yes (implicit)", "Delegate instance (this is the closure)", "x => this.Scale * x"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="Lambdas capture the value of variables at the time they are defined."
+  reality="Lambdas capture variables by REFERENCE — they share the actual variable, not a snapshot of its value. When a captured variable changes after the lambda is defined, the lambda sees the new value. This is by design and enables powerful patterns (shared mutable state between lambdas), but it also causes the classic loop capture bug. If you want a value snapshot, you must explicitly copy the variable into a new local before capturing."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Lambda expressions (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions" },
+    { label: "Anonymous functions (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/statements-expressions-operators/anonymous-functions" },
+    { label: "Closures in C# — performance considerations", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions#capture-of-outer-variables-and-variable-scope" },
+  ]}
+/>

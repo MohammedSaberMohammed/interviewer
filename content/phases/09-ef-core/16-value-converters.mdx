@@ -1,24 +1,248 @@
 ---
-title: "Value Converters"
+title: "Value Converters: Mapping Custom Types to Database Columns"
 slug: "value-converters"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["value converters", "custom types", "enums", "strong ids", "serialization", "ef core"]
+summary: "Value converters let EF Core translate between your C# types and database column types. They enable strong-typed IDs, enum-to-string storage, encrypted columns, and JSON-serialized properties."
+docsLinks:
+  - label: "Value Converters"
+    url: "https://learn.microsoft.com/en-us/ef/core/modeling/value-conversions"
+  - label: "Built-in Converters"
+    url: "https://learn.microsoft.com/en-us/ef/core/modeling/value-conversions#built-in-converters"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Value Converters?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A value converter defines how to convert between a CLR type (what your C# code uses) and the provider type (what the database stores). EF Core applies the conversion transparently on reads and writes.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Use cases:
+- **Enums as strings** (not integers) in the database
+- **Strong-typed IDs** (wrapping `int` or `Guid`)
+- **Encrypted columns** (encrypt on write, decrypt on read)
+- **JSON-serialized properties** (store a complex object as a JSON string)
+- **Custom date/time types** (DateOnly, TimeOnly — built-in in EF Core 6+)
+
+---
+
+## Defining a Value Converter
+
+```csharp
+// Method 1: Inline using HasConversion<T>()
+modelBuilder.Entity<Order>()
+    .Property(o => o.Status)
+    .HasConversion<string>(); // stores enum as "Pending", "Shipped", etc.
+
+// Method 2: Using ValueConverter<TModel, TProvider>
+var statusConverter = new ValueConverter<OrderStatus, string>(
+    v => v.ToString(),                              // CLR → DB
+    v => Enum.Parse<OrderStatus>(v));               // DB → CLR
+
+modelBuilder.Entity<Order>()
+    .Property(o => o.Status)
+    .HasConversion(statusConverter);
+
+// Method 3: Reusable converter class
+public class OrderStatusConverter : ValueConverter<OrderStatus, string>
+{
+    public OrderStatusConverter()
+        : base(
+            v => v.ToString(),
+            v => Enum.Parse<OrderStatus>(v))
+    { }
+}
+
+modelBuilder.Entity<Order>()
+    .Property(o => o.Status)
+    .HasConversion(new OrderStatusConverter());
+```
+
+---
+
+## Strong-Typed IDs
+
+Strong-typed IDs prevent passing `int orderId` where `int customerId` is expected:
+
+```csharp
+// Domain types
+public readonly record struct OrderId(int Value);
+public readonly record struct CustomerId(int Value);
+
+public class Order
+{
+    public OrderId Id { get; set; }
+    public CustomerId CustomerId { get; set; }
+    public decimal Total { get; set; }
+}
+
+// Converters
+public class OrderIdConverter : ValueConverter<OrderId, int>
+{
+    public OrderIdConverter() : base(v => v.Value, v => new OrderId(v)) { }
+}
+
+public class CustomerIdConverter : ValueConverter<CustomerId, int>
+{
+    public CustomerIdConverter() : base(v => v.Value, v => new CustomerId(v)) { }
+}
+
+// Configuration
+modelBuilder.Entity<Order>(entity =>
+{
+    entity.HasKey(o => o.Id);
+    entity.Property(o => o.Id).HasConversion(new OrderIdConverter());
+    entity.Property(o => o.CustomerId).HasConversion(new CustomerIdConverter());
+});
+```
+
+---
+
+## Applying Converters Globally
+
+For strong-typed IDs, apply converters globally so you do not repeat the configuration for every entity:
+
+```csharp
+protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+{
+    // All OrderId properties across all entities get this converter automatically
+    configurationBuilder.Properties<OrderId>()
+        .HaveConversion<OrderIdConverter>();
+
+    configurationBuilder.Properties<CustomerId>()
+        .HaveConversion<CustomerIdConverter>();
+
+    // All enums stored as strings by default
+    configurationBuilder.Properties<Enum>()
+        .HaveConversion<string>();
+
+    // DateOnly stored as Date column
+    configurationBuilder.Properties<DateOnly>()
+        .HaveColumnType("date");
+}
+```
+
+---
+
+## JSON Serialization via Value Converter
+
+Store a complex object as a JSON string column:
+
+```csharp
+public class OrderMetadata
+{
+    public string Source { get; set; } = "";
+    public Dictionary<string, string> Tags { get; set; } = new();
+    public string? PromotionCode { get; set; }
+}
+
+public class Order
+{
+    public int Id { get; set; }
+    public OrderMetadata Metadata { get; set; } = new();
+}
+
+// Converter using System.Text.Json
+public class JsonValueConverter<T> : ValueConverter<T, string>
+    where T : class, new()
+{
+    public JsonValueConverter() : base(
+        v => JsonSerializer.Serialize(v, JsonSerializerOptions.Default),
+        v => JsonSerializer.Deserialize<T>(v, JsonSerializerOptions.Default) ?? new T())
+    { }
+}
+
+// Configuration
+modelBuilder.Entity<Order>()
+    .Property(o => o.Metadata)
+    .HasConversion(new JsonValueConverter<OrderMetadata>())
+    .HasColumnType("nvarchar(max)");
+```
+
+---
+
+## Encrypted Columns
+
+```csharp
+// Simple deterministic encryption converter
+public class EncryptedStringConverter : ValueConverter<string, string>
+{
+    public EncryptedStringConverter(IEncryptionService encryption)
+        : base(
+            v => encryption.Encrypt(v),   // encrypt before writing to DB
+            v => encryption.Decrypt(v))   // decrypt after reading from DB
+    { }
+}
+
+// Registration (requires DI — use the serviceProvider overload)
+builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
+{
+    var encryption = serviceProvider.GetRequiredService<IEncryptionService>();
+    options.UseSqlServer(connectionString)
+           .ReplaceService<IValueConverterSelector,
+               EncryptedColumnConverterSelector>(); // custom selector
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Value Converter Limitations for Queries**
+
+Value converters have a critical limitation: **EF Core cannot translate converters into SQL for WHERE clauses** in all cases. If the conversion is non-trivial (e.g., JSON serialization), filtering on the property fetches ALL rows and filters in memory:
+
+```csharp
+// WORKS — string-to-enum is simple, translated to SQL
+var orders = await db.Orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .ToListAsync();
+// SQL: WHERE Status = 'Pending'
+
+// MAY NOT WORK — complex converter, potential client-side eval
+var orders = await db.Orders
+    .Where(o => o.Metadata.PromotionCode == "SAVE10")
+    .ToListAsync();
+// Depends on provider; may fetch all rows and filter in .NET
+
+// SOLUTION for complex properties: use shadow properties for queryable fields
+// Store Metadata as JSON, but also have a PromotionCode shadow property
+// that is stored as a regular column for efficient querying
+```
+
+For frequently-filtered properties, prefer storing them as dedicated columns even if they logically belong in a complex type. Hybrid approach: main data as JSON, indexed query fields as regular columns.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Value converters affect only how data is stored — queries still work exactly the same as without converters"
+  truth="Value converters participate in query translation, but EF Core's ability to translate a converted property's filter to SQL depends on the converter's complexity and the provider. Simple converters (enum-to-string, int wrapping) translate perfectly. Complex converters (JSON serialization, custom encryption) may cause client-side evaluation — EF fetches all rows and applies the filter in .NET. Always test your converted properties in filtered queries and check the generated SQL."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/value-converters/challenge-1"
+  question="You have an enum OrderStatus that you want stored as 'Pending', 'Processing', 'Shipped' strings (not integers) in the database. What is the simplest correct configuration?"
+  options={[
+    "modelBuilder.Entity<Order>().Property(o => o.Status).HasConversion<int>()",
+    "modelBuilder.Entity<Order>().Property(o => o.Status).HasConversion<string>()",
+    "Add [Column(TypeName = \"nvarchar(50)\")] attribute to the Status property",
+    "Configure a custom ValueConverter<OrderStatus, string> in a separate class"
+  ]}
+  correctAnswer={1}
+  explanation="HasConversion<string>() is the simplest way to store an enum as its string name. EF Core has a built-in enum-to-string converter that this activates. Option A stores as int (the default). Option C sets the column type but does not change the stored value — EF still writes integers unless you change the converter. Option D works but is unnecessarily verbose for this common scenario — use the built-in converter."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Value Converters", url: "https://learn.microsoft.com/en-us/ef/core/modeling/value-conversions" },
+    { label: "Built-in Value Converters", url: "https://learn.microsoft.com/en-us/ef/core/modeling/value-conversions#built-in-converters" },
+    { label: "Pre-Convention Model Configuration", url: "https://learn.microsoft.com/en-us/ef/core/modeling/bulk-configuration#pre-convention-configuration" },
+  ]}
+/>

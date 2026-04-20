@@ -1,24 +1,248 @@
 ---
-title: "Facade"
+title: "Facade — Simplifying Complex Subsystems"
 slug: "facade"
 order: 10
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["facade", "structural", "simplification", "subsystem", "api design"]
+summary: "Facade provides a simplified interface to a complex subsystem — reducing coupling and cognitive load for the most common use cases."
+docsLinks:
+  - label: "Facade pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-offloading"
+  - label: "File class (Facade over FileStream/StreamReader/StreamWriter)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.io.file"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Subsystem Complexity
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Sending an email involves: finding a mail server, opening an SMTP connection, authenticating, constructing a MIME message, attaching files, encoding content, handling errors, and closing the connection. Exposing all of this to every caller is overwhelming.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+A Facade wraps the subsystem and exposes just what most callers need.
+
+---
+
+## Structure
+
+```csharp
+// Complex subsystem classes — each handles one piece
+public class SmtpConnection
+{
+    public void Connect(string host, int port) { /* ... */ }
+    public void Authenticate(string user, string pass) { /* ... */ }
+    public void Disconnect() { /* ... */ }
+}
+
+public class MimeBuilder
+{
+    public string BuildMessage(string from, string to, string subject, string body) => "MIME...";
+    public string AddAttachment(string mimeMsg, byte[] data, string filename) => "MIME+att...";
+}
+
+public class SmtpSender
+{
+    public void Send(SmtpConnection conn, string mimeMessage) { /* ... */ }
+}
+
+public class EmailLogger
+{
+    public void LogSent(string to, string subject) { /* ... */ }
+}
+
+// FACADE — simplified interface for the common case
+public class EmailFacade
+{
+    private readonly SmtpConnection _connection;
+    private readonly MimeBuilder    _mimeBuilder;
+    private readonly SmtpSender     _sender;
+    private readonly EmailLogger    _logger;
+    private readonly string         _smtpHost;
+    private readonly string         _smtpUser;
+    private readonly string         _smtpPass;
+
+    public EmailFacade(EmailSettings settings)
+    {
+        _connection  = new SmtpConnection();
+        _mimeBuilder = new MimeBuilder();
+        _sender      = new SmtpSender();
+        _logger      = new EmailLogger();
+        _smtpHost    = settings.Host;
+        _smtpUser    = settings.Username;
+        _smtpPass    = settings.Password;
+    }
+
+    // Simple method for the common case
+    public void Send(string to, string subject, string body)
+    {
+        _connection.Connect(_smtpHost, 587);
+        _connection.Authenticate(_smtpUser, _smtpPass);
+
+        string mime = _mimeBuilder.BuildMessage(_smtpUser, to, subject, body);
+        _sender.Send(_connection, mime);
+        _logger.LogSent(to, subject);
+
+        _connection.Disconnect();
+    }
+
+    // Slightly more complex overload for attachments
+    public void SendWithAttachment(string to, string subject, string body, byte[] attachment, string filename)
+    {
+        _connection.Connect(_smtpHost, 587);
+        _connection.Authenticate(_smtpUser, _smtpPass);
+
+        string mime = _mimeBuilder.BuildMessage(_smtpUser, to, subject, body);
+        mime = _mimeBuilder.AddAttachment(mime, attachment, filename);
+        _sender.Send(_connection, mime);
+        _logger.LogSent(to, $"{subject} (with attachment)");
+
+        _connection.Disconnect();
+    }
+}
+
+// Usage — simple!
+var email = new EmailFacade(settings);
+email.Send("alice@example.com", "Welcome!", "Hello Alice, welcome aboard.");
+```
+
+The facade doesn't prevent advanced callers from using the subsystem directly — it just makes the common case simple.
+
+---
+
+## Real .NET BCL Example: `System.IO.File`
+
+`System.IO.File` is a facade over `FileStream`, `StreamReader`, `StreamWriter`, and `BinaryReader`:
+
+```csharp
+// Without File facade — verbose subsystem usage
+using FileStream fs = new FileStream("data.txt", FileMode.Open, FileAccess.Read);
+using StreamReader reader = new StreamReader(fs, Encoding.UTF8);
+string content = reader.ReadToEnd();
+
+// With File facade — one line for the common case
+string content = File.ReadAllText("data.txt");
+
+// More File facade methods
+string[]  lines  = File.ReadAllLines("data.txt");
+byte[]    bytes  = File.ReadAllBytes("image.png");
+File.WriteAllText("output.txt", "Hello World");
+File.AppendAllText("log.txt", $"[{DateTime.Now}] Event occurred\n");
+
+// Facade doesn't restrict — you can still use FileStream directly when needed
+using var fs = new FileStream("data.bin", FileMode.Open, FileAccess.Read, FileShare.Read,
+    bufferSize: 4096, useAsync: true);
+```
+
+---
+
+## Facade in ASP.NET Core
+
+`HttpContext` is a facade over the ASP.NET Core request/response subsystem:
+
+```csharp
+// Without facade — access raw subsystem types
+IHttpContextAccessor accessor = ... ;
+HttpContext ctx = accessor.HttpContext!;
+
+// Through HttpContext facade — simplified access
+string? userId = ctx.User.FindFirstValue(ClaimTypes.NameIdentifier);
+string? ipAddress = ctx.Connection.RemoteIpAddress?.ToString();
+string host = ctx.Request.Host.Host;
+await ctx.Response.WriteAsJsonAsync(new { message = "OK" });
+
+// The facade hides: HttpRequest, HttpResponse, ClaimsPrincipal, ConnectionInfo,
+//                   IFeatureCollection, IServiceProvider...
+```
+
+---
+
+<ComparisonTable
+  title="Facade vs Adapter vs Mediator"
+  headers={["Pattern", "Intent", "Relationship to Subsystem", "Direction"]}
+  rows={[
+    ["Facade", "Simplify usage of a complex subsystem", "Wraps many classes with one", "One → Many"],
+    ["Adapter", "Make incompatible interfaces compatible", "Translates one interface to another", "One → One"],
+    ["Mediator", "Reduce coupling between objects", "Objects talk through the mediator", "Many ↔ Many"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/facade/challenge-1"
+  title="Facade or Adapter?"
+  description="Identify whether each scenario calls for Facade or Adapter."
+  code={`// Scenario A:
+// You have three payment subsystems: StripeClient, PayPalClient, BankTransferService.
+// You want one simple method: ProcessPayment(amount, method).
+
+// Scenario B:
+// You have an existing IPaymentProcessor interface in your app.
+// A new vendor only implements IVendorCharge (different method signatures).
+// You need IVendorCharge to work where IPaymentProcessor is expected.`}
+  options={[
+    "A = Facade, B = Adapter",
+    "A = Adapter, B = Facade",
+    "Both are Adapter patterns",
+    "Both are Facade patterns"
+  ]}
+  correctAnswer={0}
+  explanation="Scenario A is Facade — you're hiding the complexity of three subsystems behind a simplified ProcessPayment() interface. The focus is on simplification. Scenario B is Adapter — you're making an incompatible IVendorCharge interface work where IPaymentProcessor is expected. The focus is on interface translation, not simplification."
+/>
+
+---
+
+<Callout type="senior">
+**Facade and the Layer Anti-Pattern**
+
+Facades can become anti-patterns when they morph into "God objects" — a single class that knows about everything. Watch for these warning signs:
+
+```csharp
+// Facade that's become a God Object — avoid this
+public class ApplicationFacade
+{
+    // Too many dependencies — this "facade" has become a service locator
+    public ApplicationFacade(
+        IUserService users, IOrderService orders, IInventoryService inventory,
+        IEmailService email, IPaymentService payment, IReportService reports,
+        ICacheService cache, ISearchService search /* 10 more... */)
+    { }
+
+    // 50+ methods spanning unrelated concerns
+    public void PlaceOrder(...) { }
+    public void GenerateReport(...) { }
+    public void SendNewsletter(...) { }
+    // ...
+}
+```
+
+A Facade should simplify access to **one coherent subsystem**, not wrap your entire application. If the facade has more than 5-7 dependencies or spans unrelated domains, split it into domain-specific facades.
+
+**Facade in API design**: A public REST API is a Facade over your internal services. The endpoint `POST /api/orders` hides the order creation, inventory check, payment processing, and email notification complexity behind a single HTTP call — exactly the Facade intent at the service boundary level.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/facade/quiz-1"
+  question="Which principle does Facade most directly support?"
+  options={[
+    "Open/Closed Principle — the facade is open for extension",
+    "Law of Demeter — callers only talk to the facade, not the subsystem internals",
+    "Interface Segregation Principle — the facade exposes a minimal interface",
+    "Single Responsibility Principle — the facade has one job per method"
+  ]}
+  correctAnswer={1}
+  explanation="Facade most directly supports the Law of Demeter (LoD / Principle of Least Knowledge): callers only interact with the Facade and don't need to know about the subsystem's internal classes. Without a facade, callers reach into the subsystem (client.Connection.Connect(), client.Mime.Build(), etc.) — violating LoD. The facade is also a form of ISP (B is also valid), but LoD is the most direct principle it enforces."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "File Class (System.IO)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.io.file" },
+    { label: "HttpContext Class", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.http.httpcontext" },
+    { label: "Gateway Offloading pattern (Facade at service boundary)", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-offloading" },
+  ]}
+/>

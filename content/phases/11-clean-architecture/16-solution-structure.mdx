@@ -1,24 +1,326 @@
 ---
-title: "Solution Structure"
+title: "Solution Structure: Project Layout for Clean Architecture in .NET"
 slug: "solution-structure"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["solution structure", "project layout", "clean architecture", ".NET", "folder organization", "feature folders", "vertical slice"]
+summary: "A well-organized solution makes the architecture visible. Learn the standard Clean Architecture project layout, feature folder variants, and when to deviate."
+docsLinks:
+  - label: "Clean Architecture template (Jason Taylor)"
+    url: "https://github.com/jasontaylordev/CleanArchitecture"
+  - label: "eShopOnWeb reference application"
+    url: "https://github.com/dotnet-architecture/eShopOnWeb"
+  - label: "Architect modern web applications with ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Standard 4-Project Layout
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The most common Clean Architecture solution structure in .NET uses one project per layer:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+MyApp.sln
+├── src/
+│   ├── MyApp.Domain/                    ← Layer 1 (innermost)
+│   │   ├── Common/
+│   │   │   ├── Entity.cs
+│   │   │   ├── AggregateRoot.cs
+│   │   │   ├── ValueObject.cs
+│   │   │   ├── IDomainEvent.cs
+│   │   │   └── DomainException.cs
+│   │   ├── Entities/
+│   │   │   ├── Order.cs
+│   │   │   ├── OrderLine.cs
+│   │   │   └── Customer.cs
+│   │   ├── ValueObjects/
+│   │   │   ├── Money.cs
+│   │   │   ├── Email.cs
+│   │   │   └── Address.cs
+│   │   ├── Ids/
+│   │   │   ├── OrderId.cs
+│   │   │   └── CustomerId.cs
+│   │   └── Events/
+│   │       ├── OrderPlacedEvent.cs
+│   │       └── OrderConfirmedEvent.cs
+│   │
+│   ├── MyApp.Application/               ← Layer 2
+│   │   ├── Common/
+│   │   │   ├── Interfaces/
+│   │   │   │   ├── IOrderRepository.cs
+│   │   │   │   ├── IUnitOfWork.cs
+│   │   │   │   └── IEmailService.cs
+│   │   │   ├── Behaviors/
+│   │   │   │   ├── ValidationBehavior.cs
+│   │   │   │   ├── LoggingBehavior.cs
+│   │   │   │   └── TransactionBehavior.cs
+│   │   │   ├── Exceptions/
+│   │   │   │   └── NotFoundException.cs
+│   │   │   └── Models/
+│   │   │       └── Result.cs
+│   │   ├── Orders/
+│   │   │   ├── Commands/
+│   │   │   │   ├── PlaceOrder/
+│   │   │   │   │   ├── PlaceOrderCommand.cs
+│   │   │   │   │   ├── PlaceOrderHandler.cs
+│   │   │   │   │   └── PlaceOrderValidator.cs
+│   │   │   │   └── ConfirmOrder/
+│   │   │   │       ├── ConfirmOrderCommand.cs
+│   │   │   │       └── ConfirmOrderHandler.cs
+│   │   │   ├── Queries/
+│   │   │   │   └── GetOrderDetail/
+│   │   │   │       ├── GetOrderDetailQuery.cs
+│   │   │   │       ├── GetOrderDetailHandler.cs
+│   │   │   │       └── OrderDetailDto.cs
+│   │   │   └── EventHandlers/
+│   │   │       └── OrderConfirmedEmailHandler.cs
+│   │   └── DependencyInjection.cs       ← Application service registration
+│   │
+│   ├── MyApp.Infrastructure/            ← Layer 3
+│   │   ├── Persistence/
+│   │   │   ├── AppDbContext.cs
+│   │   │   ├── UnitOfWork.cs
+│   │   │   ├── Repositories/
+│   │   │   │   └── EfOrderRepository.cs
+│   │   │   ├── Configurations/          ← EF Core IEntityTypeConfiguration
+│   │   │   │   ├── OrderConfiguration.cs
+│   │   │   │   └── CustomerConfiguration.cs
+│   │   │   └── Migrations/
+│   │   ├── ExternalServices/
+│   │   │   ├── Email/
+│   │   │   │   └── SendGridEmailService.cs
+│   │   │   └── Payment/
+│   │   │       └── StripePaymentService.cs
+│   │   └── DependencyInjection.cs       ← Infrastructure service registration
+│   │
+│   └── MyApp.WebApi/                    ← Layer 4 (outermost)
+│       ├── Controllers/
+│       │   └── OrdersController.cs
+│       ├── Middleware/
+│       │   ├── ExceptionHandlingMiddleware.cs
+│       │   └── RequestLoggingMiddleware.cs
+│       ├── Program.cs
+│       └── appsettings.json
+│
+└── tests/
+    ├── MyApp.Domain.Tests/              ← Unit tests for domain logic
+    ├── MyApp.Application.Tests/         ← Unit tests for handlers (in-memory fakes)
+    └── MyApp.Integration.Tests/         ← Integration tests (Testcontainers)
+```
+
+---
+
+## Layer-Specific DependencyInjection Extension Methods
+
+Each layer registers its own services — Program.cs wires them together:
+
+```csharp
+// Application/DependencyInjection.cs
+public static class ApplicationServiceRegistration
+{
+    public static IServiceCollection AddApplicationServices(
+        this IServiceCollection services)
+    {
+        services.AddMediatR(cfg =>
+        {
+            cfg.RegisterServicesFromAssembly(typeof(PlaceOrderHandler).Assembly);
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+            cfg.AddBehavior(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+        });
+
+        services.AddValidatorsFromAssembly(typeof(PlaceOrderHandler).Assembly);
+        services.AddAutoMapper(typeof(PlaceOrderHandler).Assembly); // if using AutoMapper
+
+        return services;
+    }
+}
+
+// Infrastructure/DependencyInjection.cs
+public static class InfrastructureServiceRegistration
+{
+    public static IServiceCollection AddInfrastructureServices(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseSqlServer(configuration.GetConnectionString("Default"),
+                b => b.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)));
+
+        services.AddScoped<IUnitOfWork, EfUnitOfWork>();
+        services.AddScoped<IOrderRepository, EfOrderRepository>();
+        services.AddScoped<ICustomerRepository, EfCustomerRepository>();
+
+        services.AddSingleton<IEmailService>(sp =>
+            new SendGridEmailService(configuration["SendGrid:ApiKey"]!));
+
+        return services;
+    }
+}
+
+// WebApi/Program.cs — wires everything together
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services
+    .AddApplicationServices()
+    .AddInfrastructureServices(builder.Configuration);
+
+builder.Services.AddControllers();
+// ...
+```
+
+---
+
+## Feature Folders: An Alternative Organizing Principle
+
+Instead of organizing by layer horizontally, you can organize by feature vertically within each project:
+
+```
+MyApp.Application/
+├── Orders/                          ← Feature: Orders
+│   ├── PlaceOrder/
+│   │   ├── PlaceOrderCommand.cs
+│   │   ├── PlaceOrderHandler.cs
+│   │   ├── PlaceOrderValidator.cs
+│   │   └── PlaceOrderResponse.cs   ← DTO co-located with feature
+│   ├── ConfirmOrder/
+│   │   ├── ConfirmOrderCommand.cs
+│   │   └── ConfirmOrderHandler.cs
+│   └── GetOrderDetail/
+│       ├── GetOrderDetailQuery.cs
+│       ├── GetOrderDetailHandler.cs
+│       └── OrderDetailDto.cs
+├── Customers/                       ← Feature: Customers
+│   ├── RegisterCustomer/
+│   └── GetCustomerProfile/
+└── Common/
+    └── Behaviors/
+```
+
+Feature folders make it easy to find everything related to "placing an order" in one place. The trade-off: features can grow large and the boundary between features becomes fuzzy.
+
+---
+
+## Vertical Slice Architecture: A Different Paradigm
+
+Vertical Slice Architecture (Jimmy Bogard) takes feature folders further — each feature is a completely self-contained slice from endpoint to database:
+
+```
+Features/
+├── Orders/
+│   ├── PlaceOrder/
+│   │   ├── PlaceOrderEndpoint.cs    ← Minimal API endpoint
+│   │   ├── PlaceOrderCommand.cs
+│   │   ├── PlaceOrderHandler.cs     ← can use DbContext directly
+│   │   ├── PlaceOrderValidator.cs
+│   │   └── OrderCreatedDto.cs
+│   └── GetOrderDetail/
+│       ├── GetOrderDetailEndpoint.cs
+│       ├── GetOrderDetailQuery.cs
+│       └── GetOrderDetailHandler.cs ← raw Dapper SQL for reads
+```
+
+In vertical slice, handlers can use `DbContext` directly — there's no "Dependency Rule" enforcement because the organizing principle is feature cohesion rather than layer separation. This is a valid choice for teams that find layer-based organization too rigid, especially for CRUD-heavy applications.
+
+---
+
+<ComparisonTable
+  headers={["Structure", "Best for", "Trade-offs"]}
+  rows={[
+    ["4-project layer separation", "Complex domains with rich business logic, DDD, multiple developers", "More projects and interfaces; initial setup overhead"],
+    ["Feature folders within layers", "Medium complexity; developer experience (find all order code in one place)", "Can blur layer boundaries if not disciplined"],
+    ["Vertical slice (single project)", "Delivery-speed-first teams; CRUD-heavy APIs; small domains", "Less domain protection; DbContext in 'business' code"],
+    ["Modular monolith (multiple bounded contexts, one process)", "Growing systems not yet at microservice scale; team autonomy", "Requires disciplined module boundaries; more complex than single context"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Start with Fewer Projects Than You Think You Need**
+
+The Jason Taylor Clean Architecture template creates 4 projects immediately. Many teams add more: split Application into Application.Core and Application.Features, add a SharedKernel project, add separate test projects per feature... and end up with 12+ projects on a 6-developer codebase.
+
+The overhead of maintaining 12 project references, 12 test runner configurations, and 12 NuGet restore operations is non-trivial. More projects = slower builds, harder navigation, more merge conflicts in .csproj files.
+
+A pragmatic starting point for a new service: **2 projects**. One for Domain + Application (these are already logically separated by namespaces), one for Infrastructure + WebApi. The logical separation (which namespaces can reference which) enforces the Dependency Rule. As the team grows or the need for independent testing of Domain in isolation becomes clear, split the project. The refactoring is mechanical — mostly moving files between projects and updating `using` directives.
+
+The architecture lives in your dependency graph and your discipline — not in the number of `.csproj` files.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Clean Architecture requires exactly 4 separate .csproj projects"
+  reality="The 4 layers are a logical concept enforced by dependency direction, not a physical requirement. Many production Clean Architecture codebases use 2 or 3 projects, with namespace conventions enforcing the logical separation. NetArchTest can verify the dependency rule regardless of physical project count. Split projects when you need independent versioning, separate NuGet packages, or team-level access control — not by default."
+/>
+
+---
+
+## CodeChallenge
+
+<CodeChallenge
+  id="11-clean-architecture/solution-structure/challenge-1"
+  title="Identify the Misplaced File"
+  description="In a standard Clean Architecture solution, which file is placed in the wrong project?"
+  code={`// Project: MyApp.Application
+// File: Application/Orders/Commands/PlaceOrder/PlaceOrderHandler.cs
+
+using MediatR;
+using MyApp.Domain.Entities;
+using MyApp.Application.Interfaces;
+
+public class PlaceOrderHandler : IRequestHandler\<PlaceOrderCommand, Guid\>
+{
+    private readonly IOrderRepository _orders;
+    private readonly IUnitOfWork _unitOfWork;
+    // ...
+}
+
+// ───────────────────────────────────────────────────
+
+// Project: MyApp.Infrastructure
+// File: Infrastructure/Persistence/AppDbContext.cs
+
+using Microsoft.EntityFrameworkCore;
+using MyApp.Domain.Entities;
+
+public class AppDbContext : DbContext
+{
+    public DbSet\<Order\> Orders => Set\<Order\>();
+}
+
+// ───────────────────────────────────────────────────
+
+// Project: MyApp.Domain
+// File: Domain/Interfaces/IOrderRepository.cs  ← Question about this file
+
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct);
+    Task AddAsync(Order order, CancellationToken ct);
+}`}
+  options={[
+    "PlaceOrderHandler — handlers belong in the WebApi project, not Application",
+    "AppDbContext — DbContext should live in the Application project to be accessible to handlers",
+    "IOrderRepository in Domain — in Clean Architecture (vs Onion), repository interfaces belong in Application, not Domain",
+    "Nothing is misplaced — all three files are in the correct projects"
+  ]}
+  correctAnswer={2}
+  explanation="In Clean Architecture (as popularized by Robert C. Martin and Jason Taylor's template), repository interfaces live in the Application layer — they are application-level ports. Placing IOrderRepository in the Domain project is the Onion Architecture convention, not Clean Architecture. The distinction matters for project references: if IOrderRepository is in Domain, Application can use it without a separate Application/Interfaces folder, but you lose the explicit Application-layer ownership of what the use cases need. Most .NET teams keep repository interfaces in Application/Interfaces/."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Clean Architecture template (Jason Taylor)", url: "https://github.com/jasontaylordev/CleanArchitecture" },
+    { label: "eShopOnWeb reference application", url: "https://github.com/dotnet-architecture/eShopOnWeb" },
+    { label: "Architect modern web applications with ASP.NET Core", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/" },
+    { label: "eShopOnContainers — multi-service solution structure", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+  ]}
+/>

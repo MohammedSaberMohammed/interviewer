@@ -2,23 +2,331 @@
 title: "DRY, KISS, YAGNI"
 slug: "dry-kiss-yagni"
 order: 6
-difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["DRY", "KISS", "YAGNI", "design principles", "over-engineering", "refactoring"]
+summary: "Three principles that fight different categories of bad code: DRY fights duplication, KISS fights unnecessary complexity, and YAGNI fights premature features. Learn when each matters and how they interact."
+docsLinks:
+  - label: "Architectural principles — Microsoft Architecture Guide"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles"
+  - label: "Code quality rules in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/"
+  - label: "Refactoring and code smells"
+    url: "https://learn.microsoft.com/en-us/visualstudio/ide/reference/extract-method?view=vs-2022"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Three Principles, Three Problems
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+| Principle | Full Name | Fights |
+|-----------|-----------|--------|
+| **DRY** | Don't Repeat Yourself | Knowledge duplication |
+| **KISS** | Keep It Simple, Stupid | Unnecessary complexity |
+| **YAGNI** | You Aren't Gonna Need It | Speculative features |
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+These three work together. Violating YAGNI creates complexity that violates KISS, which often requires copy-paste workarounds that violate DRY. Getting all three right produces lean, readable, maintainable code.
+
+---
+
+## DRY: Don't Repeat Yourself
+
+DRY's precise definition (from Andy Hunt and Dave Thomas): **every piece of knowledge must have a single, unambiguous, authoritative representation within a system.**
+
+The key word is *knowledge* — not just code. Two identical loops might be fine (accidental duplication). Two places that encode the same business rule are a DRY violation even if the code looks different.
+
+```csharp
+// BAD: The "a valid order must have at least one line item" rule
+// is encoded in three places. Change it once? Easy to miss the others.
+
+public class OrderService
+{
+    public void PlaceOrder(Order order)
+    {
+        if (!order.LineItems.Any())  // Rule encoded here
+            throw new InvalidOperationException("Order must have items");
+        // ...
+    }
+}
+
+public class OrderController : ControllerBase
+{
+    [HttpPost]
+    public IActionResult Create(Order order)
+    {
+        if (order.LineItems == null || !order.LineItems.Any()) // Rule repeated here
+            return BadRequest("Order must have at least one item");
+        // ...
+    }
+}
+
+public class OrderValidator
+{
+    public bool IsValid(Order order)
+    {
+        return order.LineItems != null && order.LineItems.Count > 0; // And again here
+    }
+}
+
+// GOOD: Centralise the rule in one authoritative place
+
+public class Order
+{
+    public IReadOnlyList<LineItem> LineItems { get; private set; } = new List<LineItem>();
+
+    // The rule lives here — all callers use this
+    public bool HasItems => LineItems.Any();
+
+    public void AddLineItem(LineItem item)
+    {
+        if (item is null) throw new ArgumentNullException(nameof(item));
+        ((List<LineItem>)LineItems).Add(item);
+    }
+}
+
+// Now every caller checks order.HasItems — if the rule changes, update one place
+public class OrderService
+{
+    public void PlaceOrder(Order order)
+    {
+        if (!order.HasItems)
+            throw new InvalidOperationException("Order must have items");
+    }
+}
+```
+
+---
+
+## KISS: Keep It Simple, Stupid
+
+KISS is a design bias toward the simplest solution that works. Complexity is only justified when simplicity truly cannot solve the problem.
+
+```csharp
+// BAD: Elaborate generic infrastructure for a simple problem
+public class DataTransformer<TInput, TOutput, TStrategy>
+    where TStrategy : ITransformStrategy<TInput, TOutput>, new()
+{
+    private readonly TStrategy _strategy = new TStrategy();
+    private readonly List<ITransformMiddleware<TInput, TOutput>> _middlewares = new();
+
+    public DataTransformer<TInput, TOutput, TStrategy> Use(
+        ITransformMiddleware<TInput, TOutput> middleware)
+    {
+        _middlewares.Add(middleware);
+        return this;
+    }
+
+    public TOutput Transform(TInput input)
+    {
+        // Pipeline execution with pre/post hooks...
+        return _strategy.Execute(input);
+    }
+}
+
+// All of this to solve: "convert Celsius to Fahrenheit"
+// The simple solution:
+public static double CelsiusToFahrenheit(double celsius) =>
+    celsius * 9.0 / 5.0 + 32;
+```
+
+Real complexity signals:
+- A method that requires reading the implementation to understand what it does
+- A 20-line method that solves a 3-line problem
+- An abstraction hierarchy that exists before there are two concrete implementations
+
+```csharp
+// KISS applied to validation — before and after
+
+// BAD: Verbose, hard to scan
+public bool IsValidEmail(string email)
+{
+    if (email == null)
+        return false;
+    if (email.Length == 0)
+        return false;
+    if (!email.Contains('@'))
+        return false;
+    int atIndex = email.IndexOf('@');
+    if (atIndex == 0)
+        return false;
+    if (atIndex == email.Length - 1)
+        return false;
+    // ... more manual parsing
+    return true;
+}
+
+// GOOD: Use the right tool — let the framework do it
+public bool IsValidEmail(string email) =>
+    !string.IsNullOrWhiteSpace(email) &&
+    new System.Net.Mail.MailAddress(email).Address == email;
+// Or simply: use [EmailAddress] data annotation on the model
+```
+
+---
+
+## YAGNI: You Aren't Gonna Need It
+
+YAGNI says: **do not implement something until you need it.** Speculative features add complexity that:
+- Must be maintained even if never used
+- Increases the surface area for bugs
+- Makes the codebase harder to understand
+- Often turns out to be wrong when requirements finally arrive
+
+```csharp
+// BAD: Adding plugin support "just in case" on day one
+public class ReportService
+{
+    private readonly List<IReportPlugin> _plugins = new();
+    private readonly IPluginLoader _pluginLoader;
+    private readonly IPluginRegistry _registry;
+
+    public ReportService(IPluginLoader pluginLoader, IPluginRegistry registry)
+    {
+        _pluginLoader = pluginLoader;
+        _registry = registry;
+        _plugins = _pluginLoader.LoadAll(_registry.GetRegisteredPlugins());
+    }
+
+    public Report Generate(ReportRequest request)
+    {
+        foreach (var plugin in _plugins)
+            plugin.BeforeGenerate(request);
+
+        var report = BuildReport(request);
+
+        foreach (var plugin in _plugins)
+            plugin.AfterGenerate(report);
+
+        return report;
+    }
+
+    private Report BuildReport(ReportRequest request) { return new Report(); }
+}
+// This plugin architecture costs weeks of engineering, adds complexity,
+// and no one has ever asked for a plugin.
+
+// GOOD: Build what is needed now
+public class ReportService
+{
+    public Report Generate(ReportRequest request)
+    {
+        // The actual business logic — nothing more
+        var report = BuildReport(request);
+        return report;
+    }
+
+    private Report BuildReport(ReportRequest request) { return new Report(); }
+}
+// If plugins are ever needed, add them then — with actual requirements to guide the design.
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Interaction Between the Three Principles**
+
+These principles are not independent — they pull against each other in ways that require judgment:
+
+**DRY vs. KISS**: Eliminating every last bit of duplication sometimes requires elaborate abstractions that violate KISS. The DRY-violation cost must be weighed against the complexity cost of the abstraction. Two nearly identical 5-line methods might be fine to leave duplicated. Two nearly identical complex algorithms that encode the same business rule should be unified.
+
+**YAGNI vs. DRY**: When you unify code to comply with DRY, you are predicting that the two things will always change together. If they are actually independent concepts that happened to look alike today, premature unification violates YAGNI — you built infrastructure for a coupling that does not exist.
+
+**The Rule of Three**: A practical heuristic: tolerate one duplication. When you see it a third time, the pattern is real and worth abstracting. This respects all three principles.
+
+In C# specifically, over-application of DRY often creates the *wrong* abstraction — a generic base class or utility method that serves slightly-different-but-related use cases, growing cruft over time as each use case adds its own parameter. A "WrongAbstraction" is worse than duplication. The refactoring to fix a wrong abstraction is much more expensive than the duplication it was meant to remove.
 </Callout>
+
+---
+
+<MythBuster
+  myth="DRY means never write the same line of code twice"
+  reality="DRY is about duplicated *knowledge*, not duplicated syntax. Two classes that each have `return items.Any()` are not a DRY violation if they represent different domain concepts. DRY is violated when the same business rule, algorithm, or fact about the domain is encoded in multiple places — because changing the rule requires finding and updating all copies. Syntactic similarity is not the same as knowledge duplication."
+/>
+
+---
+
+## Code Challenge: Which Principle Is Violated?
+
+<CodeChallenge
+  id="06-solid/dry-kiss-yagni/challenge-1"
+  title="Match the Violation to the Principle"
+  description="A developer adds a plugin architecture, event sourcing support, and a multi-tenant configuration system to a single-tenant internal tool with three users. Which principle is most directly violated?"
+  code={`public class InternalTool
+{
+    // Plugin architecture — no plugins planned
+    private readonly IPluginRegistry _plugins;
+
+    // Event sourcing — no audit requirements
+    private readonly IEventStore _eventStore;
+
+    // Multi-tenant config — single tenant, always
+    private readonly ITenantConfigResolver _tenantConfig;
+
+    public InternalTool(
+        IPluginRegistry plugins,
+        IEventStore eventStore,
+        ITenantConfigResolver tenantConfig)
+    {
+        _plugins = plugins;
+        _eventStore = eventStore;
+        _tenantConfig = tenantConfig;
+    }
+
+    public void DoWork(string input)
+    {
+        _tenantConfig.ResolveFor("default");
+        var result = input.ToUpper();
+        _eventStore.Append(new WorkDoneEvent(result));
+        _plugins.Notify(WorkPhase.Complete, result);
+    }
+}`}
+  options={[
+    "DRY — the logic is repeated in multiple places",
+    "KISS — the implementation is more complex than the problem requires",
+    "YAGNI — features are implemented before there is any requirement for them",
+    "Both KISS and YAGNI — they both apply here"
+  ]}
+  correctAnswer={3}
+  explanation="Both KISS and YAGNI are violated, and they are related violations. YAGNI is violated because plugins, event sourcing, and multi-tenancy are implemented without any requirement for them — the tool has three users and no plans to expand. KISS is violated as a consequence: the implementation is far more complex than the problem requires. In practice YAGNI violations always produce KISS violations — unnecessary features add unnecessary complexity. The fix: remove everything that has no current requirement. Add it when — and if — it is actually needed."
+/>
+
+---
+
+<Quiz
+  id="06-solid/dry-kiss-yagni/quiz-1"
+  questions={[
+    {
+      question: "Two services both have a method that fetches a user by ID from the same database table. Is this a DRY violation?",
+      options: [
+        "Yes — any identical logic must be extracted immediately",
+        "It depends — if both encode the same business rule, yes; if they serve different bounded contexts, possibly not",
+        "No — DRY only applies within a single class",
+        "No — database queries are infrastructure, not knowledge"
+      ],
+      correctAnswer: 1,
+      explanation: "Context matters. If both methods are in the same bounded context fetching the same conceptual entity, extracting them into a shared UserRepository makes sense — one reason to change. But if they are in different bounded contexts (e.g., OrderService.GetCustomer and BillingService.GetAccountHolder that happen to hit the same table), forcing them to share code couples two independent domains — a wrong abstraction. In microservices, this is why services own their own data even when it means some duplication."
+    },
+    {
+      question: "When is the right time to add a caching layer, according to YAGNI?",
+      options: [
+        "Always — caching is always beneficial so add it upfront",
+        "When designing the initial architecture so it is easy to add later",
+        "When you have a measured performance problem that caching would solve",
+        "After the third feature request, following the Rule of Three"
+      ],
+      correctAnswer: 2,
+      explanation: "YAGNI says: when you have a measured problem that the feature solves. Adding caching upfront adds complexity (cache invalidation, stale data, serialization, memory pressure) without proven benefit. Premature optimization is a YAGNI violation. Profile first, identify the actual bottleneck, then add caching with confidence that it solves the measured problem. The Rule of Three applies to duplication, not to infrastructure concerns."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Architectural principles — YAGNI, DRY, and more", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles" },
+    { label: "Code quality rules overview", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/" },
+    { label: "Extract Method refactoring in Visual Studio", url: "https://learn.microsoft.com/en-us/visualstudio/ide/reference/extract-method?view=vs-2022" },
+  ]}
+/>

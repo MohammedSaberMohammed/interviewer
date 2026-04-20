@@ -1,24 +1,270 @@
 ---
-title: "Thread Pool Starvation"
+title: "ThreadPool Starvation: Blocking Threads, Symptoms, and Fixes"
 slug: "thread-pool-starvation"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["ThreadPool", "starvation", "blocking", "async", "performance", "ASP.NET Core", "scalability"]
+summary: "ThreadPool starvation happens when blocking calls consume all available threads — async/await exists precisely to prevent this, but mixing sync and async code reintroduces it."
+docsLinks:
+  - label: "ThreadPool class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.threadpool"
+  - label: "Diagnose ThreadPool starvation"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/debug-threadpool-starvation"
+  - label: "Thread pool in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/threading/the-managed-thread-pool"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## How the ThreadPool Works
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The .NET ThreadPool manages a pool of worker threads that run async continuations, `Task.Run` work, and other scheduled callbacks. Key properties:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Minimum threads**: initially set to `Environment.ProcessorCount` (e.g., 8 threads on an 8-core CPU)
+- **Maximum threads**: typically 32,767 workers (configurable)
+- **Thread injection rate**: when all threads are busy, the pool adds ~1 new thread per second (the "hill-climbing algorithm")
+
+```csharp
+// Query current ThreadPool state
+ThreadPool.GetMinThreads(out int minWorkers, out int minIo);
+ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIo);
+ThreadPool.GetAvailableThreads(out int freeWorkers, out int freeIo);
+
+Console.WriteLine($"Min workers: {minWorkers}"); // ~processor count
+Console.WriteLine($"Max workers: {maxWorkers}"); // 32767+
+Console.WriteLine($"Free workers: {freeWorkers}"); // Should be high; low = trouble
+```
+
+---
+
+## What Causes Starvation
+
+Starvation occurs when all ThreadPool threads are **blocked** waiting for something (I/O, locks, `.Result` calls). New work queues up but no threads are free to run it.
+
+```csharp
+// Classic starvation pattern: blocking sync calls inside async context
+[HttpGet("reports/{count}")]
+public async Task<IActionResult> GenerateReports(int count)
+{
+    var tasks = Enumerable.Range(0, count).Select(i =>
+        Task.Run(() =>
+        {
+            // Each Task.Run claims a ThreadPool thread, then BLOCKS it:
+            var data = _legacyService.GetData(i); // Synchronous, blocks 2 seconds
+            return Process(data);
+        })
+    );
+
+    var results = await Task.WhenAll(tasks);
+    return Ok(results);
+}
+
+// With count=100 and only 8+ ThreadPool threads:
+// - 8 threads start, each blocks for 2 seconds
+// - 92 tasks queue up, waiting for threads
+// - ThreadPool injects ~1 thread/second — takes 92+ seconds to recover
+// - All 100 requests timeout before completing
+// - Symptom: requests queue up, response times spike, CPU is at 0%
+```
+
+---
+
+## Symptoms of ThreadPool Starvation
+
+1. **Requests/tasks queuing with 0% CPU** — the box is idle but unresponsive
+2. **Steadily increasing response times** — as more threads block, more requests queue
+3. **Thread count climbing slowly** — ThreadPool hill-climbing adds threads slowly
+4. **Event log or metrics show high thread count with low throughput**
+5. **Timeouts on operations that aren't slow themselves** — queuing delay is the culprit
+
+```csharp
+// Detect starvation programmatically:
+public class ThreadPoolMonitor : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            ThreadPool.GetMaxThreads(out int maxWorkers, out _);
+            ThreadPool.GetAvailableThreads(out int freeWorkers, out _);
+            int queueDepth = maxWorkers - freeWorkers;
+
+            if (queueDepth > 100) // Threshold for alerting
+                _metrics.RecordStarvationAlert(queueDepth);
+
+            await Task.Delay(1000, stoppingToken);
+        }
+    }
+}
+```
+
+---
+
+## Diagnosing Starvation with dotnet-counters
+
+```bash
+# Monitor ThreadPool in real time
+dotnet-counters monitor --process-id <PID> \
+  --counters System.Runtime[threadpool-thread-count,threadpool-queue-length]
+
+# Output during starvation:
+# System.Runtime
+#   ThreadPool Queue Length                          847  (should be near 0)
+#   ThreadPool Thread Count                           82  (slowly climbing)
+#   ThreadPool Completed Work Item Count/sec           5  (should be >> rps)
+```
+
+---
+
+## The Root Causes and Fixes
+
+**Root cause 1: Blocking I/O (`.Result`, `.Wait()`)**
+
+```csharp
+// BAD: blocks a ThreadPool thread for the duration of the HTTP call
+public Task<string> GetDataBad(string url)
+    => Task.Run(() => new HttpClient().GetStringAsync(url).Result); // Double wrong
+
+// GOOD: use async all the way
+public async Task<string> GetDataGood(string url)
+    => await new HttpClient().GetStringAsync(url);
+```
+
+**Root cause 2: Thread.Sleep in async code**
+
+```csharp
+// BAD: blocks a ThreadPool thread for 5 seconds
+await Task.Run(() => Thread.Sleep(5000)); // Holds a thread while sleeping
+
+// GOOD: non-blocking delay
+await Task.Delay(5000); // No thread consumed during delay
+```
+
+**Root cause 3: Synchronous database calls in web handlers**
+
+```csharp
+// BAD: synchronous EF Core SaveChanges blocks a thread
+public async Task<IActionResult> UpdateBad(Model m)
+{
+    _db.Models.Update(m);
+    _db.SaveChanges();  // Blocks! Use SaveChangesAsync
+    return Ok();
+}
+
+// GOOD:
+public async Task<IActionResult> UpdateGood(Model m)
+{
+    _db.Models.Update(m);
+    await _db.SaveChangesAsync();
+    return Ok();
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Minimum thread count tuning for legacy sync code**
+
+When you have unavoidable blocking calls (legacy SDK, third-party library with no async API), you can tune the minimum thread count to reduce the starvation window:
+
+```csharp
+// In Program.cs or startup — increase minimum worker threads
+int processorCount = Environment.ProcessorCount;
+ThreadPool.SetMinThreads(
+    workerThreads: processorCount * 4, // Bump up minimum (default is processorCount)
+    completionPortThreads: processorCount * 4);
+
+// This pre-allocates more threads so they're immediately available
+// and reduces the hill-climbing delay from ~1 thread/second
+
+// Alternatively, in Docker/Kubernetes:
+// Set DOTNET_THREAD_POOL_MIN_THREADS environment variable
+// DOTNET_THREAD_POOL_MIN_THREADS=50
+```
+
+This is a band-aid, not a fix. The real fix is making everything async. But during migrations or for third-party dependencies, bumping minimum threads buys time and reduces latency spikes.
+
+Another approach: use a dedicated `ThreadPool` via `TaskCreationOptions.LongRunning` for genuinely long-blocking operations:
+
+```csharp
+// TaskCreationOptions.LongRunning creates a DEDICATED thread (not from the pool)
+// Use this ONLY for truly long-running synchronous work (minutes, not seconds)
+var dedicatedTask = Task.Factory.StartNew(
+    () => LegacyLongBlockingOperation(),
+    CancellationToken.None,
+    TaskCreationOptions.LongRunning, // Creates a new OS thread, not from pool
+    TaskScheduler.Default);
+
+await dedicatedTask;
+```
+
+This keeps the blocking work off the ThreadPool entirely.
 </Callout>
+
+---
+
+<MythBuster
+  myth="async/await uses more threads and is slower than synchronous code"
+  reality="async/await actually uses FEWER threads than synchronous blocking code. A synchronous web handler holds a ThreadPool thread for the entire duration of I/O. An async handler releases the thread during I/O and reclaims one only to process the response. Under load, async allows hundreds of concurrent requests on dozens of threads. Sync handlers need hundreds of threads — quickly exhausting the ThreadPool. async is slower per single request (state machine overhead), but 10x-100x better for throughput under load."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/thread-pool-starvation/challenge-1"
+  title="Identify the Starvation Source"
+  description="This ASP.NET Core service handles 500 requests/sec. Under load, response times spike from 20ms to 30+ seconds. Why?"
+  code={`[HttpGet("data/{id}")]
+public async Task\<IActionResult\> GetData(int id)
+{
+    // Fetch from fast in-memory cache first
+    if (_cache.TryGetValue(id, out var cached))
+        return Ok(cached);
+
+    // Cache miss: fetch from database
+    var result = await Task.Run(() =>
+    {
+        // Legacy ORM with no async API
+        return _legacyDb.ExecuteQuery($"SELECT * FROM data WHERE id = {id}");
+    });
+
+    _cache.TryAdd(id, result);
+    return Ok(result);
+}`}
+  options={[
+    "The string interpolation in the SQL query causes allocation pressure",
+    "Task.Run claims a ThreadPool thread; if ExecuteQuery blocks for 100ms and there are 500 rps cache misses, all ThreadPool threads are quickly consumed — starvation",
+    "TryAdd on ConcurrentDictionary is not thread-safe under high load",
+    "The cache miss path should use ConfigureAwait(false)"
+  ]}
+  correctAnswer={1}
+  explanation="At 500 rps with cache misses, many Task.Run() calls happen concurrently. Each one claims a ThreadPool thread and blocks it for the duration of ExecuteQuery (~100ms database I/O). With 8 minimum threads, they fill up immediately. New threads inject slowly (~1/sec). Thread queue depth climbs, tasks wait for threads, response time balloons. The fix: migrate to an async ORM (EF Core), or use TaskCreationOptions.LongRunning for these blocking calls and increase minimum thread count as a temporary measure."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/thread-pool-starvation/quiz-1"
+  question="The ThreadPool has 8 threads available and 8 tasks each blocking for 2 seconds. How quickly can the 9th task start running (approximately)?"
+  options={[
+    "Immediately — the ThreadPool creates a new thread on demand",
+    "After about 1 second — the hill-climbing algorithm injects approximately 1 new thread per second",
+    "After 2 seconds — when the blocked threads complete and become free",
+    "Never — the ThreadPool has a fixed size that cannot grow"
+  ]}
+  correctAnswer={1}
+  explanation="The ThreadPool's hill-climbing algorithm monitors utilization and injects new threads approximately once per second when all threads are busy. It deliberately goes slowly to avoid over-provisioning. The 9th task starts after roughly 1 second. If 100 tasks are queued behind 8 blocked threads, it takes ~100 seconds for all to get threads — hence the dramatic latency spikes during starvation. This is why blocking on async code in production is catastrophic under any real load."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Diagnose ThreadPool starvation", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/debug-threadpool-starvation" },
+    { label: "The managed thread pool", url: "https://learn.microsoft.com/en-us/dotnet/standard/threading/the-managed-thread-pool" },
+    { label: "ThreadPool.SetMinThreads", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.threadpool.setminthreads" },
+    { label: "dotnet-counters tool", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-counters" },
+  ]}
+/>

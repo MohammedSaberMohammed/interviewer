@@ -1,24 +1,289 @@
 ---
-title: "Adapter"
+title: "Adapter — Wrapping Incompatible Interfaces"
 slug: "adapter"
 order: 6
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["adapter", "structural", "wrapper", "interface compatibility", "legacy code"]
+summary: "Adapter converts one interface into another that clients expect — the go-to pattern for integrating third-party libraries and legacy code without modifying either side."
+docsLinks:
+  - label: "IEnumerable and IEnumerator adapters"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "Stream adapters (StreamReader/StreamWriter)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.io.streamreader"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Incompatible Interfaces
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have an existing client that expects `ILogger`, but the new third-party library only exposes `ThirdPartyLog`. You can't modify either side — the client is in production code, and the library is external. You need a translator.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// What your system expects
+public interface ILogger
+{
+    void Log(string message);
+    void LogError(string message, Exception? ex = null);
+}
+
+// What the third-party library provides — incompatible interface
+public class ThirdPartyLog
+{
+    public void WriteInfo(string msg, string source) { /* ... */ }
+    public void WriteCritical(string msg, string source, int level) { /* ... */ }
+}
+```
+
+---
+
+## Object Adapter (Composition — Preferred)
+
+```csharp
+// Adapter wraps the adaptee via composition
+public class ThirdPartyLogAdapter : ILogger
+{
+    private readonly ThirdPartyLog _adaptee;
+    private readonly string        _source;
+
+    public ThirdPartyLogAdapter(ThirdPartyLog adaptee, string source)
+    {
+        _adaptee = adaptee;
+        _source  = source;
+    }
+
+    // Translate ILogger.Log → ThirdPartyLog.WriteInfo
+    public void Log(string message)
+        => _adaptee.WriteInfo(message, _source);
+
+    // Translate ILogger.LogError → ThirdPartyLog.WriteCritical
+    public void LogError(string message, Exception? ex = null)
+        => _adaptee.WriteCritical(
+            ex != null ? $"{message}: {ex.Message}" : message,
+            _source,
+            level: 1);
+}
+
+// Usage — client only knows about ILogger
+ILogger logger = new ThirdPartyLogAdapter(new ThirdPartyLog(), "OrderService");
+logger.Log("Order created");
+logger.LogError("Payment failed", new InvalidOperationException("Card declined"));
+```
+
+## Class Adapter (Inheritance — Less Common)
+
+```csharp
+// Class adapter via multiple interface implementation
+// Only works when adaptee is a class you can inherit from
+public class LegacyEmailService
+{
+    public void SendEmail(string to, string subject, string htmlBody) { /* ... */ }
+}
+
+public interface INotifier
+{
+    Task NotifyAsync(string recipient, string message);
+}
+
+// Class adapter — inherits from adaptee, implements target interface
+public class EmailNotifierAdapter : LegacyEmailService, INotifier
+{
+    public Task NotifyAsync(string recipient, string message)
+    {
+        SendEmail(to: recipient, subject: "Notification", htmlBody: $"<p>{message}</p>");
+        return Task.CompletedTask;
+    }
+}
+```
+
+Class adapters are rarely used in C# — you can only inherit one class, and composition is more flexible.
+
+---
+
+## Real .NET BCL Examples
+
+The BCL is full of adapters:
+
+```csharp
+// StreamReader adapts Stream (byte-oriented) → TextReader (character-oriented)
+using Stream stream = File.OpenRead("data.txt");  // byte stream
+using StreamReader reader = new StreamReader(stream); // adapter!
+string line = reader.ReadLine()!; // TextReader interface over a byte stream
+
+// StreamWriter adapts Stream → TextWriter
+using Stream output = File.OpenWrite("out.txt");
+using StreamWriter writer = new StreamWriter(output); // adapter!
+writer.WriteLine("Hello World"); // TextWriter interface over a byte stream
+
+// XmlReader.Create adapts various inputs to IXmlLineInfo
+using XmlReader xml = XmlReader.Create(new StringReader("<root/>"));
+
+// DataAdapter adapts DataTable ↔ IDbDataAdapter
+SqlDataAdapter adapter = new SqlDataAdapter("SELECT * FROM Users", connection);
+DataTable table = new DataTable();
+adapter.Fill(table); // adapts IDbDataAdapter.Fill to populate DataTable
+```
+
+---
+
+## Adapter in ASP.NET Core Middleware
+
+ASP.NET Core uses adapters to integrate older `IHttpModule`/`IHttpHandler` style code with the modern `RequestDelegate` pipeline:
+
+```csharp
+// Adapting a third-party health check library to ASP.NET Core IHealthCheck
+// Third-party interface
+public interface ILegacyHealthProbe
+{
+    bool IsHealthy();
+    string GetStatus();
+}
+
+// ASP.NET Core expects IHealthCheck
+public class LegacyHealthCheckAdapter : IHealthCheck
+{
+    private readonly ILegacyHealthProbe _probe;
+
+    public LegacyHealthCheckAdapter(ILegacyHealthProbe probe) => _probe = probe;
+
+    public Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, CancellationToken ct = default)
+    {
+        bool healthy = _probe.IsHealthy();
+        string status = _probe.GetStatus();
+
+        return Task.FromResult(healthy
+            ? HealthCheckResult.Healthy(status)
+            : HealthCheckResult.Unhealthy(status));
+    }
+}
+
+// Register with DI
+builder.Services.AddHealthChecks()
+    .AddCheck<LegacyHealthCheckAdapter>("legacy-probe");
+```
+
+---
+
+<ComparisonTable
+  title="Adapter vs Decorator vs Facade"
+  headers={["Pattern", "Intent", "Changes Interface?", "Adds Behavior?"]}
+  rows={[
+    ["Adapter", "Make incompatible interfaces work together", "Yes — translates one to another", "No — translates only"],
+    ["Decorator", "Add behavior to an object", "No — same interface", "Yes — wraps with extra logic"],
+    ["Facade", "Simplify a complex subsystem", "Yes — new simplified interface", "No — delegates only"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/adapter/challenge-1"
+  title="Identify the Adapter"
+  description="Which of these is using the Adapter pattern?"
+  code={`// A: Wrapping a list to add logging on Add/Remove
+public class LoggingList\<T\> : IList\<T\>
+{
+    private readonly IList\<T\> _inner;
+    private readonly ILogger _logger;
+    // ... delegates all IList\<T\> methods to _inner, logs on Add/Remove
+}
+
+// B: Making a legacy XmlConfig implement IConfiguration
+public class XmlConfigAdapter : IConfiguration
+{
+    private readonly LegacyXmlConfig _xml;
+    public string? this[string key]
+    {
+        get => _xml.GetValue(key);
+        set => _xml.SetValue(key, value ?? "");
+    }
+    // ...
+}`}
+  options={[
+    "A is the Adapter — it wraps IList<T> in another IList<T>",
+    "B is the Adapter — it translates LegacyXmlConfig to IConfiguration",
+    "Both are Adapters",
+    "Neither — both are Decorators"
+  ]}
+  correctAnswer={1}
+  explanation="B is the Adapter. It converts LegacyXmlConfig (incompatible interface) to IConfiguration (target interface) — translating between two different interfaces. A is the Decorator pattern — it wraps an IList<T> with another IList<T> (same interface) and adds logging behavior. The key distinction: Adapter changes the interface, Decorator keeps the same interface while adding behavior."
+/>
+
+---
+
+<Callout type="senior">
+**Two-Way Adapters and the Anti-Corruption Layer**
+
+In Domain-Driven Design, an **Anti-Corruption Layer (ACL)** is a set of adapters between your domain model and an external system. It's the Adapter pattern at an architectural scale:
+
+```csharp
+// External payment gateway model (their types, their naming, their concepts)
+public class StripeChargeRequest
+{
+    public long   Amount   { get; set; } // in cents
+    public string Currency { get; set; } = "usd";
+    public string Source   { get; set; } = ""; // card token
+}
+
+// Your domain model
+public class PaymentRequest
+{
+    public decimal Amount   { get; }
+    public Currency Currency { get; }
+    public PaymentMethod Method { get; }
+}
+
+// ACL — translates your domain → Stripe's model (adapter)
+public class StripePaymentAdapter : IPaymentGateway
+{
+    private readonly StripeClient _stripe;
+
+    public StripePaymentAdapter(StripeClient stripe) => _stripe = stripe;
+
+    public async Task<PaymentResult> ChargeAsync(PaymentRequest request)
+    {
+        // Translate: your domain model → Stripe's model
+        var stripeRequest = new StripeChargeRequest
+        {
+            Amount   = (long)(request.Amount * 100), // dollars → cents
+            Currency = request.Currency.Code.ToLower(),
+            Source   = request.Method.Token,
+        };
+
+        var stripeResult = await _stripe.ChargeAsync(stripeRequest);
+
+        // Translate: Stripe's result → your domain result
+        return new PaymentResult(stripeResult.Id, stripeResult.Status == "succeeded");
+    }
+}
+```
+
+The ACL shields your domain from the third party's concepts leaking in. If you switch from Stripe to Braintree, you write a new adapter — your domain is untouched.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/adapter/quiz-1"
+  question="Why is object adapter (composition) preferred over class adapter (inheritance) in C#?"
+  options={[
+    "Object adapters are faster because composition avoids vtable lookup",
+    "C# doesn't support multiple inheritance of classes, limiting class adapters; composition is more flexible",
+    "Class adapters cannot override virtual methods of the adaptee",
+    "Object adapters work with sealed classes, class adapters do not"
+  ]}
+  correctAnswer={1}
+  explanation="C# only supports single class inheritance, which limits class adapters — you can only inherit from one adaptee. Object adapters use composition, so they can adapt any object regardless of its inheritance hierarchy, work with sealed classes, and can swap the adaptee at runtime. Composition also avoids the fragile base class problem. Option D is also true but is a consequence of B, not a separate reason."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "StreamReader Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.io.streamreader" },
+    { label: "IHealthCheck Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.diagnostics.healthchecks.ihealthcheck" },
+    { label: "Anti-corruption layer pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" },
+  ]}
+/>

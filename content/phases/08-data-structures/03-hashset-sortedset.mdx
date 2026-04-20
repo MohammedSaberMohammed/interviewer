@@ -1,24 +1,282 @@
 ---
-title: "HashSet vs SortedSet"
+title: "HashSet<T> vs SortedSet<T>: When Uniqueness Matters"
 slug: "hashset-sortedset"
 order: 3
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["HashSet<T>", "SortedSet<T>", "set operations", "uniqueness", "red-black tree", "performance"]
+summary: "HashSet<T> gives O(1) membership testing with hash-table speed. SortedSet<T> gives O(log n) membership testing with automatic sorted order. Knowing which to pick — and when set operations are the real answer — separates competent from senior."
+docsLinks:
+  - label: "HashSet<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.hashset-1"
+  - label: "SortedSet<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedset-1"
+  - label: "ISet<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iset-1"
+  - label: "IReadOnlySet<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlyset-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Core Contract: No Duplicates
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Both `HashSet<T>` and `SortedSet<T>` implement `ISet<T>` — the defining property being **no duplicate elements**. `Add` returns `bool` indicating whether the item was actually inserted.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+var hs = new HashSet<int> { 1, 2, 3 };
+bool added = hs.Add(2);    // false — already present, no-op
+bool added2 = hs.Add(4);   // true  — inserted
+
+// Idiomatic deduplication of a sequence
+IEnumerable<string> urls = GetCrawledUrls();
+var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+// Add returns false for duplicates — use it as the filter predicate
+var unique = urls.Where(url => seen.Add(url));
+```
+
+---
+
+## HashSet\<T\>: A Dictionary Without Values
+
+Internally, `HashSet<T>` is nearly identical to `Dictionary<K,V>` — same bucket array and entry array structure, same hash-based lookup — but without the value slot. Think of it as a `Dictionary<T, Unit>` with the unit optimized away.
+
+```csharp
+// O(1) membership testing — the primary use case
+var permissions = new HashSet<string>(StringComparer.Ordinal)
+{
+    "read", "write", "admin"
+};
+
+if (permissions.Contains("admin"))
+    Console.WriteLine("Has admin access");
+
+// Pre-allocate when you know approximate size — avoids resize copies
+var visited = new HashSet<int>(capacity: 10_000);
+
+// Construct from existing collection — deduplicates automatically
+int[] data = { 1, 2, 2, 3, 3, 3, 4 };
+var unique = new HashSet<int>(data); // { 1, 2, 3, 4 }
+Console.WriteLine(unique.Count);     // 4
+
+// Custom equality comparer
+var ci = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+ci.Add("Hello");
+ci.Add("hello"); // rejected — same under OrdinalIgnoreCase
+Console.WriteLine(ci.Count); // 1
+```
+
+---
+
+## Set Operations: The Hidden Power
+
+Both collections implement full set-algebraic operations. These are often the most readable solution to problems that would otherwise require nested loops.
+
+```csharp
+var setA = new HashSet<int> { 1, 2, 3, 4, 5 };
+var setB = new HashSet<int> { 3, 4, 5, 6, 7 };
+
+// Mutating operations (modify setA in-place, O(|setB|))
+setA.UnionWith(setB);            // A ∪ B = { 1,2,3,4,5,6,7 }
+setA.IntersectWith(setB);        // A ∩ B = { 3,4,5 }
+setA.ExceptWith(setB);           // A \ B = { 1,2 }
+setA.SymmetricExceptWith(setB);  // A △ B = { 1,2,6,7 } (in one but not both)
+
+// Non-mutating query operations (preserve both sets)
+bool isSubset   = setA.IsSubsetOf(setB);
+bool isSuperset = setA.IsSupersetOf(setB);
+bool overlaps   = setA.Overlaps(setB);    // any common elements?
+bool equals     = setA.SetEquals(setB);   // same elements, any order?
+```
+
+<Callout type="trap">
+**Trap: LINQ Set Operations vs ISet\<T\> Methods**
+
+`setA.Intersect(setB)` (LINQ) is O(n\*m) — it iterates `setA` and calls `Contains` on an `IEnumerable<T>` wrapper, not the hash table directly.
+
+`setA.IntersectWith(setB)` (ISet\<T\>) is O(min(n,m)) — it uses the hash table.
+
+Always prefer the native `ISet<T>` mutating methods for performance. Use LINQ set methods only when you need a new collection without mutating either source.
 </Callout>
+
+---
+
+## SortedSet\<T\>: Ordered Uniqueness with a Red-Black Tree
+
+`SortedSet<T>` stores elements in a **self-balancing red-black tree**. Every insert, remove, and lookup is O(log n), but elements are always accessible in sorted order — and range queries become efficient.
+
+```csharp
+var scores = new SortedSet<int> { 85, 92, 78, 95, 88, 72 };
+
+// Iteration is always sorted — no Sort() needed
+foreach (int score in scores)
+    Console.Write($"{score} "); // 72 78 85 88 92 95
+
+// Min and Max walk to tree leaves — O(log n)
+Console.WriteLine(scores.Min); // 72
+Console.WriteLine(scores.Max); // 95
+
+// GetViewBetween: a live sub-view of the tree — O(log n) to create, not a copy
+SortedSet<int> passing = scores.GetViewBetween(80, 100);
+// { 85, 88, 92, 95 }
+
+// The view reflects mutations to the original set automatically
+scores.Add(90);
+Console.WriteLine(passing.Count); // 5 — live view updated!
+
+// Custom comparison order
+var byLength = new SortedSet<string>(Comparer<string>.Create(
+    (a, b) =>
+    {
+        int cmp = a.Length.CompareTo(b.Length);
+        return cmp != 0 ? cmp : string.Compare(a, b, StringComparison.Ordinal);
+    }));
+
+byLength.UnionWith(new[] { "banana", "fig", "apple", "kiwi" });
+
+foreach (var f in byLength)
+    Console.WriteLine(f); // fig, kiwi, apple, banana (length-ascending)
+```
+
+---
+
+## Real-World Patterns
+
+```csharp
+// 1. Permission / role checking — HashSet for O(1) lookup
+class AuthService
+{
+    private static readonly HashSet<string> AdminUsers =
+        new(StringComparer.OrdinalIgnoreCase) { "alice", "bob" };
+
+    public bool IsAdmin(string username) => AdminUsers.Contains(username);
+}
+
+// 2. Graph traversal — HashSet prevents revisiting nodes
+void Bfs(int start, Dictionary<int, List<int>> adj)
+{
+    var visited = new HashSet<int>();
+    var queue = new Queue<int>();
+    queue.Enqueue(start);
+    visited.Add(start);
+
+    while (queue.TryDequeue(out int node))
+    {
+        Console.WriteLine(node);
+        foreach (int nbr in adj.GetValueOrDefault(node, []))
+        {
+            if (visited.Add(nbr)) // Add returns false if already in set
+                queue.Enqueue(nbr);
+        }
+    }
+}
+
+// 3. Ranked leaderboard — SortedSet for ordered unique entries
+class Leaderboard
+{
+    // Composite key: (score desc, playerId asc) ensures uniqueness
+    private readonly SortedSet<(int score, int playerId)> _entries =
+        new(Comparer<(int score, int playerId)>.Create((a, b) =>
+            a.score != b.score
+                ? b.score.CompareTo(a.score)  // descending score
+                : a.playerId.CompareTo(b.playerId)));
+
+    public void Record(int playerId, int score) =>
+        _entries.Add((score, playerId));
+
+    public IEnumerable<(int score, int playerId)> TopN(int n) =>
+        _entries.Take(n);
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Property", "HashSet<T>", "SortedSet<T>", "List<T> (manually deduplicated)"]}
+  rows={[
+    ["Internal structure", "Hash table", "Red-black tree", "Dynamic array"],
+    ["Contains / lookup", "O(1) avg", "O(log n)", "O(n)"],
+    ["Add", "O(1) amortized", "O(log n)", "O(n) to check + shift"],
+    ["Remove", "O(1) amortized", "O(log n)", "O(n) shift"],
+    ["Ordered iteration", "No (bucket order)", "Yes (comparer order)", "Only if sorted manually"],
+    ["Min / Max", "O(n) scan", "O(log n)", "O(n) scan"],
+    ["Range query (GetViewBetween)", "Not supported", "O(log n)", "Not supported"],
+    ["Memory per element", "~32 bytes", "~48 bytes (tree node)", "~8 bytes (no overhead)"],
+    ["Duplicate handling", "Silently rejects", "Silently rejects", "Manual pre-check needed"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/hashset-sortedset/challenge-1"
+  title="Find Common Elements Efficiently"
+  description="Given two large sequences of user IDs, choose the most efficient approach to find IDs present in both."
+  code={`List<int> activeUsers  = LoadActiveUsers();  // 500,000 items
+List\<int\> premiumUsers = LoadPremiumUsers(); // 100,000 items
+
+// Option A
+var commonA = activeUsers
+    .Where(u => premiumUsers.Contains(u))
+    .ToList();
+
+// Option B
+var premiumSet = new HashSet\<int\>(premiumUsers);
+var commonB = activeUsers
+    .Where(u => premiumSet.Contains(u))
+    .ToList();
+
+// Option C
+var commonC = activeUsers.Intersect(premiumUsers).ToList();`}
+  options={[
+    "All three are O(n+m) — LINQ optimizes Contains automatically",
+    "B and C are O(n+m); A is O(n*m) — avoid A for large lists",
+    "C is slowest because LINQ Intersect has more overhead than a direct HashSet",
+    "A is fastest because List<int>.Contains uses a native binary search"
+  ]}
+  correctAnswer={1}
+  explanation="Option A calls List<int>.Contains (O(n) linear scan) for each of the 500,000 active users — 50 billion comparisons. Option B builds a HashSet<int> from premiumUsers (O(m)) then does 500,000 O(1) lookups — total O(n+m). Option C (LINQ Intersect) internally builds a HashSet from the second sequence and does the same thing as B. B and C are equivalent; A would time out in production."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: EnsureCapacity, TrimExcess, and IReadOnlySet\<T\>**
+
+`HashSet<T>` grows by doubling, just like `List<T>`. Pre-allocate when bulk-loading:
+
+```csharp
+// Avoid repeated resize during bulk Add
+var set = new HashSet<string>(capacity: expectedCount);
+foreach (var item in source)
+    set.Add(item);
+
+// After loading, reclaim unused capacity
+set.TrimExcess(); // .NET 5+
+
+// EnsureCapacity — force growth upfront in one step
+set.EnsureCapacity(expectedCount); // .NET 5+
+```
+
+For API design, expose sets through `IReadOnlySet<T>` (added in .NET 5) to share a set without leaking mutation ability:
+
+```csharp
+public IReadOnlySet<string> AllowedRoles => _roles; // callers can Contains() but not Add()
+```
+
+For `SortedSet<T>`, avoid `Comparer<T>.Create` with a lambda for hot paths. Lambda comparers allocate a delegate and a closure object. Prefer a named `IComparer<T>` class to eliminate per-comparison allocations.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "HashSet\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.hashset-1" },
+    { label: "SortedSet\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedset-1" },
+    { label: "ISet\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iset-1" },
+    { label: "IReadOnlySet\<T\> (.NET 5+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlyset-1" },
+    { label: "HashSet\<T\>.GetViewBetween note for SortedSet", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.sortedset-1.getviewbetween" },
+  ]}
+/>

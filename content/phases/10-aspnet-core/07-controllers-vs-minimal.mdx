@@ -3,22 +3,246 @@ title: "Controllers vs Minimal APIs"
 slug: "controllers-vs-minimal"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["controllers", "minimal APIs", "MVC", "WebAPI", "routing", "asp.net core 8", "architecture"]
+summary: "Controllers bring structure, filters, and model binding. Minimal APIs bring performance and simplicity. The right choice depends on team size, API complexity, and how much you value convention over configuration."
+docsLinks:
+  - label: "Minimal APIs overview"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview"
+  - label: "Controllers in ASP.NET Core Web API"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/web-api/"
+  - label: "Minimal APIs vs controllers"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Same Endpoint, Two Ways
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Here is an identical endpoint written as a controller action and as a Minimal API:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// === Controller approach ===
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    private readonly IProductService _service;
+
+    public ProductsController(IProductService service) => _service = service;
+
+    [HttpGet("{id:int}")]
+    [ProducesResponseType<Product>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<Product>> GetById(int id)
+    {
+        var product = await _service.GetByIdAsync(id);
+        return product is null ? NotFound() : Ok(product);
+    }
+}
+
+// === Minimal API approach ===
+app.MapGet("/api/products/{id:int}", async (int id, IProductService service) =>
+{
+    var product = await service.GetByIdAsync(id);
+    return product is null ? Results.NotFound() : Results.Ok(product);
+})
+.WithName("GetProductById")
+.WithTags("Products")
+.Produces<Product>(StatusCodes.Status200OK)
+.Produces(StatusCodes.Status404NotFound);
+```
+
+Both compile to nearly identical endpoint metadata and route tables. The differences are in ergonomics and capabilities.
+
+---
+
+## What Controllers Bring
+
+```csharp
+[ApiController]                              // Automatic model validation + 400 response
+[Route("api/v{version:apiVersion}/orders")]  // Structured routing
+[Authorize(Policy = "RequireStaff")]         // Controller-wide auth
+[ServiceFilter<AuditLogFilter>]              // Filter pipeline
+public class OrdersController : ControllerBase
+{
+    // Model binding from multiple sources — automatic
+    [HttpPost]
+    public async Task<IActionResult> Create(
+        [FromBody] CreateOrderRequest request,   // JSON body
+        [FromHeader] string? idempotencyKey,     // Header
+        [FromServices] IOrderService service)    // DI
+    {
+        if (!ModelState.IsValid) // [ApiController] makes this implicit
+            return BadRequest(ModelState);
+
+        var order = await service.CreateAsync(request, idempotencyKey);
+        return CreatedAtAction(nameof(GetById), new { id = order.Id }, order);
+    }
+
+    [HttpGet("{id}")]
+    [ResponseCache(Duration = 60)]
+    public async Task<ActionResult<OrderDto>> GetById(int id) { /* ... */ return Ok(); }
+}
+```
+
+**Key controller advantages:**
+- `[ApiController]` gives you automatic 400 validation response
+- Rich filter pipeline (action, result, exception, resource, authorization)
+- `ActionResult<T>` enables typed OpenAPI responses
+- `ControllerBase` helpers: `Ok()`, `NotFound()`, `CreatedAtAction()`, `ValidationProblem()`
+- Convention-based route generation via `nameof`
+- Easy area/version grouping
+
+---
+
+## What Minimal APIs Bring
+
+```csharp
+// Organize with RouteGroupBuilder (ASP.NET Core 7+)
+var products = app.MapGroup("/api/products")
+    .WithTags("Products")
+    .RequireAuthorization("RequireStaff")
+    .WithOpenApi();
+
+products.MapGet("/", async (IProductService svc, CancellationToken ct) =>
+    await svc.GetAllAsync(ct));
+
+products.MapGet("/{id:int}", async (int id, IProductService svc) =>
+{
+    var p = await svc.GetByIdAsync(id);
+    return p is null ? Results.NotFound() : Results.Ok(p);
+});
+
+products.MapPost("/", async (CreateProductRequest req, IProductService svc,
+    IValidator<CreateProductRequest> validator) =>
+{
+    var result = await validator.ValidateAsync(req);
+    if (!result.IsValid)
+        return Results.ValidationProblem(result.ToDictionary());
+
+    var product = await svc.CreateAsync(req);
+    return Results.CreatedAtRoute("GetProductById", new { product.Id }, product);
+});
+
+// Endpoint filters (Minimal API equivalent of action filters) — ASP.NET Core 7+
+products.MapDelete("/{id:int}", async (int id, IProductService svc) =>
+{
+    await svc.DeleteAsync(id);
+    return Results.NoContent();
+})
+.AddEndpointFilter<IdempotencyFilter>()
+.AddEndpointFilter<AuditLogFilter>();
+```
+
+**Key Minimal API advantages:**
+- Less ceremony — no class, no constructor, less boilerplate
+- Faster cold-start and slightly lower per-request overhead (no MVC layer)
+- `TypedResults` (ASP.NET Core 7+) for compile-time correct OpenAPI generation
+- Easier to understand the full flow in a single place
+- Better for microservices with few endpoints
+
+---
+
+## TypedResults vs Results (Minimal APIs)
+
+```csharp
+// Results — dynamic, OpenAPI schema inferred at runtime
+app.MapGet("/a/{id}", async (int id, IProductService svc) =>
+{
+    var p = await svc.GetByIdAsync(id);
+    return p is null ? Results.NotFound() : Results.Ok(p); // No compile-time type info
+});
+
+// TypedResults (.NET 7+) — static types, better OpenAPI inference
+app.MapGet("/b/{id}", async (int id, IProductService svc) =>
+{
+    var p = await svc.GetByIdAsync(id);
+    return p is null ? TypedResults.NotFound() : TypedResults.Ok(p);
+})
+// Return type carries full type info for Swashbuckle/NSwag
+.Produces<Product>(200)
+.Produces(404); // Still needed for non-OK types
+```
+
+---
+
+## Head-to-Head Comparison
+
+<ComparisonTable
+  headers={["Feature", "Controllers", "Minimal APIs"]}
+  rows={[
+    ["Filter pipeline", "Full (Action/Result/Exception/Resource)", "EndpointFilter only (ASP.NET Core 7+)"],
+    ["Model binding", "Rich — [FromBody/Query/Route/Header/Form]", "Parameter binding — similar but less attribute control"],
+    ["Automatic 400 on invalid model", "Yes — [ApiController]", "No — must validate manually or use filter"],
+    ["Grouping/organization", "By controller class", "MapGroup() — ASP.NET Core 7+"],
+    ["Output caching", "Yes — [OutputCache]", "Yes — .CacheOutput()"],
+    ["OpenAPI generation", "Good — via attributes", "Good — TypedResults + .WithOpenApi()"],
+    ["Convention routing", "Yes — [Route] templates", "No — explicit path per endpoint"],
+    ["Performance", "Good", "Slightly better (less MVC overhead)"],
+    ["Testability", "ControllerBase + ActionResult", "Direct lambda — easy to extract and test"],
+    ["Team familiarity", "High — years of MVC convention", "Growing — .NET 6+"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Mixing Both in the Same App**
+
+You are not forced to choose. Many production apps use controllers for complex resource endpoints and minimal APIs for simple utility endpoints:
+
+```csharp
+// Controllers handle complex CRUD with filters, versioning, and model binding
+builder.Services.AddControllers();
+app.MapControllers();
+
+// Minimal APIs handle simple internal or operational endpoints
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }))
+    .ExcludeFromDescription(); // Hide from OpenAPI
+
+app.MapGet("/metrics", async (IMetricsCollector m) => await m.GetSnapshotAsync())
+    .RequireAuthorization("InternalOnly");
+
+// gRPC, SignalR, and Blazor can also coexist
+app.MapGrpcService<GreeterService>();
+app.MapHub<ChatHub>("/hubs/chat");
+```
+
+In greenfield microservices, start with Minimal APIs. When you need complex filter pipelines, model binding from exotic sources, or want reusable `ActionFilterAttribute`-based concerns, controllers still win. The real-world recommendation from the ASP.NET team: use Minimal APIs for new projects, controllers if you have a large existing controller codebase.
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/controllers-vs-minimal/quiz-1"
+  question="In Minimal APIs, how do you apply validation equivalent to [ApiController]'s automatic 400 response for invalid models?"
+  options={[
+    "Minimal APIs automatically validate models — it's built in",
+    "Add [ApiController] to the WebApplication class",
+    "Use an EndpointFilter or validate manually in the handler using a validator like FluentValidation",
+    "Use ModelState.IsValid inside the lambda function"
+  ]}
+  correctAnswer={2}
+  explanation="Minimal APIs do not have [ApiController]'s automatic model validation. You must validate manually — either inline using FluentValidation or a similar library, or via an EndpointFilter that runs before the handler. ModelState is an MVC controller concept and is not available in Minimal API lambdas."
+/>
+
+---
+
+<MythBuster
+  myth="Minimal APIs are a toy API feature — serious apps need controllers"
+  truth="Minimal APIs are production-ready and used in Microsoft's own services. They have feature parity with controllers for most scenarios: endpoint filters (replacing action filters), route groups (replacing controller grouping), TypedResults (matching ActionResult<T>), and full OpenAPI support. The ASP.NET Core team now recommends Minimal APIs for new greenfield projects."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Minimal APIs overview", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/overview" },
+    { label: "Route groups in Minimal APIs", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/route-handlers#route-groups" },
+    { label: "Endpoint filters in Minimal APIs", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/min-api-filters" },
+    { label: "TypedResults for Minimal APIs", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/minimal-apis/responses#typedresults-vs-results" },
+    { label: "Create web APIs with ASP.NET Core controllers", url: "https://learn.microsoft.com/en-us/aspnet/core/web-api/" },
+  ]}
+/>

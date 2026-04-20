@@ -1,24 +1,342 @@
 ---
-title: "Composition Over Inheritance"
+title: "Composition Over Inheritance in Practice"
 slug: "composition-over-inheritance"
 order: 12
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["composition", "inheritance", "SOLID", "dependency injection", "decorator", "strategy", "design patterns", "coupling"]
+summary: "Composition over inheritance is not a rule that forbids inheritance — it's a heuristic that catches the moment you start inheriting for code reuse rather than for a true is-a relationship."
+docsLinks:
+  - label: "Composition vs Inheritance"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles#prefer-composition-over-inheritance"
+  - label: "Dependency injection in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why This Principle Exists
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Inheritance creates one of the tightest forms of coupling in OOP. A derived class is coupled to its base class's:
+- **Implementation details** (not just the public contract)
+- **Protected members** (the "fragile base class" problem)
+- **Constructor signatures** (every derived class must chain to a base constructor)
+- **Behavioral assumptions** (every override must honor Liskov Substitution)
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+When you inherit for code reuse rather than for a genuine is-a relationship, you pay all these coupling costs for no semantic benefit. Composition lets you reuse behavior without the coupling.
+
+---
+
+## The Classic Anti-Pattern: Inheriting for Reuse
+
+```csharp
+// WRONG: inheriting from Stack to get "List with undo" behavior
+// Stack<T> is a LIFO structure — this has nothing to do with undo history
+public class UndoableList<T> : Stack<T>
+{
+    // We wanted the push/pop for undo, but now UndoableList IS a Stack
+    // Callers can call Push, Pop, Peek on our "list" type — which is wrong!
+
+    private readonly List<T> _items = new();
+
+    public void AddItem(T item)
+    {
+        _items.Add(item);
+        Push(item); // push to the inherited Stack for undo tracking
+    }
+
+    public void UndoLast()
+    {
+        if (Count > 0)
+        {
+            Pop();
+            _items.RemoveAt(_items.Count - 1);
+        }
+    }
+}
+
+// Problem: callers can bypass our API and use the inherited Stack methods directly
+var list = new UndoableList<int>();
+list.AddItem(1);
+list.Push(99);       // Bypasses our list — Stack state is now out of sync!
+list.UndoLast();     // Now what? The Stack and List are inconsistent
+```
+
+---
+
+## The Composition Alternative
+
+Instead of inheriting, compose the type you want to reuse:
+
+```csharp
+// CORRECT: compose the behaviors you need
+public class UndoableList<T>
+{
+    private readonly List<T> _items = new();
+    private readonly Stack<T> _undoStack = new(); // private implementation detail
+
+    // Expose ONLY the API that makes sense for an undoable list
+    public int Count => _items.Count;
+    public IReadOnlyList<T> Items => _items.AsReadOnly();
+
+    public void Add(T item)
+    {
+        _items.Add(item);
+        _undoStack.Push(item);
+    }
+
+    public bool UndoLast()
+    {
+        if (_undoStack.Count == 0) return false;
+        _undoStack.Pop();
+        _items.RemoveAt(_items.Count - 1);
+        return true;
+    }
+}
+
+// Now callers CANNOT call Push/Pop/Peek on our type — those are implementation details
+var list = new UndoableList<int>();
+list.Add(1);
+list.Add(2);
+list.UndoLast();
+Console.WriteLine(list.Count); // 1 — clean, no way to corrupt state
+```
+
+---
+
+## Real-World Pattern: The Decorator
+
+The Decorator pattern is composition in its purest form — wrapping an object to add behavior without modifying the original class:
+
+```csharp
+public interface IOrderService
+{
+    Task<Order?> GetOrderAsync(int id);
+    Task<int> CreateOrderAsync(Order order);
+}
+
+// Core implementation
+public class OrderService : IOrderService
+{
+    private readonly IOrderRepository _repo;
+    public OrderService(IOrderRepository repo) => _repo = repo;
+
+    public Task<Order?> GetOrderAsync(int id) => _repo.GetByIdAsync(id);
+    public Task<int> CreateOrderAsync(Order order) => _repo.InsertAsync(order);
+}
+
+// Decorator 1: adds logging — no changes to OrderService
+public class LoggingOrderService : IOrderService
+{
+    private readonly IOrderService _inner;
+    private readonly ILogger<LoggingOrderService> _logger;
+
+    public LoggingOrderService(IOrderService inner, ILogger<LoggingOrderService> logger)
+    {
+        _inner  = inner;
+        _logger = logger;
+    }
+
+    public async Task<Order?> GetOrderAsync(int id)
+    {
+        _logger.LogInformation("Getting order {Id}", id);
+        var order = await _inner.GetOrderAsync(id);
+        _logger.LogInformation("Got order {Id}: {Found}", id, order is not null);
+        return order;
+    }
+
+    public async Task<int> CreateOrderAsync(Order order)
+    {
+        _logger.LogInformation("Creating order for {Item}", order.ItemName);
+        var id = await _inner.CreateOrderAsync(order);
+        _logger.LogInformation("Created order {Id}", id);
+        return id;
+    }
+}
+
+// Decorator 2: adds caching — no changes to OrderService or LoggingOrderService
+public class CachingOrderService : IOrderService
+{
+    private readonly IOrderService _inner;
+    private readonly IMemoryCache _cache;
+
+    public CachingOrderService(IOrderService inner, IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public async Task<Order?> GetOrderAsync(int id)
+    {
+        var cacheKey = $"order:{id}";
+        if (_cache.TryGetValue<Order>(cacheKey, out var cached))
+            return cached;
+
+        var order = await _inner.GetOrderAsync(id);
+        if (order is not null)
+            _cache.Set(cacheKey, order, TimeSpan.FromMinutes(5));
+        return order;
+    }
+
+    public Task<int> CreateOrderAsync(Order order) => _inner.CreateOrderAsync(order);
+}
+
+// In DI setup — layers compose cleanly
+// services.AddScoped<IOrderService>(sp =>
+//     new CachingOrderService(
+//         new LoggingOrderService(
+//             new OrderService(sp.GetRequiredService<IOrderRepository>()),
+//             sp.GetRequiredService<ILogger<LoggingOrderService>>()),
+//         sp.GetRequiredService<IMemoryCache>()));
+```
+
+---
+
+## Real-World Pattern: The Strategy
+
+Strategy replaces inheritance-based behavior variation with injected behavior:
+
+```csharp
+// WRONG: inheriting to vary one behavior
+public abstract class ReportExporter
+{
+    public abstract void ExportTo(Stream output, ReportData data); // varies
+    public void Log(string msg) => Console.WriteLine(msg);        // shared
+    // But now: PdfExporter, CsvExporter, ExcelExporter all inherit Report
+    // They're coupled to the base class, can't be composed, can't be tested in isolation
+}
+
+// CORRECT: inject the varying behavior as a strategy
+public interface IExportStrategy
+{
+    void Export(Stream output, ReportData data);
+}
+
+public class PdfExportStrategy : IExportStrategy
+{
+    public void Export(Stream output, ReportData data) { /* PDF logic */ }
+}
+
+public class CsvExportStrategy : IExportStrategy
+{
+    public void Export(Stream output, ReportData data)
+    {
+        using var writer = new StreamWriter(output, leaveOpen: true);
+        writer.WriteLine(string.Join(",", data.Headers));
+        foreach (var row in data.Rows)
+            writer.WriteLine(string.Join(",", row));
+    }
+}
+
+// The exporter composes the strategy — can change at runtime
+public class ReportExporter
+{
+    private readonly IExportStrategy _strategy;
+    private readonly ILogger<ReportExporter> _logger;
+
+    public ReportExporter(IExportStrategy strategy, ILogger<ReportExporter> logger)
+    {
+        _strategy = strategy;
+        _logger = logger;
+    }
+
+    public void Export(Stream output, ReportData data)
+    {
+        _logger.LogInformation("Exporting report using {Strategy}", _strategy.GetType().Name);
+        _strategy.Export(output, data);
+        _logger.LogInformation("Export complete");
+    }
+}
+```
+
+---
+
+<Quiz
+  id="02-oop/composition-over-inheritance/quiz-1"
+  question="You have a UserService class with a method that sends a welcome email. A new requirement: log all calls to SendWelcomeEmail to an audit service. Which approach best embodies composition over inheritance?"
+  options={[
+    "Create AuditedUserService extends UserService, override SendWelcomeEmail to add logging then call base.SendWelcomeEmail()",
+    "Add an IAuditService parameter to SendWelcomeEmail and call it before the email logic",
+    "Create AuditedUserService that implements IUserService, wraps a UserService instance, and adds logging in SendWelcomeEmail",
+    "Add the logging directly inside UserService.SendWelcomeEmail"
+  ]}
+  correctAnswer={2}
+  explanation="Option C is the Decorator pattern — true composition. AuditedUserService wraps (holds a reference to) a UserService, adds audit behavior, and delegates to the inner service. This keeps UserService unchanged (Open/Closed Principle), makes audit logic separately testable, and allows layering multiple decorators (audit + cache + retry). Option A (inheritance) tightly couples AuditedUserService to UserService internals and requires UserService to be unsealed. Option B scatters infrastructure concerns into business logic. Option D violates Single Responsibility — UserService shouldn't know about auditing."
+/>
+
+---
+
+<ComparisonTable
+  headers={["Aspect", "Inheritance", "Composition"]}
+  rows={[
+    ["Coupling", "Tight — derived knows base internals", "Loose — knows only the interface"],
+    ["Flexibility", "Fixed at compile time", "Can be changed at runtime"],
+    ["Testability", "Hard — must test through hierarchy", "Easy — inject mocks"],
+    ["Multiple behaviors", "Difficult (single inheritance)", "Easy — compose multiple objects"],
+    ["LSP compliance", "Required — easy to violate", "Not applicable — no type relationship"],
+    ["When to use", "True is-a, shared identity", "Reusing behavior, cross-cutting concerns"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Inheritance Is Not Bad — Misused Inheritance Is Bad**
+
+The principle is "prefer composition" — not "never use inheritance." There are cases where inheritance is the right tool:
+
+1. **True specialization**: `ArgumentNullException` IS an `ArgumentException` IS an `Exception`. The hierarchy communicates semantics, not just code reuse.
+
+2. **Template Method pattern**: Base class defines the algorithm skeleton with abstract steps — derived classes fill in the steps. This is intentional inheritance design, not accidental.
+
+3. **Framework integration**: `ControllerBase`, `BackgroundService`, `DbContext` — framework types designed explicitly for inheritance, with documented extension points and contracts.
+
+The signal that inheritance is being misused:
+- "I need the Save() method from UserRepository, so OrderRepository will extend UserRepository"
+- "We share 80% of logic, let's create a base class" (without asking if the types truly share identity)
+- Protected methods that are implementation details, not documented extension points
+- Constructor parameters exploding as the hierarchy grows (passing 12 args to base())
+
+When you see these patterns, composition is almost always the cleaner solution. Extract the shared behavior into a service or strategy, inject it, and keep the types independent.
+
+```csharp
+// Before: inheritance for code reuse (bad)
+public class UserRepository : BaseRepository<User>
+{
+    // Inherits 20 methods from BaseRepository, uses 3 of them
+}
+public class OrderRepository : BaseRepository<Order>
+{
+    // Also inherits those 20 methods, uses 5 different ones
+}
+
+// After: composition with shared utilities (good)
+public class UserRepository
+{
+    private readonly IDbQueryExecutor _executor; // injected — contains shared query logic
+    private readonly IDbTransactionManager _tx;  // injected — shared transaction logic
+
+    // Uses exactly the methods it needs, no more
+    public Task<User?> GetByIdAsync(int id) => _executor.QueryFirstOrDefaultAsync<User>(...);
+}
+```
 </Callout>
+
+---
+
+<MythBuster
+  myth="Composition over inheritance means you should never use inheritance in C#."
+  reality="The principle means: when choosing between inheritance and composition for CODE REUSE, prefer composition. Inheritance for subtype polymorphism (Exception hierarchies, abstract base classes designed for extension, framework integration) is perfectly valid and often correct. The GOF authors who coined the principle still used inheritance extensively — they just didn't inherit from concrete classes for the sole purpose of getting free methods."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Architectural principles: composition", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles#prefer-composition-over-inheritance" },
+    { label: "Dependency injection in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection" },
+    { label: "Decorator pattern in .NET", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/extension-methods" },
+    { label: "Strategy pattern example", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles" },
+  ]}
+/>

@@ -1,24 +1,281 @@
 ---
-title: "Decorator"
+title: "Decorator — Wrapping With Behavior"
 slug: "decorator"
 order: 9
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["decorator", "structural", "wrapping", "HttpClient", "DelegatingHandler", "open/closed principle"]
+summary: "Decorator adds behavior to an object without modifying it — the go-to pattern when you want cross-cutting concerns like logging, caching, and retry without touching core logic."
+docsLinks:
+  - label: "DelegatingHandler (HttpClient pipeline)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.net.http.delegatinghandler"
+  - label: "IHttpClientFactory with handlers"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Cross-Cutting Concerns Without Subclassing
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have an `IOrderRepository` and you want to add logging and caching. Subclassing works once — but you can't subclass twice cleanly. And if you add logging to the class itself, it now does two things (SRP violation).
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Decorator wraps an object with another object that implements the same interface — adding behavior before or after the inner call, without modifying the original.
+
+---
+
+## The Pattern
+
+```csharp
+// The interface
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(int id);
+    Task SaveAsync(Order order);
+}
+
+// The real implementation
+public class SqlOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+    public SqlOrderRepository(AppDbContext db) => _db = db;
+
+    public Task<Order?> GetByIdAsync(int id) => _db.Orders.FindAsync(id).AsTask();
+    public Task SaveAsync(Order order)
+    {
+        _db.Orders.Update(order);
+        return _db.SaveChangesAsync();
+    }
+}
+
+// Decorator 1: Logging
+public class LoggingOrderRepository : IOrderRepository
+{
+    private readonly IOrderRepository _inner; // wraps the real repo
+    private readonly ILogger<LoggingOrderRepository> _logger;
+
+    public LoggingOrderRepository(IOrderRepository inner, ILogger<LoggingOrderRepository> logger)
+    {
+        _inner  = inner;
+        _logger = logger;
+    }
+
+    public async Task<Order?> GetByIdAsync(int id)
+    {
+        _logger.LogInformation("Getting order {Id}", id);
+        var result = await _inner.GetByIdAsync(id); // delegate to inner
+        _logger.LogInformation("Got order {Id}: {Found}", id, result != null);
+        return result;
+    }
+
+    public async Task SaveAsync(Order order)
+    {
+        _logger.LogInformation("Saving order {Id}", order.Id);
+        await _inner.SaveAsync(order);
+        _logger.LogInformation("Saved order {Id}", order.Id);
+    }
+}
+
+// Decorator 2: Caching
+public class CachingOrderRepository : IOrderRepository
+{
+    private readonly IOrderRepository _inner;
+    private readonly IMemoryCache     _cache;
+
+    public CachingOrderRepository(IOrderRepository inner, IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public async Task<Order?> GetByIdAsync(int id)
+    {
+        if (_cache.TryGetValue($"order:{id}", out Order? cached))
+            return cached;
+
+        var order = await _inner.GetByIdAsync(id);
+        if (order != null)
+            _cache.Set($"order:{id}", order, TimeSpan.FromMinutes(5));
+        return order;
+    }
+
+    public Task SaveAsync(Order order)
+    {
+        _cache.Remove($"order:{id}"); // invalidate on write
+        return _inner.SaveAsync(order);
+    }
+}
+```
+
+---
+
+## Composing Decorators
+
+```csharp
+// Stack decorators: CachingOrderRepository → LoggingOrderRepository → SqlOrderRepository
+IOrderRepository repo = new CachingOrderRepository(
+    inner: new LoggingOrderRepository(
+        inner:  new SqlOrderRepository(dbContext),
+        logger: logger),
+    cache: memoryCache);
+
+// Or via DI — Scrutor library makes this easy
+builder.Services.AddScoped<SqlOrderRepository>();
+builder.Services.Decorate<IOrderRepository, LoggingOrderRepository>();
+builder.Services.Decorate<IOrderRepository, CachingOrderRepository>();
+// Resulting chain: CachingOrderRepository → LoggingOrderRepository → SqlOrderRepository
+```
+
+---
+
+## Real .NET Example: `DelegatingHandler` (HttpClient Pipeline)
+
+`HttpClient`'s message handler pipeline is the Decorator pattern in the BCL:
+
+```csharp
+// DelegatingHandler is the abstract Decorator base for HttpClient
+public class RetryHandler : DelegatingHandler
+{
+    private readonly int _maxRetries;
+
+    public RetryHandler(int maxRetries = 3) => _maxRetries = maxRetries;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken ct)
+    {
+        for (int attempt = 0; attempt < _maxRetries; attempt++)
+        {
+            try
+            {
+                // Delegate to inner handler (the next in the chain)
+                HttpResponseMessage response = await base.SendAsync(request, ct);
+                if (response.IsSuccessStatusCode) return response;
+            }
+            catch (HttpRequestException) when (attempt < _maxRetries - 1)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+            }
+        }
+        return await base.SendAsync(request, ct); // last attempt, let it throw
+    }
+}
+
+public class LoggingHandler : DelegatingHandler
+{
+    private readonly ILogger _logger;
+    public LoggingHandler(ILogger<LoggingHandler> logger) => _logger = logger;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken ct)
+    {
+        _logger.LogInformation("HTTP {Method} {Url}", request.Method, request.RequestUri);
+        var response = await base.SendAsync(request, ct);
+        _logger.LogInformation("HTTP {StatusCode}", response.StatusCode);
+        return response;
+    }
+}
+
+// Register handler chain
+builder.Services.AddTransient<RetryHandler>();
+builder.Services.AddTransient<LoggingHandler>();
+
+builder.Services.AddHttpClient("api", c => c.BaseAddress = new Uri("https://api.example.com"))
+    .AddHttpMessageHandler<LoggingHandler>()  // outer
+    .AddHttpMessageHandler<RetryHandler>();   // inner
+// Chain: LoggingHandler → RetryHandler → HttpClientHandler (actual HTTP)
+```
+
+---
+
+<ComparisonTable
+  title="Decorator vs Inheritance for Cross-Cutting Concerns"
+  headers={["Aspect", "Decorator", "Inheritance"]}
+  rows={[
+    ["Adding behavior", "Compose at runtime via wrapping", "Define at compile time in subclass"],
+    ["Multiple concerns", "Stack independently (Logging + Caching)", "Multiple inheritance not supported in C#"],
+    ["Modifying originals", "Never touches original class", "Subclass is tightly coupled to parent"],
+    ["Testability", "Each decorator testable in isolation", "Base class behavior bleeds into tests"],
+    ["Runtime flexibility", "Yes — swap decorators without recompile", "No — fixed at compile time"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/decorator/challenge-1"
+  title="Decorator Order Matters"
+  description="Given these two decorators stacked as: CachingRepo(LoggingRepo(SqlRepo)), which executes first on a GET request?"
+  code={`var repo = new CachingOrderRepository(
+    inner: new LoggingOrderRepository(
+        inner:  new SqlOrderRepository(db),
+        logger: logger),
+    cache: memoryCache);
+
+var order = await repo.GetByIdAsync(42);`}
+  options={[
+    "SqlRepo first — the innermost always runs first",
+    "LoggingRepo first — the order of wrapping determines execution order",
+    "CachingRepo first — the outermost decorator executes first",
+    "All run in parallel since they're all async"
+  ]}
+  correctAnswer={2}
+  explanation="The outermost decorator (CachingRepo) executes first. It checks the cache. If there's a hit, it returns immediately — LoggingRepo and SqlRepo never run. If there's a cache miss, CachingRepo calls its inner (LoggingRepo), which logs and then calls SqlRepo. The call flows from outer to inner. Decorator order matters: put caching outside logging so cache hits don't produce log noise."
+/>
+
+---
+
+<Callout type="senior">
+**Scrutor — Decorator Registration in .NET DI**
+
+.NET's built-in DI container doesn't support decorators directly (you'd have to resolve the inner manually). The **Scrutor** NuGet package adds `Decorate<T>()`:
+
+```csharp
+// Without Scrutor — manual decorator wiring (fragile)
+builder.Services.AddScoped<IOrderRepository>(sp =>
+    new CachingOrderRepository(
+        inner: new LoggingOrderRepository(
+            inner:  sp.GetRequiredService<SqlOrderRepository>(),
+            logger: sp.GetRequiredService<ILogger<LoggingOrderRepository>>()),
+        cache: sp.GetRequiredService<IMemoryCache>()));
+
+// With Scrutor — clean declarative decoration
+builder.Services.AddScoped<IOrderRepository, SqlOrderRepository>();
+builder.Services.Decorate<IOrderRepository, LoggingOrderRepository>();
+builder.Services.Decorate<IOrderRepository, CachingOrderRepository>();
+```
+
+**Alternative: Source-generated AOP** — libraries like **Metalama** and **PostSharp** use code generation to weave decorator-like behavior via attributes, avoiding wrapper classes entirely:
+
+```csharp
+[Log, Cache] // aspects applied via source generation
+public async Task<Order?> GetByIdAsync(int id)
+    => await _db.Orders.FindAsync(id);
+```
+
+For interview questions: understand the manual Decorator pattern first, then mention Scrutor as the practical DI solution.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/decorator/quiz-1"
+  question="What is the key structural requirement that makes Decorator work?"
+  options={[
+    "The decorator must inherit from the concrete class being decorated",
+    "The decorator must implement the same interface as the object it wraps",
+    "The decorator must override every method from the base class",
+    "The decorator must use generics to avoid type coupling"
+  ]}
+  correctAnswer={1}
+  explanation="The Decorator must implement the same interface as the object it wraps — this is what enables transparent substitution. Clients program to the interface (IOrderRepository) and can't tell whether they have the real object or a decorator. The decorator holds an inner reference to the same interface type and delegates to it. Inheritance to the concrete class would break encapsulation and make the decorator tightly coupled."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DelegatingHandler Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.net.http.delegatinghandler" },
+    { label: "HTTP message handlers with IHttpClientFactory", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/httpclient-factory#configure-the-httpclient" },
+    { label: "Scrutor — DI decorator extension (NuGet)", url: "https://github.com/khellang/Scrutor" },
+  ]}
+/>

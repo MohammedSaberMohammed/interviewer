@@ -1,24 +1,269 @@
 ---
-title: "Finalizers vs IDisposable"
+title: "Finalizers: How They Work and Why They're Costly"
 slug: "finalizers-dispose"
 order: 4
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["finalizers", "destructor", "GC", "finalization queue", "IDisposable", "memory", "unmanaged"]
+summary: "Finalizers are a safety net for unmanaged resources — but they come with real GC costs. Understand the finalization queue, resurrection, and why finalizers should almost always be paired with IDisposable."
+docsLinks:
+  - label: "Finalizers (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/finalizers"
+  - label: "Implementing a Dispose method"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose"
+  - label: "GC.SuppressFinalize"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.gc.suppressfinalize"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Finalizer?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **finalizer** (also called a destructor in C# syntax) is a method called by the GC before an object's memory is reclaimed. It is the last line of defense for releasing unmanaged resources when a developer forgot to call `Dispose()`.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class NativeWrapper
+{
+    private IntPtr _handle; // unmanaged handle from P/Invoke
+
+    public NativeWrapper()
+    {
+        _handle = NativeLibrary.OpenHandle();
+    }
+
+    // Finalizer syntax: ~ClassName()
+    // Compiled to: protected override void Finalize() { ... }
+    ~NativeWrapper()
+    {
+        // Called by the GC on the finalizer thread — not your thread
+        // This is a safety net, NOT the normal cleanup path
+        ReleaseHandle(_handle);
+        _handle = IntPtr.Zero;
+    }
+
+    private static void ReleaseHandle(IntPtr h)
+    {
+        if (h != IntPtr.Zero)
+            NativeLibrary.CloseHandle(h);
+    }
+}
+```
+
+---
+
+## The Finalization Queue: How It Works
+
+The GC finalization mechanism has two data structures:
+
+1. **Finalization queue** — objects with finalizers that haven't run yet
+2. **F-reachable queue** — objects whose finalizers need to run (moved here when GC decides to collect them)
+
+```
+Normal object lifecycle (no finalizer):
+  Allocate → [Gen 0] → GC collects → Memory freed ✓
+
+Object with finalizer:
+  Allocate → registered in finalization queue → [Gen 0]
+     ↓ GC runs, object is otherwise unreachable
+  Object NOT immediately collected!
+  Moved to f-reachable queue → PROMOTED to Gen 1 (survived one GC)
+     ↓ Finalizer thread runs ~NativeWrapper()
+  Object now truly unreachable
+     ↓ Next GC collects Gen 1 object
+  Memory freed (2+ GC cycles later!)
+```
+
+This is the core cost of finalizers: **every finalizable object survives at least one extra GC generation** and requires a dedicated finalizer thread to run.
+
+---
+
+## Measuring the Cost
+
+```csharp
+// Demo: finalizer objects live much longer than equivalent non-finalizer objects
+
+public class WithFinalizer   { ~WithFinalizer() { } }   // empty finalizer
+public class WithoutFinalizer { }                         // no finalizer
+
+// Benchmark results (approximate):
+// WithoutFinalizer: collected in Gen 0, GC impact: near zero
+// WithFinalizer:    survives to Gen 1, then Gen 2 if finalizer thread is slow
+//                   2x GC cycles to collect, extra Gen 1/2 pressure
+
+// Empty finalizers are NOT free:
+// They still register in the finalization queue
+// They still require finalization thread work
+// They still survive one extra GC
+
+// Rule: NEVER add a finalizer unless you own an unmanaged resource directly
+```
+
+---
+
+## Object Resurrection: The Dangerous Edge Case
+
+During finalization, an object can "resurrect itself" by storing a reference to itself in a static or long-lived field. This is almost always a bug:
+
+```csharp
+public class ResurrectionExample
+{
+    public static ResurrectionExample? Zombie;
+
+    ~ResurrectionExample()
+    {
+        // DO NOT DO THIS in real code — this is an educational example
+        ResurrectionExample.Zombie = this; // object now reachable again!
+        // GC sees it's reachable → doesn't free it
+        // But finalizer won't run again (by default) → resource leak!
+    }
+}
+
+// If you genuinely need resurrection (extremely rare):
+// Call GC.ReRegisterForFinalize(this) inside the finalizer
+// to make the finalizer run again when the object is next collected.
+// This pattern is used in some advanced cache implementations.
+```
+
+---
+
+## The Finalization Queue in Practice
+
+```csharp
+// Check if an object is registered for finalization:
+// (No public API — use ETW events or memory profilers)
+
+// See finalization queue in a memory dump:
+// dotnet-dump analyze <dump>
+// > finalizequeue
+// Shows all objects waiting in the finalization queue
+
+// High finalization queue length → symptom of:
+// 1. Forgetting to call Dispose() (skipping using blocks)
+// 2. Finalizable objects surviving Gen 0 (thrashing Gen 1/2)
+// 3. Slow finalizer thread (finalizer doing heavy I/O or blocking work)
+
+// Block until all pending finalizers run:
+GC.WaitForPendingFinalizers();
+// Use in tests or teardown — NEVER in production hot paths
+```
+
+---
+
+## GC.SuppressFinalize: The Escape Hatch
+
+When `Dispose()` is called properly, the finalizer should never run — there's nothing left to clean up. `GC.SuppressFinalize(this)` removes the object from the finalization queue:
+
+```csharp
+public class NativeWrapperCorrect : IDisposable
+{
+    private IntPtr _handle;
+    private bool _disposed;
+
+    public NativeWrapperCorrect()
+    {
+        _handle = NativeLibrary.OpenHandle();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        ReleaseHandle(_handle);
+        _handle = IntPtr.Zero;
+        _disposed = true;
+
+        // Critical: remove from finalization queue
+        // Without this, the finalizer STILL runs even after Dispose()
+        // causing a double-free of the handle
+        GC.SuppressFinalize(this);
+    }
+
+    ~NativeWrapperCorrect()
+    {
+        // Safety net: only runs if Dispose() was NOT called
+        ReleaseHandle(_handle);
+    }
+
+    private static void ReleaseHandle(IntPtr h)
+    {
+        if (h != IntPtr.Zero)
+            NativeLibrary.CloseHandle(h);
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Aspect", "Finalizer", "IDisposable.Dispose()"]}
+  rows={[
+    ["Called by", "GC (non-deterministic timing)", "Your code (or using statement)"],
+    ["Thread", "Dedicated finalizer thread", "Calling thread"],
+    ["Timing", "Sometime after object is unreachable", "Immediately when called"],
+    ["GC cost", "Extra GC cycle, Gen1 promotion", "None (if SuppressFinalize is called)"],
+    ["Exception behavior", "Exceptions are swallowed", "Exceptions propagate normally"],
+    ["Purpose", "Last-resort safety net", "Primary cleanup path"],
+    ["Access to other objects", "Unsafe — other objects may be finalized", "Safe — other objects still alive"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Finalizer Thread Is a Single Point of Failure**
+
+The .NET runtime has exactly **one finalizer thread**. All finalizable objects across your entire process share it. This creates a critical vulnerability:
+
+If any finalizer blocks — waiting on a lock, doing I/O, calling into unresponsive native code — the entire finalization queue backs up. Every finalizable object in your process starts surviving extra GC cycles. Memory pressure builds. Eventually you get an OOM or extreme GC pauses.
+
+Diagnostic approach:
+```csharp
+// Detect finalizer thread issues via ETW events:
+// dotnet-trace collect --providers Microsoft-Windows-DotNETRuntime:0x1:5
+// Look for: GC/FinalizeObject events with long durations
+
+// Or check finalization queue depth via performance counters:
+// dotnet-counters monitor --counters System.Runtime
+// Watch: "finalization-pending-count"
+// Healthy: near 0. Rising count → blocked finalizer thread
+
+// Rules for safe finalizers:
+// 1. Never acquire locks in a finalizer
+// 2. Never do I/O in a finalizer
+// 3. Never call methods that might block
+// 4. Keep finalizers as short as possible (just close a handle)
+// 5. Only access YOUR object's fields — other objects may already be finalized
+
+// The ideal finalizer is 2-3 lines: check null, call native close, zero the handle
+```
+
+SafeHandle (from `System.Runtime.InteropServices`) encapsulates these rules correctly and provides CER (Constrained Execution Region) guarantees for critical finalizers. Always prefer `SafeHandle` over raw `IntPtr` for unmanaged resources.
 </Callout>
+
+---
+
+## Quiz: Finalizer Behavior
+
+<Quiz
+  id="04-memory-gc/finalizers-dispose/quiz-1"
+  question="An object has a finalizer and becomes unreachable during a Gen 0 GC. What happens to it?"
+  options={[
+    "Its memory is freed immediately, and the finalizer runs on the GC thread",
+    "It is promoted to Gen 1 and placed in the f-reachable queue for the finalizer thread to process",
+    "The finalizer runs synchronously on the thread that made the object unreachable",
+    "The object is collected and the finalizer never runs since it was in Gen 0"
+  ]}
+  correctAnswer={1}
+  explanation="When a finalizable object becomes unreachable, the GC does NOT immediately free its memory. Instead, it moves the object to the f-reachable queue and promotes it to Gen 1, keeping it alive. The dedicated finalizer thread then processes the f-reachable queue, running the finalizer. After the finalizer runs, the object is finally truly unreachable and will be freed on the NEXT GC that collects Gen 1. This is why finalizable objects take at minimum two GC cycles to be freed."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Finalizers (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/finalizers" },
+    { label: "Implementing a Dispose method", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose" },
+    { label: "GC.SuppressFinalize", url: "https://learn.microsoft.com/en-us/dotnet/api/system.gc.suppressfinalize" },
+    { label: "SafeHandle class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.safehandle" },
+  ]}
+/>

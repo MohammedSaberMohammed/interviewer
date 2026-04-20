@@ -1,24 +1,287 @@
 ---
-title: "Immutable Collections"
+title: "Immutable Collections: Safety Through Structural Sharing"
 slug: "immutable-collections"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["ImmutableList", "ImmutableDictionary", "ImmutableArray", "structural sharing", "thread-safety", "functional"]
+summary: "Immutable collections from System.Collections.Immutable never change after creation. 'Mutations' return new collection instances via structural sharing — O(log n) most operations. They enable lock-free sharing, safe snapshots, and fearless concurrency."
+docsLinks:
+  - label: "System.Collections.Immutable namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable"
+  - label: "ImmutableList<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutablelist-1"
+  - label: "ImmutableDictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutabledictionary-2"
+  - label: "ImmutableArray<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutablearray-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What "Immutable" Actually Means Here
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`System.Collections.Immutable` provides collections that **cannot be modified after creation**. Every operation that would mutate (Add, Remove, SetItem) returns a **new collection instance** instead. The original is unchanged.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+using System.Collections.Immutable;
+
+var list = ImmutableList.Create(1, 2, 3);
+var list2 = list.Add(4);     // new instance { 1, 2, 3, 4 }
+var list3 = list.Remove(2);  // new instance { 1, 3 }
+
+Console.WriteLine(list.Count);  // 3 — original unchanged!
+Console.WriteLine(list2.Count); // 4
+Console.WriteLine(list3.Count); // 2
+```
+
+This is not copying the whole collection each time — immutable collections use **structural sharing** (persistent data structures), where new instances share unchanged parts of the tree with previous versions.
+
+---
+
+## Structural Sharing: How O(log n) Mutations Work
+
+`ImmutableList<T>` is backed by an **AVL tree** (balanced binary tree). A mutation creates a new root and a new path of O(log n) nodes — all other tree nodes are shared with the old instance.
+
+```
+Original list [1,2,3,4,5] (AVL tree with 5 nodes):
+
+         3
+        / \
+       2   5
+      /   /
+     1   4
+
+After list.Add(6) — only the right spine is new (O(log n) nodes):
+
+         3              ← new root node
+        / \
+       2    5           ← new right child (shared left subtree!)
+      /   /  \
+     1   4    6         ← new node for 6
+     ↑shared↑
+```
+
+This means you can cheaply maintain **multiple versions** of a collection simultaneously — a key advantage for undo/redo, versioned state, and functional-style algorithms.
+
+---
+
+## ImmutableDictionary\<K,V\>: Persistent Hash-Array-Mapped Trie
+
+`ImmutableDictionary<K,V>` uses a **hash-array-mapped trie (HAMT)**. Like `ImmutableList`, each Add/Remove/SetItem returns a new dictionary sharing unchanged branches.
+
+```csharp
+var config = ImmutableDictionary.Create<string, string>()
+    .Add("host", "localhost")
+    .Add("port", "5432")
+    .Add("db", "myapp");
+
+// "Mutation" returns new dictionary — original unchanged
+var prodConfig = config.SetItem("host", "prod-db.example.com");
+
+// Both live simultaneously — perfect for per-request overrides
+Console.WriteLine(config["host"]);     // "localhost"
+Console.WriteLine(prodConfig["host"]); // "prod-db.example.com"
+
+// Thread-safe — share immutable dictionaries across threads with no lock
+public static readonly ImmutableDictionary<string, FeatureFlag> Features =
+    ImmutableDictionary.Create<string, FeatureFlag>()
+        .Add("dark-mode", new FeatureFlag(enabled: true))
+        .Add("new-checkout", new FeatureFlag(enabled: false));
+```
+
+---
+
+## ImmutableArray\<T\>: The Efficient Exception
+
+`ImmutableArray<T>` is a **struct wrapper around a regular array**. Unlike other immutable collections, it has **no structural sharing** — mutations copy the entire array. But for small, read-heavy collections it outperforms `ImmutableList<T>`:
+
+- O(1) random access (vs O(log n) for ImmutableList)
+- Zero allocation for enumeration (value-type enumerator)
+- Contiguous memory → excellent cache locality
+
+```csharp
+ImmutableArray<int> arr = ImmutableArray.Create(1, 2, 3, 4, 5);
+
+// O(1) indexed access — same as T[]
+int third = arr[2]; // 3
+
+// Mutation copies the whole array — O(n)! Use only for small, static collections.
+ImmutableArray<int> arr2 = arr.Add(6);
+
+// Span support — O(1) slice without allocation
+ReadOnlySpan<int> slice = arr.AsSpan(1, 3); // { 2, 3, 4 }
+
+// IsDefault check — uninitialized ImmutableArray<T> is a common gotcha
+ImmutableArray<int> uninit = default; // IsDefault = true, Count throws!
+if (!uninit.IsDefault)
+    Console.WriteLine(uninit.Length);
+```
+
+---
+
+## Builders: Batch Mutations Without Intermediate Instances
+
+When you need to build an immutable collection incrementally, use a **builder** to avoid creating O(n) intermediate instances:
+
+```csharp
+// SLOW: creates a new ImmutableList for each Add — O(n log n) allocations
+var slow = ImmutableList<int>.Empty;
+for (int i = 0; i < 1000; i++)
+    slow = slow.Add(i); // 1000 temporary instances!
+
+// FAST: use a builder — mutable internally, converts to immutable at end
+var builder = ImmutableList.CreateBuilder<int>();
+for (int i = 0; i < 1000; i++)
+    builder.Add(i);         // O(1) amortized — just like List<T>
+ImmutableList<int> fast = builder.ToImmutable(); // one final immutable snapshot
+
+// Same pattern for ImmutableDictionary
+var dictBuilder = ImmutableDictionary.CreateBuilder<string, int>();
+dictBuilder["a"] = 1;
+dictBuilder["b"] = 2;
+ImmutableDictionary<string, int> dict = dictBuilder.ToImmutable();
+
+// ImmutableArray builder
+var arrBuilder = ImmutableArray.CreateBuilder<int>(initialCapacity: 100);
+arrBuilder.AddRange(Enumerable.Range(0, 100));
+ImmutableArray<int> arr = arrBuilder.ToImmutable();
+```
+
+---
+
+## When to Use Immutable Collections
+
+```csharp
+// 1. Configuration / feature flags shared across threads — no lock needed
+private static ImmutableDictionary<string, bool> _flags =
+    ImmutableDictionary<string, bool>.Empty;
+
+// Atomic swap when flags change (Interlocked.CompareExchange for thread-safety)
+public static void UpdateFlag(string key, bool value)
+{
+    ImmutableDictionary<string, bool> current, updated;
+    do
+    {
+        current = _flags;
+        updated = current.SetItem(key, value);
+    }
+    while (Interlocked.CompareExchange(ref _flags, updated, current) != current);
+}
+
+// 2. Event sourcing — each state transition produces a new snapshot
+record AppState(ImmutableList<Order> Orders, ImmutableDictionary<int, Customer> Customers);
+
+AppState Apply(AppState state, IEvent evt) => evt switch
+{
+    OrderPlaced e => state with { Orders = state.Orders.Add(e.Order) },
+    CustomerUpdated e => state with { Customers = state.Customers.SetItem(e.Id, e.Customer) },
+    _ => state
+};
+
+// 3. Recursive algorithms that need backtracking
+IEnumerable<ImmutableList<int>> Permutations(ImmutableList<int> remaining, ImmutableList<int> current)
+{
+    if (remaining.IsEmpty) { yield return current; yield break; }
+
+    foreach (int item in remaining)
+    {
+        foreach (var perm in Permutations(remaining.Remove(item), current.Add(item)))
+            yield return perm;
+        // 'remaining' and 'current' are unchanged here — no need to undo!
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Collection", "Internal Structure", "Access", "Add/Remove", "Memory (vs mutable)"]}
+  rows={[
+    ["ImmutableArray\<T\>", "Wrapped T[] (copy-on-write)", "O(1)", "O(n) copy", "Same as T[]"],
+    ["ImmutableList\<T\>", "AVL tree", "O(log n)", "O(log n)", "~2-4× more (tree nodes)"],
+    ["ImmutableDictionary\<K,V\>", "HAMT trie", "O(log n)", "O(log n)", "~2-3× more"],
+    ["ImmutableHashSet\<T\>", "HAMT trie", "O(log n)", "O(log n)", "~2-3× more"],
+    ["ImmutableSortedSet\<T\>", "AVL tree", "O(log n)", "O(log n)", "~2-4× more"],
+    ["ImmutableStack\<T\>", "Linked list", "Top O(1)", "O(1) push/pop", "Higher (per-node)"],
+    ["ImmutableQueue\<T\>", "Two stacks", "Front O(1)", "O(1) amortized", "Higher (per-node)"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="Immutable collections are thread-safe, so they're always better for concurrent code than ConcurrentDictionary"
+  reality="Immutable collections are safe to read from multiple threads, but 'updating' shared state still requires synchronization. You need Interlocked.CompareExchange or a lock to atomically swap the reference from old immutable instance to new. ConcurrentDictionary has built-in support for atomic updates (AddOrUpdate) without external synchronization. Use immutable collections when you need snapshots or value semantics; use ConcurrentDictionary when you need frequent atomic updates."
+/>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/immutable-collections/challenge-1"
+  title="Builder vs Direct Add Performance"
+  description="You need to build an ImmutableList<int> with 10,000 elements. Which approach is correct and why?"
+  code={`// Option A: chained Add
+var listA = ImmutableList\<int\>.Empty;
+for (int i = 0; i < 10_000; i++)
+    listA = listA.Add(i);
+
+// Option B: builder
+var builder = ImmutableList.CreateBuilder\<int\>();
+for (int i = 0; i < 10_000; i++)
+    builder.Add(i);
+var listB = builder.ToImmutable();
+
+// Option C: Create from existing sequence
+var listC = ImmutableList.CreateRange(Enumerable.Range(0, 10_000));`}
+  options={[
+    "All three are equivalent — ImmutableList optimizes repeated Add internally",
+    "B and C are efficient (O(n)); A creates 10,000 intermediate instances O(n log n) work total",
+    "C is wrong — CreateRange copies the enumerable so it is O(n²)",
+    "A is fine for small sizes but B is required above 100 elements"
+  ]}
+  correctAnswer={1}
+  explanation="Option A allocates a new ImmutableList (new AVL tree root + O(log n) new nodes) for each of the 10,000 Add calls — 10,000 intermediate instances totaling O(n log n) work and significant GC pressure. Option B uses a mutable List<T> internally and converts once — O(n) total, one final allocation. Option C also builds once from the range — O(n). For building immutable collections in a loop, always use a builder or CreateRange."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: ImmutableInterlocked for Lock-Free State Updates**
+
+The `System.Collections.Immutable.ImmutableInterlocked` class provides atomic swap helpers so you don't have to write the compare-exchange loop manually:
+
+```csharp
+private static ImmutableList<string> _log = ImmutableList<string>.Empty;
+
+// Thread-safe append without any lock:
+public static void LogMessage(string message)
+{
+    ImmutableInterlocked.Update(ref _log, list => list.Add(message));
+}
+
+// ImmutableInterlocked.GetOrAdd for ImmutableDictionary
+private static ImmutableDictionary<string, CachedItem> _cache =
+    ImmutableDictionary<string, CachedItem>.Empty;
+
+public static CachedItem GetOrAddToCache(string key, Func<string, CachedItem> factory)
+{
+    return ImmutableInterlocked.GetOrAdd(ref _cache, key, factory);
+}
+```
+
+This pattern — `ImmutableInterlocked.Update` with a pure transformation function — is the idiomatic way to maintain shared mutable state using immutable collections. The function may be called multiple times on retry (like `AddOrUpdate`), so it must be free of observable side effects.
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "System.Collections.Immutable namespace", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable" },
+    { label: "ImmutableList\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutablelist-1" },
+    { label: "ImmutableDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutabledictionary-2" },
+    { label: "ImmutableArray\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutablearray-1" },
+    { label: "ImmutableInterlocked", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutableinterlocked" },
+  ]}
+/>

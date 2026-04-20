@@ -1,24 +1,329 @@
 ---
-title: "Proxy"
+title: "Proxy — Controlled Access to an Object"
 slug: "proxy"
 order: 12
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["proxy", "structural", "lazy loading", "logging", "security", "DispatchProxy", "Castle.DynamicProxy"]
+summary: "Proxy provides a surrogate for another object — enabling lazy loading, access control, logging, and remote access without changing the real object."
+docsLinks:
+  - label: "DispatchProxy Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.reflection.dispatchproxy"
+  - label: "EF Core lazy loading proxies"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/lazy"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: You Need Indirect Access
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Sometimes you need to intercept access to an object to:
+- **Delay creation** (lazy initialization) of an expensive object
+- **Control access** (authorization/security check before delegation)
+- **Log calls** (audit trail without modifying the real object)
+- **Cache results** (avoid repeated expensive calls)
+- **Remote access** (RPC — talk to an object on another machine)
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Proxy implements the same interface as the real object — clients don't know they're talking to a proxy.
+
+---
+
+## Virtual Proxy (Lazy Loading)
+
+```csharp
+public interface IDocumentLoader
+{
+    string GetContent();
+    int    GetPageCount();
+}
+
+// Real object — expensive to create (loads from disk/DB)
+public class PdfDocument : IDocumentLoader
+{
+    private readonly string _path;
+    private readonly byte[] _data; // expensive — loaded immediately
+
+    public PdfDocument(string path)
+    {
+        _path = path;
+        Console.WriteLine($"Loading PDF from {path}..."); // expensive
+        _data = File.ReadAllBytes(path);
+    }
+
+    public string GetContent()   => System.Text.Encoding.UTF8.GetString(_data);
+    public int    GetPageCount() => _data.Length / 4096; // simplified
+}
+
+// Virtual proxy — defers creation until first use
+public class LazyPdfProxy : IDocumentLoader
+{
+    private readonly string _path;
+    private PdfDocument? _document; // null until needed
+
+    public LazyPdfProxy(string path) => _path = path;
+
+    private PdfDocument Document => _document ??= new PdfDocument(_path); // lazy init
+
+    public string GetContent()   => Document.GetContent();
+    public int    GetPageCount() => Document.GetPageCount();
+}
+
+// Usage — PDF is NOT loaded until you actually access content
+IDocumentLoader doc = new LazyPdfProxy("report.pdf");
+Console.WriteLine("Proxy created — no PDF loaded yet");
+// Only NOW does the PDF load:
+int pages = doc.GetPageCount();
+```
+
+---
+
+## Protection Proxy (Access Control)
+
+```csharp
+public interface IAdminService
+{
+    void DeleteUser(int userId);
+    void ResetPassword(int userId, string newPassword);
+}
+
+public class AdminService : IAdminService
+{
+    public void DeleteUser(int userId)
+        => Console.WriteLine($"Deleted user {userId}");
+
+    public void ResetPassword(int userId, string newPassword)
+        => Console.WriteLine($"Reset password for {userId}");
+}
+
+// Protection proxy — checks permissions before delegating
+public class AuthorizationProxy : IAdminService
+{
+    private readonly IAdminService       _inner;
+    private readonly IHttpContextAccessor _http;
+
+    public AuthorizationProxy(IAdminService inner, IHttpContextAccessor http)
+    {
+        _inner = inner;
+        _http  = http;
+    }
+
+    private void RequireRole(string role)
+    {
+        if (_http.HttpContext?.User.IsInRole(role) != true)
+            throw new UnauthorizedAccessException($"Role '{role}' required.");
+    }
+
+    public void DeleteUser(int userId)
+    {
+        RequireRole("SuperAdmin");  // check BEFORE delegating
+        _inner.DeleteUser(userId);
+    }
+
+    public void ResetPassword(int userId, string newPassword)
+    {
+        RequireRole("Admin");
+        _inner.ResetPassword(userId, newPassword);
+    }
+}
+```
+
+---
+
+## Real .NET Example: EF Core Lazy Loading Proxies
+
+```csharp
+// Enable lazy loading proxies in EF Core
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .UseLazyLoadingProxies()); // EF generates proxy classes at runtime
+
+public class Order
+{
+    public int    Id         { get; set; }
+    public string Status     { get; set; } = "";
+    public virtual Customer Customer { get; set; } = null!; // virtual = proxyable
+    public virtual ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
+}
+
+// EF returns a proxy subclass of Order, not Order itself
+var order = await dbContext.Orders.FindAsync(1);
+// order is actually OrderProxy : Order — EF generated it
+
+// Accessing the navigation property triggers a lazy DB query via the proxy
+Customer customer = order.Customer; // proxy intercepts — runs SELECT * FROM Customers WHERE Id = ...
+
+// The proxy pattern is transparent to your code
+Console.WriteLine(customer.Name); // works normally
+```
+
+---
+
+## Dynamic Proxy with `DispatchProxy`
+
+`DispatchProxy` lets you create proxies at runtime without subclassing:
+
+```csharp
+// A logging proxy for any interface — generated at runtime
+public class LoggingProxy<T> : DispatchProxy
+{
+    private T? _target;
+    private ILogger? _logger;
+
+    // Initialize with the real target and logger
+    public static T Create(T target, ILogger logger)
+    {
+        var proxy = Create<T, LoggingProxy<T>>(); // creates the proxy
+        var p = (LoggingProxy<T>)(object)proxy;
+        p._target = target;
+        p._logger = logger;
+        return proxy;
+    }
+
+    // All method calls go through Invoke
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    {
+        _logger!.LogInformation("Calling {Method}", targetMethod?.Name);
+        try
+        {
+            var result = targetMethod!.Invoke(_target, args);
+            _logger.LogInformation("{Method} completed", targetMethod.Name);
+            return result;
+        }
+        catch (TargetInvocationException ex)
+        {
+            _logger.LogError(ex.InnerException, "{Method} failed", targetMethod?.Name);
+            throw ex.InnerException!;
+        }
+    }
+}
+
+// Usage — create a logging proxy for any interface
+IOrderRepository realRepo = new SqlOrderRepository(dbContext);
+IOrderRepository loggingProxy = LoggingProxy<IOrderRepository>.Create(realRepo, logger);
+
+await loggingProxy.GetByIdAsync(42); // logged automatically!
+```
+
+---
+
+<ComparisonTable
+  title="Proxy Variants"
+  headers={["Proxy Type", "Purpose", ".NET Example"]}
+  rows={[
+    ["Virtual / Lazy", "Defer expensive object creation", "EF Core lazy loading proxies"],
+    ["Protection", "Control access / authorization", "Authorization middleware, policy-based auth"],
+    ["Logging / Audit", "Intercept and log calls", "DispatchProxy, Castle.DynamicProxy"],
+    ["Caching", "Cache results of method calls", "CachingProxy, Redis-backed proxy"],
+    ["Remote", "Represent remote object locally", "gRPC client stubs, WCF proxies"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/proxy/challenge-1"
+  title="Proxy vs Decorator"
+  description="Both Proxy and Decorator wrap an object and implement the same interface. What is the key difference in INTENT?"
+  code={`// Example A:
+public class CachingRepository : IRepository
+{
+    private readonly IRepository _inner;
+    private readonly ICache _cache;
+
+    // Adds caching behavior AROUND the inner repository
+    public async Task<User?> GetByIdAsync(int id)
+    {
+        if (_cache.TryGet(id, out User? u)) return u;
+        var user = await _inner.GetByIdAsync(id);
+        _cache.Set(id, user);
+        return user;
+    }
+}
+
+// Example B:
+public class LazyRepository : IRepository
+{
+    private IRepository? _inner;
+
+    // Controls WHEN the inner repository is created/accessed
+    private IRepository Inner => _inner ??= new SqlRepository();
+
+    public Task<User?> GetByIdAsync(int id) => Inner.GetByIdAsync(id);
+}`}
+  options={[
+    "A = Proxy (caching controls access), B = Decorator (lazy adds behavior)",
+    "A = Decorator (adds caching behavior), B = Proxy (controls access to the real object)",
+    "Both are Decorators — they both add behavior",
+    "Both are Proxies — they both wrap an interface"
+  ]}
+  correctAnswer={1}
+  explanation="A is a Decorator — its intent is to ADD behavior (caching) to an existing object, enriching what it does. B is a Proxy — its intent is to CONTROL ACCESS to the real object (lazy creation, controlling when it exists). The structural difference is subtle; the intent is what separates them. Proxy manages the lifecycle or access to the real object; Decorator adds new behavior to it."
+/>
+
+---
+
+<Callout type="senior">
+**Castle.DynamicProxy — AOP in .NET**
+
+`DispatchProxy` is limited to interface proxies. Castle.DynamicProxy (used by Moq, NSubstitute, and many DI containers) can proxy both interfaces and virtual class methods, and is far more capable:
+
+```csharp
+// Castle.DynamicProxy — used by most mocking libraries under the hood
+var generator = new ProxyGenerator();
+
+// Create an interface proxy with an interceptor
+IOrderRepository proxy = generator.CreateInterfaceProxyWithTarget(
+    target: new SqlOrderRepository(dbContext),
+    interceptors: new IInterceptor[]
+    {
+        new LoggingInterceptor(logger),
+        new CachingInterceptor(cache),
+    });
+
+public class LoggingInterceptor : IInterceptor
+{
+    private readonly ILogger _logger;
+    public LoggingInterceptor(ILogger logger) => _logger = logger;
+
+    public void Intercept(IInvocation invocation)
+    {
+        _logger.LogInformation("Calling {Method}", invocation.Method.Name);
+        invocation.Proceed(); // call the next interceptor or the target
+        _logger.LogInformation("{Method} returned: {Value}", invocation.Method.Name, invocation.ReturnValue);
+    }
+}
+```
+
+Castle.DynamicProxy is used internally by:
+- **Moq** and **NSubstitute** (test mocking)
+- **Autofac** and **Ninject** (interception in DI)
+- **EF Core** (lazy loading proxies)
+
+Understanding this helps explain "how does Moq work?" — it creates a Castle proxy and records/replays calls.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/proxy/quiz-1"
+  question="In EF Core, why must navigation properties be marked as `virtual` to support lazy loading proxies?"
+  options={[
+    "EF Core requires virtual to apply the [DataMember] serialization attribute",
+    "EF generates a subclass proxy — overriding the property to inject a DB query requires the property to be virtual",
+    "Virtual properties are stored differently in the SQL schema",
+    "Virtual ensures the property is initialized to a non-null value"
+  ]}
+  correctAnswer={1}
+  explanation="EF Core's lazy loading proxy works by generating a subclass of your entity class at runtime (e.g., OrderProxy : Order). It overrides the navigation property's getter to execute a database query when first accessed. C# only allows overriding virtual members — if Customer is not virtual, EF cannot override it in the proxy subclass, and lazy loading won't work. This is why you get a runtime warning if you forget virtual."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DispatchProxy Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.reflection.dispatchproxy" },
+    { label: "EF Core — Lazy Loading", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/lazy" },
+    { label: "Castle Project (DynamicProxy)", url: "https://www.castleproject.org/projects/dynamicproxy/" },
+  ]}
+/>

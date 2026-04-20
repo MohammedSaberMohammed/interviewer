@@ -1,24 +1,225 @@
 ---
-title: "GetHashCode Stability"
+title: "GetHashCode Stability — Mutable Keys in Dictionaries"
 slug: "gethashcode-stability"
 order: 17
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["GetHashCode", "Dictionary", "HashSet", "mutable", "keys", "hashing", "invariants"]
+summary: "Mutating an object that is used as a Dictionary key silently breaks the dictionary — lookups fail because the hash bucket changed but the stored location didn't."
+docsLinks:
+  - label: "Object.GetHashCode guidelines"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.object.gethashcode"
+  - label: "Dictionary<TKey,TValue>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// Mutable class used as dictionary key — THE TRAP
+public class Tag
+{
+    public string Name { get; set; } // Mutable!
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    public override int GetHashCode() => Name.GetHashCode();
+    public override bool Equals(object? obj) => obj is Tag t && t.Name == Name;
+}
+
+var dict = new Dictionary<Tag, int>();
+var tag = new Tag { Name = "csharp" };
+
+dict[tag] = 42;
+Console.WriteLine(dict.ContainsKey(tag)); // true — found in bucket for "csharp".GetHashCode()
+
+// Mutate the key:
+tag.Name = "dotnet"; // Hash code CHANGES!
+
+Console.WriteLine(dict.ContainsKey(tag)); // false — bucket for "dotnet".GetHashCode() is empty!
+Console.WriteLine(dict.Count);             // 1 — the entry is still there, just lost!
+
+// The value 42 is now ORPHANED — it exists in the dictionary
+// but is stored in a bucket that can never be found via tag
+```
+
+<Callout type="trap">
+A `Dictionary<TKey,TValue>` stores each entry in a bucket determined by `GetHashCode()` at insertion time. If the key's hash code changes after insertion (because the key's state changes), the entry is stranded in the wrong bucket. All subsequent lookups land in the new bucket and find nothing — the value is permanently lost while the `Count` shows it's there.
 </Callout>
+
+---
+
+## Why It Happens
+
+```csharp
+// How Dictionary works internally (simplified):
+void Add(TKey key, TValue value)
+{
+    int bucket = key.GetHashCode() % _buckets.Length; // Calculate bucket at ADD time
+    _entries[_freeIndex] = new Entry { Key = key, Value = value, Hash = hashCode };
+    _buckets[bucket] = _freeIndex; // Store in that specific bucket
+}
+
+bool TryGetValue(TKey key, out TValue value)
+{
+    int bucket = key.GetHashCode() % _buckets.Length; // Calculate bucket at LOOKUP time
+    // Look only in this bucket — if hash changed, we're looking in the wrong place!
+    var entry = _entries[_buckets[bucket]];
+    if (entry.Hash == hashCode && _comparer.Equals(entry.Key, key))
+    {
+        value = entry.Value;
+        return true;
+    }
+    value = default;
+    return false;
+}
+
+// If tag.Name changed from "csharp" → "dotnet":
+// Add: stored in bucket for hash("csharp") = e.g., bucket 7
+// Lookup: looks in bucket for hash("dotnet") = e.g., bucket 3
+// Bucket 3 is empty → returns false → orphaned entry!
+```
+
+---
+
+## The Fix
+
+**Option 1: Use immutable keys (recommended)**
+
+```csharp
+// Immutable key — GetHashCode cannot change after construction
+public sealed class Tag
+{
+    public string Name { get; } // init-only — immutable after construction
+
+    public Tag(string name) { Name = name; }
+
+    public override int GetHashCode() => Name.GetHashCode(StringComparison.Ordinal);
+    public override bool Equals(object? obj) => obj is Tag t && t.Name == Name;
+}
+
+// Or use a record (immutable by default):
+public record Tag(string Name);
+// Record generates GetHashCode and Equals based on properties
+```
+
+**Option 2: Use a value-based key that is stable**
+
+```csharp
+// If the object must be mutable, use only stable fields for the key identity:
+public class Tag
+{
+    public Guid Id { get; } = Guid.NewGuid(); // Immutable identity
+    public string Name { get; set; }           // Mutable, but NOT part of the hash
+
+    public override int GetHashCode() => Id.GetHashCode(); // Based on immutable Id only
+    public override bool Equals(object? obj) => obj is Tag t && t.Id == Id;
+}
+
+// Name can change freely — GetHashCode is stable because it only uses Id
+```
+
+**Option 3: Never mutate keys after insertion**
+
+```csharp
+// If you must use a mutable object as a key:
+// 1. Do not mutate it while it's in the dictionary
+// 2. Remove, mutate, re-insert:
+dict.Remove(tag);
+tag.Name = "dotnet";
+dict[tag] = 42; // Re-insert with new hash
+```
+
+---
+
+<MythBuster
+  myth="A Dictionary key just needs to be a reference type — any object can serve as a key"
+  truth="Any object CAN serve as a key, but its GetHashCode must remain stable for the lifetime of its use as a key. Mutating a key after insertion silently orphans the value without any error or warning."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/gethashcode-stability/challenge-1"
+  title="What does dict.Count return after the mutation?"
+  description="A key is mutated after insertion. What is the state of the dictionary?"
+  code={`var key = new List<int> { 1, 2, 3 };
+// Note: List\<int\> uses reference-based GetHashCode (object.GetHashCode)
+// which is stable regardless of content — this is actually SAFE for List
+// But what about this custom class?
+
+public class MutableKey
+{
+    public int Value { get; set; }
+    public override int GetHashCode() => Value.GetHashCode();
+    public override bool Equals(object? obj) => obj is MutableKey k && k.Value == Value;
+}
+
+var dict = new Dictionary\<MutableKey, string\>();
+var k = new MutableKey { Value = 1 };
+dict[k] = "one";
+k.Value = 2; // Mutate!
+
+Console.WriteLine(dict.Count);
+Console.WriteLine(dict.ContainsKey(k));`}
+  options={[
+    "Count=1, ContainsKey=true — dictionary is smart enough to find it",
+    "Count=1, ContainsKey=false — entry orphaned, count shows 1 but lookup fails",
+    "Count=0, ContainsKey=false — mutation triggers automatic removal",
+    "Throws InvalidOperationException — mutable keys are detected"
+  ]}
+  correctAnswer={1}
+  explanation="Count=1, ContainsKey=false. The entry is still in the dictionary (Count=1) but stored in the bucket for hash(1). After mutation to Value=2, ContainsKey(k) looks in bucket for hash(2), finds nothing, returns false. The value 'one' is permanently orphaned — it exists in the dictionary but can never be retrieved or removed via the key. No exception is thrown — this is a silent data integrity bug."
+/>
+
+---
+
+## The GetHashCode Contract
+
+```csharp
+// The contract (from .NET documentation):
+// 1. If a.Equals(b) then a.GetHashCode() == b.GetHashCode()  — REQUIRED
+// 2. GetHashCode() must return the same value for the same object's state
+//    across multiple calls — REQUIRED for correctness as a dictionary key
+// 3. Two objects that are NOT equal MAY have the same hash code (collision) — ALLOWED
+// 4. GetHashCode() should be fast — IMPORTANT for performance
+
+// Common violation — inconsistency with Equals:
+public class BadKey
+{
+    public string Name { get; set; }
+    // GetHashCode uses Name, Equals uses Name:
+    public override int GetHashCode() => Name?.GetHashCode() ?? 0;
+    public override bool Equals(object? obj) => obj is BadKey k && k.Name == Name;
+    // These are consistent, but mutating Name breaks both after insertion
+}
+
+// Best practice: use HashCode.Combine for composite keys
+public override int GetHashCode()
+    => HashCode.Combine(FirstName, LastName, DateOfBirth);
+// ^ stable only if all three fields are immutable
+```
+
+---
+
+<Callout type="senior">
+**Strings as dictionary keys — why they are safe**
+
+`string` is the canonical example of a safe dictionary key because it is **immutable**. `"hello".GetHashCode()` always returns the same value for the same content. You can never change the content of a string after creation — you can only create a new string.
+
+This is one reason the .NET guidelines recommend: **make your value objects (especially those used as keys) immutable**. Not just for GetHashCode correctness, but for thread safety, predictability, and preventing this entire class of bugs.
+
+`record` types in C# 9+ generate `GetHashCode` from all init-only properties by default, making them safe key types out of the box. For mutable reference types used as keys, the safest approach is to override `GetHashCode` using only identity fields (like a database ID or a GUID) that never change.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Object.GetHashCode guidelines", url: "https://learn.microsoft.com/en-us/dotnet/api/system.object.gethashcode" },
+    { label: "Dictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2" },
+    { label: "HashCode struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.hashcode" },
+    { label: "Immutability in C# (records)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-9#record-types" },
+  ]}
+/>

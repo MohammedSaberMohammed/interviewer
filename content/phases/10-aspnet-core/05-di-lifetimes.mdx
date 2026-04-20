@@ -1,24 +1,313 @@
 ---
-title: "DI Lifetimes: Singleton, Scoped, Transient"
+title: "DI Lifetimes: Transient, Scoped, Singleton"
 slug: "di-lifetimes"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["dependency injection", "DI", "Transient", "Scoped", "Singleton", "IServiceProvider", "asp.net core"]
+summary: "Picking the wrong DI lifetime causes subtle bugs ranging from stale data to memory leaks. Understand when each lifetime is correct — and when it will betray you."
+docsLinks:
+  - label: "Dependency injection in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection"
+  - label: "Service lifetimes"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#service-lifetimes"
+  - label: "Dependency injection guidelines"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Three Lifetimes
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+ASP.NET Core's DI container has three lifetimes. Getting them wrong doesn't always throw — sometimes it silently produces stale data or shared mutable state.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+<ComparisonTable
+  headers={["Lifetime", "Created", "Disposed", "Shared?", "Use for"]}
+  rows={[
+    ["Transient", "Every Resolve()", "When scope ends", "Never", "Stateless services, lightweight utilities"],
+    ["Scoped", "Once per DI scope", "When scope ends", "Within one request/scope", "DbContext, unit of work, per-request state"],
+    ["Singleton", "First resolve or startup", "App shutdown", "Across all requests and threads", "Caches, configuration wrappers, thread-safe services"],
+  ]}
+/>
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Transient — new instance every time it's requested
+builder.Services.AddTransient<IEmailService, SmtpEmailService>();
+
+// Scoped — one instance per HTTP request (one per DI scope)
+builder.Services.AddScoped<IOrderRepository, SqlOrderRepository>();
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)); // DbContext is Scoped by default
+
+// Singleton — one instance for the app lifetime
+builder.Services.AddSingleton<IMemoryCache, MemoryCache>();
+builder.Services.AddSingleton<IRateLimiter, TokenBucketRateLimiter>();
+```
+
+---
+
+## Transient: New Every Time
+
+```csharp
+public class ReportService
+{
+    private readonly IEmailService _email; // New SmtpEmailService on every resolve
+
+    public ReportService(IEmailService email) => _email = email;
+
+    public async Task SendReportAsync(Report report)
+    {
+        // _email is a fresh instance — safe, no shared state
+        await _email.SendAsync(report.RecipientEmail, report.ToEmailBody());
+    }
+}
+```
+
+**When Transient is correct:** Stateless services, services that are cheap to construct, services that explicitly must not share state between callers.
+
+**When Transient is wrong:** Services that hold external resources (database connections, HTTP connections) — you pay connection setup cost on every resolve. Use Scoped or Singleton instead and reuse the connection.
+
+---
+
+## Scoped: Per Request
+
+```csharp
+// DbContext is the canonical scoped service
+// One instance per HTTP request — tracks changes within the request
+public class OrdersController : ControllerBase
+{
+    private readonly AppDbContext _db;
+
+    public OrdersController(AppDbContext db) => _db = db;
+
+    [HttpPost]
+    public async Task<IActionResult> PlaceOrder(OrderDto dto)
+    {
+        var order = new Order { /* ... */ };
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync(); // Same DbContext, single transaction
+        return Ok(order.Id);
+    }
+}
+
+// Scoped services are also correct for:
+// - Unit of work pattern
+// - Per-request identity/tenant resolution
+// - Services that aggregate per-request state
+public class RequestContext : IRequestContext
+{
+    public Guid TenantId { get; set; }
+    public ClaimsPrincipal User { get; set; } = default!;
+}
+
+builder.Services.AddScoped<IRequestContext, RequestContext>();
+```
+
+---
+
+## Singleton: App Lifetime
+
+```csharp
+// Thread-safe cache — perfect for Singleton
+public class ProductCatalogCache : IProductCatalogCache
+{
+    private readonly ConcurrentDictionary<int, Product> _cache = new();
+    private readonly IProductRepository _repository;
+
+    // WRONG: IProductRepository is Scoped — captive dependency!
+    // This is explored in the next lesson. For now, use IServiceProvider.
+    public ProductCatalogCache(IServiceProvider serviceProvider)
+    {
+        // Create a scope to resolve scoped dependencies in a singleton
+        using var scope = serviceProvider.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IProductRepository>();
+        // Load initial data
+        foreach (var product in repo.GetAllSync())
+            _cache[product.Id] = product;
+    }
+
+    public Product? Get(int id) => _cache.GetValueOrDefault(id);
+}
+
+builder.Services.AddSingleton<IProductCatalogCache, ProductCatalogCache>();
+```
+
+<Callout type="trap">
+**Trap: Mutable Singleton State Without Thread Safety**
+
+Singletons are shared across all concurrent requests. Any mutable state on a singleton MUST be thread-safe:
+
+```csharp
+// DANGEROUS — Dictionary is not thread-safe
+public class UnsafeSingletonCache
+{
+    private readonly Dictionary<string, object> _cache = new(); // Race condition!
+
+    public void Set(string key, object value) => _cache[key] = value; // Data corruption!
+}
+
+// SAFE — ConcurrentDictionary handles concurrent reads and writes
+public class SafeSingletonCache
+{
+    private readonly ConcurrentDictionary<string, object> _cache = new();
+
+    public void Set(string key, object value) => _cache[key] = value;
+    public object? Get(string key) => _cache.GetValueOrDefault(key);
+}
+```
 </Callout>
+
+---
+
+## Verifying Lifetimes: ValidateScopes
+
+ASP.NET Core can detect captive dependency problems at startup in development mode:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Enabled by default in Development; controls scope validation on Build()
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateScopes = builder.Environment.IsDevelopment();
+    options.ValidateOnBuild = builder.Environment.IsDevelopment();
+});
+
+// ValidateOnBuild: checks for missing registrations at startup
+// ValidateScopes: throws if a scoped service is resolved from root scope
+```
+
+With `ValidateScopes = true`, resolving a `Scoped` service from the root `IServiceProvider` (i.e., outside a request) throws an `InvalidOperationException` immediately — exposing captive dependency bugs before they reach production.
+
+---
+
+## IServiceScopeFactory for Creating Manual Scopes
+
+```csharp
+// Background service needs scoped services — create scope manually
+public class DataSyncService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public DataSyncService(IServiceScopeFactory scopeFactory)
+        => _scopeFactory = scopeFactory;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            // Create a fresh scope for each sync operation
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var syncService = scope.ServiceProvider.GetRequiredService<ISyncService>();
+
+                await syncService.SyncAsync(stoppingToken);
+                await db.SaveChangesAsync(stoppingToken);
+            } // Scope disposed here — DbContext connection returned to pool
+
+            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+        }
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Keyed Services (.NET 8)**
+
+.NET 8 introduced **keyed services** — multiple registrations of the same interface differentiated by a key. Previously you had to use factory patterns or named registrations via workarounds:
+
+```csharp
+// Register multiple implementations under different keys
+builder.Services.AddKeyedSingleton<IPaymentProcessor, StripePaymentProcessor>("stripe");
+builder.Services.AddKeyedSingleton<IPaymentProcessor, PayPalPaymentProcessor>("paypal");
+
+// Resolve by key in controllers or services
+public class CheckoutService
+{
+    private readonly IPaymentProcessor _processor;
+
+    public CheckoutService(
+        [FromKeyedServices("stripe")] IPaymentProcessor processor)
+    {
+        _processor = processor;
+    }
+}
+
+// Or resolve at runtime based on user preference
+public class PaymentRouter
+{
+    private readonly IServiceProvider _sp;
+
+    public PaymentRouter(IServiceProvider sp) => _sp = sp;
+
+    public IPaymentProcessor GetProcessor(string provider)
+        => _sp.GetRequiredKeyedService<IPaymentProcessor>(provider);
+}
+```
+
+Keyed services replace the common "service locator via Dictionary" anti-pattern that was prevalent in multi-tenant and plugin-style architectures.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/di-lifetimes/quiz-1"
+  question="You register a service as Singleton that internally stores a List<string> field. During load testing you notice data corruption — entries appear in wrong users' responses. What is the most likely cause?"
+  options={[
+    "The List<string> is not initialized in the constructor",
+    "List<string> is not thread-safe and is mutated concurrently by multiple request threads",
+    "Singletons cannot hold collection fields",
+    "The service should be registered as Transient instead of Singleton"
+  ]}
+  correctAnswer={1}
+  explanation="Singletons are shared across all concurrent requests. List<T> is not thread-safe — concurrent reads and writes without synchronization cause data corruption. Use ConcurrentBag<T>, ConcurrentDictionary, ImmutableList, or explicit locks (lock statement or ReaderWriterLockSlim) for thread-safe state in singletons."
+/>
+
+---
+
+<MythBuster
+  myth="Transient is always the safest lifetime because it avoids sharing state"
+  truth="Transient avoids shared state but introduces other problems: disposable transient services may not be disposed promptly (they're tracked by the scope), and services that hold expensive resources (connections, channels) waste those resources by creating new instances on every resolve. Scoped is usually the right default for web applications — it's isolated per request but reused within the request."
+/>
+
+---
+
+<CodeChallenge
+  id="10-aspnet-core/di-lifetimes/challenge-1"
+  title="Identify the Lifetime Bug"
+  description="This code works in development but causes stale user data in production. What is the problem?"
+  code={`builder.Services.AddSingleton<IUserSessionService, UserSessionService>();
+
+public class UserSessionService : IUserSessionService
+{
+    private string? _currentUserId; // Instance field on a Singleton
+
+    public void SetCurrentUser(string userId) => _currentUserId = userId;
+    public string? GetCurrentUser() => _currentUserId;
+}`}
+  options={[
+    "Singleton services cannot have instance fields",
+    "_currentUserId is shared across all requests — one user's data leaks to another user's request",
+    "The service should implement IDisposable to clean up the field",
+    "IUserSessionService should be registered as Transient"
+  ]}
+  correctAnswer={1}
+  explanation="UserSessionService is a Singleton — one instance serves all requests. _currentUserId is an instance field on that singleton. When User A's request sets _currentUserId, User B's concurrent or subsequent request reads User A's ID. Per-request state must use Scoped lifetime so each request gets its own instance."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dependency injection in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection" },
+    { label: "Service lifetimes", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#service-lifetimes" },
+    { label: "Dependency injection guidelines", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines" },
+    { label: "Keyed DI services (.NET 8)", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection#keyed-services" },
+  ]}
+/>

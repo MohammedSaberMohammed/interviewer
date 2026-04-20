@@ -1,24 +1,260 @@
 ---
-title: "Aggregates & Aggregate Roots"
+title: "Aggregates: Consistency Boundaries & Aggregate Roots"
 slug: "aggregates"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 17
+status: "published"
+tags: ["aggregates", "aggregate root", "DDD", "domain-driven design", "invariants", "consistency boundary", "bounded context"]
+summary: "An aggregate is a cluster of domain objects treated as a single unit for the purpose of data changes — the root enforces all invariants within the boundary."
+docsLinks:
+  - label: "Implement domain model layer with aggregates"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model"
+  - label: ".NET Microservices Architecture — DDD CQRS patterns"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is an Aggregate?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An **aggregate** is a cluster of associated domain objects (entities and value objects) that is treated as a single unit for the purpose of data changes. Every aggregate has one entity designated as the **aggregate root** — the only entry point through which the aggregate's state may be modified.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The two core rules:
+1. **External objects may only reference the aggregate root**, never internal entities directly.
+2. **A transaction modifies at most one aggregate** (the consistency boundary).
+
+```
+Order (Aggregate Root)
+├── OrderLine (Entity — only accessible via Order)
+│   ├── ProductId (Value Object)
+│   └── Quantity (Value Object)
+├── ShippingAddress (Value Object)
+└── Money (Value Object — Total)
+```
+
+---
+
+## Implementing an Aggregate Root
+
+```csharp
+// Domain/Common/AggregateRoot.cs
+public abstract class AggregateRoot<TId> : Entity<TId>
+    where TId : notnull
+{
+    private readonly List<IDomainEvent> _domainEvents = new();
+    public IReadOnlyList<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
+
+    protected void Raise(IDomainEvent domainEvent)
+        => _domainEvents.Add(domainEvent);
+
+    public void ClearDomainEvents() => _domainEvents.Clear();
+}
+
+// Domain/Entities/Order.cs — the aggregate root
+public sealed class Order : AggregateRoot<OrderId>
+{
+    private readonly List<OrderLine> _lines = new();
+
+    public CustomerId CustomerId { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public Address ShippingAddress { get; private set; }
+    public IReadOnlyList<OrderLine> Lines => _lines.AsReadOnly();
+
+    public Money Total => _lines.Aggregate(
+        Money.Zero,
+        (sum, line) => sum + line.Subtotal);
+
+    private Order() { } // EF Core
+
+    public static Order Place(CustomerId customerId, Address shippingAddress)
+    {
+        if (shippingAddress is null)
+            throw new DomainException("Shipping address is required.");
+
+        var order = new Order
+        {
+            Id = OrderId.New(),
+            CustomerId = customerId,
+            Status = OrderStatus.Draft,
+            ShippingAddress = shippingAddress
+        };
+
+        order.Raise(new OrderPlacedEvent(order.Id, customerId));
+        return order;
+    }
+
+    // All mutations go through the root — it enforces invariants
+    public void AddLine(ProductId productId, string productName, Money unitPrice, int quantity)
+    {
+        GuardNotConfirmed();
+
+        if (quantity <= 0)
+            throw new DomainException("Quantity must be positive.");
+
+        var existing = _lines.FirstOrDefault(l => l.ProductId == productId);
+        if (existing is not null)
+        {
+            existing.IncreaseQuantity(quantity); // allowed: Order controls its lines
+        }
+        else
+        {
+            _lines.Add(OrderLine.Create(productId, productName, unitPrice, quantity));
+        }
+    }
+
+    public void RemoveLine(ProductId productId)
+    {
+        GuardNotConfirmed();
+        var line = _lines.FirstOrDefault(l => l.ProductId == productId)
+            ?? throw new DomainException($"No line for product {productId}.");
+        _lines.Remove(line);
+    }
+
+    public void Confirm()
+    {
+        GuardNotConfirmed();
+        if (!_lines.Any())
+            throw new DomainException("Cannot confirm an empty order.");
+        if (Total.Amount == 0)
+            throw new DomainException("Cannot confirm a zero-value order.");
+
+        Status = OrderStatus.Confirmed;
+        Raise(new OrderConfirmedEvent(Id, Total));
+    }
+
+    public void Cancel(string reason)
+    {
+        if (Status is OrderStatus.Shipped or OrderStatus.Delivered)
+            throw new DomainException("Cannot cancel a shipped or delivered order.");
+
+        Status = OrderStatus.Cancelled;
+        Raise(new OrderCancelledEvent(Id, reason));
+    }
+
+    private void GuardNotConfirmed()
+    {
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("Order is already confirmed.");
+    }
+}
+
+// Domain/Entities/OrderLine.cs — internal entity
+// No public constructor — only Order can create OrderLines
+public sealed class OrderLine : Entity<OrderLineId>
+{
+    public ProductId ProductId { get; private set; }
+    public string ProductName { get; private set; }
+    public Money UnitPrice { get; private set; }
+    public int Quantity { get; private set; }
+    public Money Subtotal => UnitPrice * Quantity;
+
+    private OrderLine() { }
+
+    internal static OrderLine Create(
+        ProductId productId, string productName, Money unitPrice, int quantity)
+        => new()
+        {
+            Id = OrderLineId.New(),
+            ProductId = productId,
+            ProductName = productName,
+            UnitPrice = unitPrice,
+            Quantity = quantity
+        };
+
+    internal void IncreaseQuantity(int additional)
+    {
+        if (additional <= 0) throw new DomainException("Additional quantity must be positive.");
+        Quantity += additional;
+    }
+}
+```
+
+Note `internal` on `OrderLine.Create` and `IncreaseQuantity` — external code in the same assembly cannot call them directly. External code must go through `Order.AddLine`.
+
+---
+
+## Enforcing the One-Aggregate-Per-Transaction Rule
+
+```csharp
+// WRONG: modifying two aggregates in one transaction
+public async Task Handle(MoveOrderToNewCustomerCommand cmd, CancellationToken ct)
+{
+    var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+    var newCustomer = await _customers.GetByIdAsync(new CustomerId(cmd.NewCustomerId), ct);
+
+    order.ReassignCustomer(newCustomer.Id);
+    newCustomer.AddOrderCount(); // modifying second aggregate in same transaction!
+
+    await _unitOfWork.SaveChangesAsync(ct); // saves both — violates the rule
+}
+
+// RIGHT: modify only Order, let a domain event trigger the Customer update
+public async Task Handle(MoveOrderToNewCustomerCommand cmd, CancellationToken ct)
+{
+    var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+    order.ReassignCustomer(new CustomerId(cmd.NewCustomerId));
+    // Order raises OrderReassignedEvent
+
+    await _unitOfWork.SaveChangesAsync(ct);
+    // Event handler will update Customer in a separate transaction
+}
+```
+
+The "one aggregate per transaction" rule keeps each aggregate's consistency self-contained and avoids distributed locking problems.
+
+---
+
+## Aggregate Design Heuristics
+
+<ComparisonTable
+  headers={["Question", "Answer"]}
+  rows={[
+    ["How big should an aggregate be?", "As small as possible. Start with one entity. Add children only when they cannot maintain their invariants independently."],
+    ["When to break into separate aggregates?", "When two entities can be saved independently without violating business rules, they belong to separate aggregates."],
+    ["How to handle cross-aggregate consistency?", "Via domain events + eventual consistency. One aggregate per transaction; events trigger other aggregates asynchronously."],
+    ["Can aggregates reference other aggregates?", "Only by ID (value object), never by object reference. This enforces the boundary and prevents cascade loads."],
+    ["What triggers redesign?", "Performance issues from overly large aggregates, or frequent conflicts when two operations try to modify the same aggregate concurrently."],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Aggregate Boundaries Are Discovered, Not Designed Up Front**
+
+The hardest part of aggregate design is that you rarely get the boundaries right the first time. The correct boundary emerges from understanding which invariants must be enforced atomically.
+
+A common mistake is making `Order` contain both order lines AND payment information. When a payment is disputed months later, you're loading thousands of order lines just to update a payment status. The aggregate is too large.
+
+Another mistake is making `OrderLine` its own aggregate to keep things small — now you have to coordinate consistency between Order and OrderLine across transactions, which requires distributed transactions or eventual consistency for what is actually a simple local constraint ("total quantity across all lines must not exceed 100").
+
+The signal for a well-designed aggregate: the aggregate root's `Confirm()` / `Complete()` / `Cancel()` methods only need to check state within the aggregate itself. If they need to call repositories to load other objects, your aggregate boundary is wrong.
 </Callout>
+
+---
+
+## Quiz
+
+<Quiz
+  id="11-clean-architecture/aggregates/quiz-1"
+  question="A shopping cart has a rule: 'The total number of items across all cart lines cannot exceed 50.' Where should this invariant be enforced?"
+  options={[
+    "In the CartLine entity's AddItem method",
+    "In the CartRepository before saving",
+    "In the Cart aggregate root's AddLine method, which checks _lines.Sum(l => l.Quantity)",
+    "In a domain service that takes both Cart and CartLine as parameters"
+  ]}
+  correctAnswer={2}
+  explanation="The invariant 'total items max 50' spans multiple CartLine entities and requires knowledge of the whole cart state. Only the Cart aggregate root has visibility into all its lines. The root's AddLine method should check the total quantity across all lines before allowing the addition. Enforcing it in CartLine would require CartLine to know about all other lines (impossible without a reference to Cart). Enforcing it in the repository is too late — invariants should be enforced in the domain, not at persistence time."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Implement domain model layer with aggregates (.NET Microservices)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model" },
+    { label: ".NET Microservices Architecture — DDD CQRS patterns", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/" },
+    { label: "eShopOnContainers — ordering domain model", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+  ]}
+/>

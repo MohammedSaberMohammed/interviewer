@@ -1,24 +1,202 @@
 ---
-title: "Split Queries"
+title: "Split Queries: AsSplitQuery, Cartesian Explosion, Tradeoffs"
 slug: "split-queries"
 order: 7
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["split queries", "cartesian explosion", "assplitquery", "include", "performance", "ef core"]
+summary: "Including multiple collections in one query causes cartesian explosion — millions of result rows for modest data. Split queries solve this with multiple targeted SELECTs, but introduce consistency tradeoffs."
+docsLinks:
+  - label: "Single vs. Split Queries"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/single-split-queries"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Cartesian Explosion Explained
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When you use `Include()` with multiple collection navigations, EF Core generates a single SQL query with multiple JOINs. The result set size is the **product** of all the joined collection sizes:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Each post has 10 tags and 50 comments
+var posts = await db.Posts
+    .Include(p => p.Tags)     // collection: 10 per post
+    .Include(p => p.Comments) // collection: 50 per post
+    .ToListAsync();
+
+// For 100 posts, the SQL returns:
+// 100 posts × 10 tags × 50 comments = 50,000 rows
+// EF must read and deduplicate 50,000 rows to produce 100 Post objects
+// Each row contains duplicated post data — a massive waste of bandwidth
+```
+
+The SQL looks like:
+
+```sql
+SELECT p.Id, p.Title, t.Id, t.Name, c.Id, c.Body
+FROM Posts p
+LEFT JOIN PostTags pt ON pt.PostId = p.Id
+LEFT JOIN Tags t ON t.Id = pt.TagId
+LEFT JOIN Comments c ON c.PostId = p.Id
+-- 50,000 rows for 100 posts with 10 tags and 50 comments each
+```
+
+EF Core will log a warning when it detects multiple collection includes:
+
+```
+Compiling a query which loads related collections for more than one collection
+navigation, either via 'Include' or through projection. Please review the
+generated SQL and consider using 'AsSplitQuery' to avoid the cartesian explosion.
+```
+
+---
+
+## AsSplitQuery: The Fix
+
+Split queries break one multi-collection query into separate queries — one for the root and one per collection:
+
+```csharp
+var posts = await db.Posts
+    .Include(p => p.Tags)
+    .Include(p => p.Comments)
+    .AsSplitQuery()
+    .ToListAsync();
+
+// Generates 3 separate SQL queries:
+// Query 1: SELECT * FROM Posts
+// Query 2: SELECT t.* FROM Tags t INNER JOIN PostTags pt ON ...
+//                          WHERE pt.PostId IN (1, 2, ..., 100)
+// Query 3: SELECT * FROM Comments WHERE PostId IN (1, 2, ..., 100)
+
+// Total rows fetched: 100 + 1,000 + 5,000 = 6,100 (vs 50,000 with single query)
+// EF stitches the results in memory using the primary keys
+```
+
+**Nested split queries** also work:
+
+```csharp
+var orders = await db.Orders
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product)
+            .ThenInclude(p => p.Tags)
+    .Include(o => o.Payments)
+    .AsSplitQuery()
+    .ToListAsync();
+// EF determines the optimal split strategy for the query graph
+```
+
+---
+
+## Setting Split Query as Default
+
+If most of your queries include multiple collections, set split query as the default:
+
+```csharp
+// Program.cs
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery));
+
+// Override per-query to single when needed
+var posts = await db.Posts
+    .Include(p => p.Author) // single reference — no cartesian risk
+    .AsSingleQuery()        // explicit opt-out from global split default
+    .ToListAsync();
+```
+
+---
+
+## The Consistency Tradeoff
+
+Split queries have a critical limitation: **they are not a single atomic operation**. If data changes between the execution of query 1 and query 2, you can see inconsistent snapshots:
+
+```csharp
+// Timeline:
+// T1: Query 1 runs — fetches Posts 1..100
+// T2: Someone inserts Comment 999 on Post 1 AND deletes Post 50
+// T3: Query 2 runs — fetches Comments (may include Comment 999, may miss Post 50's comments)
+// T4: Query 3 runs — fetches Tags
+
+// Result: your in-memory object graph may be inconsistent with the database state
+```
+
+For most read-only API responses this inconsistency window is negligible. For financial or audit scenarios requiring snapshot consistency, wrap in a serializable transaction or use single query mode:
+
+```csharp
+// Consistent snapshot via transaction
+await using var tx = await db.Database.BeginTransactionAsync(
+    System.Data.IsolationLevel.RepeatableRead);
+
+var orders = await db.Orders
+    .Include(o => o.Items)
+    .Include(o => o.Payments)
+    .AsSplitQuery()
+    .ToListAsync();
+
+await tx.CommitAsync(); // or RollbackAsync — we only needed the isolation
+```
+
+---
+
+<ComparisonTable
+  title="Single Query vs. Split Query"
+  headers={["Aspect", "Single Query (JOIN)", "Split Query (Multiple SELECTs)"]}
+  rows={[
+    ["SQL statements", "1", "1 + N (one per collection)"],
+    ["Result rows", "Cartesian product (can be huge)", "Sum of collection sizes"],
+    ["Network round-trips", "1", "1 + N"],
+    ["Consistency", "Atomic snapshot", "May be inconsistent between queries"],
+    ["Best for", "1–2 small collections", "Multiple large collections"],
+    ["Memory (server)", "High (deduplication buffer)", "Lower"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: When NOT to Use Split Queries**
+
+Split queries are not always the answer. Consider the trade-offs:
+
+1. **Latency-sensitive paths**: each split query is a round-trip. On a high-latency database connection (e.g., cross-region), 5 split queries × 50ms = 250ms vs. 1 query × 70ms = 70ms even with cartesian overhead.
+
+2. **Small collections**: if you have Posts with 3 tags and 4 comments, the cartesian result is only 12 rows per post — single query is fine.
+
+3. **Pagination**: `Skip().Take()` on split queries applies to the root entity only. The collection splits fetch ALL related items for the paged root results, not a paged subset. This is usually correct behavior but can be surprising.
+
+4. **Cross-database joins**: if your Include spans a linked server or federated table, split queries may hit different servers — potentially causing inconsistency across databases.
+
+The heuristic: use single query when collections have &lt;20 items on average and there are 1–2 collections. Use split query when any collection averages &gt;20 items or you have 3+ collection includes.
 </Callout>
+
+---
+
+<MythBuster
+  myth="AsSplitQuery always performs better than a single query with Include"
+  truth="Split queries trade cartesian data reduction for additional round-trips. On low-latency local connections with large collections, split queries win. On high-latency connections or with small collections, the extra round-trips can make split queries slower. Always benchmark both approaches against your actual data volume and connection latency. There is no universally correct choice."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/split-queries/challenge-1"
+  question="You have an Order entity with two collection navigations: Items (average 8 per order) and Attachments (average 3 per order). You are loading 50 orders. How many result rows does a single JOIN query return vs. split queries?"
+  options={[
+    "Single: 50 rows, Split: 550 rows",
+    "Single: 1200 rows (50×8×3), Split: 550 rows (50 + 400 + 100)",
+    "Single: 400 rows (50×8), Split: 550 rows",
+    "Both approaches return the same number of rows — the difference is only in SQL structure"
+  ]}
+  correctAnswer={1}
+  explanation="Single JOIN query: 50 orders × 8 items × 3 attachments = 1,200 rows (cartesian product). EF must deduplicate 1,200 rows to reconstruct 50 orders. Split queries: Query 1 = 50 rows (orders), Query 2 = 50×8 = 400 rows (items), Query 3 = 50×3 = 150 rows (attachments) = 600 total rows. With these small averages, the single query overhead is modest (1,200 vs 600 rows) and the extra round-trips for split queries may not be worthwhile. The right answer depends on actual latency and data size."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Single vs. Split Queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/single-split-queries" },
+    { label: "Efficient Querying in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying" },
+  ]}
+/>

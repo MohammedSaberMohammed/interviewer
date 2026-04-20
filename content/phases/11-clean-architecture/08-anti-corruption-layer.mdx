@@ -1,24 +1,288 @@
 ---
-title: "Anti-Corruption Layer"
+title: "Anti-Corruption Layer: Protecting Your Domain from External Models"
 slug: "anti-corruption-layer"
 order: 8
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["anti-corruption layer", "ACL", "DDD", "adapter pattern", "legacy integration", "domain translation", "bounded contexts"]
+summary: "An Anti-Corruption Layer translates between a foreign model and your domain model, preventing external concepts from leaking into and corrupting your domain."
+docsLinks:
+  - label: "Anti-Corruption Layer pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer"
+  - label: ".NET Microservices Architecture — Bounded contexts"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Model Corruption
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When your system integrates with a legacy system, a third-party API, or another bounded context, their model will differ from yours. If you use the external types directly throughout your code, those external concepts **leak into your domain** — corrupting your model.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// External legacy ERP model (not yours to change)
+public class ErpCustomerDto
+{
+    public string CUST_ID { get; set; }           // legacy naming
+    public string CUST_NM { get; set; }           // truncated field name
+    public int CUST_TYPE_CD { get; set; }         // 1=Retail, 2=Wholesale, 3=Internal
+    public string ADDR_LINE1 { get; set; }
+    public string ADDR_CITY { get; set; }
+    public string COUNTRY_ISO2 { get; set; }
+    public decimal CREDIT_LMT { get; set; }
+    public string CURRENCY_CD { get; set; }
+    public int STATUS_FLG { get; set; }           // 0=Inactive, 1=Active, 9=Deleted
+}
+
+// BAD: domain service that uses ERP types directly
+public class OrderService
+{
+    private readonly IErpClient _erp;
+
+    public async Task<bool> CanCustomerOrderAsync(string erpCustomerId, decimal amount)
+    {
+        var erpCustomer = await _erp.GetCustomerAsync(erpCustomerId);
+
+        // ERP concepts leak into domain logic
+        if (erpCustomer.STATUS_FLG != 1) return false;
+        if (erpCustomer.CUST_TYPE_CD == 3) return false; // internal accounts can't order?
+        if (amount > erpCustomer.CREDIT_LMT) return false;
+        return true;
+    }
+}
+```
+
+Now your domain logic is coupled to ERP naming conventions. If the ERP changes `STATUS_FLG` semantics, you hunt through domain code for `== 1` checks.
+
+---
+
+## The Anti-Corruption Layer Pattern
+
+The ACL sits between your domain and the external system. It:
+1. Translates external types into your domain types
+2. Translates your domain commands into external API calls
+3. Shields your domain from the external model's volatility
+
+```
+Your Domain ←──────────── ACL ────────────→ External System
+              domain types       external types
+```
+
+```csharp
+// Domain/Entities/Customer.cs — pure domain model
+public sealed class Customer : Entity<CustomerId>
+{
+    public CustomerName Name { get; private set; }
+    public CustomerType Type { get; private set; }    // Retail, Wholesale
+    public CustomerStatus Status { get; private set; } // Active, Inactive
+    public Money CreditLimit { get; private set; }
+    public Address BillingAddress { get; private set; }
+    // ...
+}
+
+public enum CustomerType { Retail, Wholesale }
+public enum CustomerStatus { Active, Inactive }
+```
+
+```csharp
+// Infrastructure/ExternalSystems/Erp/IErpClient.cs (Application-defined port)
+public interface IErpCustomerService
+{
+    Task<Customer?> GetCustomerAsync(CustomerId id, CancellationToken ct = default);
+    Task<bool> ValidateCreditAsync(CustomerId id, Money amount, CancellationToken ct = default);
+}
+```
+
+```csharp
+// Infrastructure/ExternalSystems/Erp/ErpCustomerServiceAdapter.cs
+// This IS the Anti-Corruption Layer
+public sealed class ErpCustomerServiceAdapter : IErpCustomerService
+{
+    private readonly IErpClient _erpClient;
+    private readonly ErpCustomerTranslator _translator;
+    private readonly ILogger<ErpCustomerServiceAdapter> _logger;
+
+    public ErpCustomerServiceAdapter(
+        IErpClient erpClient,
+        ErpCustomerTranslator translator,
+        ILogger<ErpCustomerServiceAdapter> logger)
+    {
+        _erpClient = erpClient;
+        _translator = translator;
+        _logger = logger;
+    }
+
+    public async Task<Customer?> GetCustomerAsync(CustomerId id, CancellationToken ct = default)
+    {
+        try
+        {
+            var erpDto = await _erpClient.GetCustomerAsync(id.Value.ToString(), ct);
+            if (erpDto is null) return null;
+
+            return _translator.ToDomainCustomer(erpDto);
+        }
+        catch (ErpException ex)
+        {
+            _logger.LogError(ex, "ERP lookup failed for customer {CustomerId}", id);
+            throw new ExternalServiceException("Unable to retrieve customer from ERP.", ex);
+        }
+    }
+
+    public async Task<bool> ValidateCreditAsync(CustomerId id, Money amount, CancellationToken ct = default)
+    {
+        var erpDto = await _erpClient.GetCustomerAsync(id.Value.ToString(), ct);
+        if (erpDto is null) return false;
+
+        // Translate ERP concepts into domain concepts inside the ACL
+        if (erpDto.STATUS_FLG != 1) return false;
+        if (erpDto.CUST_TYPE_CD == 3) return false; // Internal accounts cannot order
+
+        var creditLimit = new Money(erpDto.CREDIT_LMT, erpDto.CURRENCY_CD);
+        return amount.Amount <= creditLimit.Amount;
+    }
+}
+```
+
+```csharp
+// Infrastructure/ExternalSystems/Erp/ErpCustomerTranslator.cs
+// The translation logic is isolated here — easy to test, easy to change
+public sealed class ErpCustomerTranslator
+{
+    public Customer ToDomainCustomer(ErpCustomerDto dto)
+    {
+        var id = ParseCustomerId(dto.CUST_ID);
+        var name = new CustomerName(dto.CUST_NM);
+        var type = TranslateCustomerType(dto.CUST_TYPE_CD);
+        var status = TranslateStatus(dto.STATUS_FLG);
+        var creditLimit = new Money(dto.CREDIT_LMT, dto.CURRENCY_CD);
+        var address = new Address(dto.ADDR_LINE1, dto.ADDR_CITY, string.Empty, dto.COUNTRY_ISO2);
+
+        return Customer.Reconstitute(id, name, type, status, creditLimit, address);
+    }
+
+    private static CustomerId ParseCustomerId(string erpId)
+    {
+        // ERP uses "CUST-12345" format; we use Guid
+        // This mapping is hidden inside the ACL
+        if (!_erpIdMap.TryGetValue(erpId, out var guid))
+            guid = Guid.NewGuid(); // or throw, or look up in mapping table
+        return new CustomerId(guid);
+    }
+
+    private static CustomerType TranslateCustomerType(int code) => code switch
+    {
+        1 => CustomerType.Retail,
+        2 => CustomerType.Wholesale,
+        _ => throw new TranslationException($"Unknown ERP customer type code: {code}")
+    };
+
+    private static CustomerStatus TranslateStatus(int flag) => flag switch
+    {
+        1 => CustomerStatus.Active,
+        0 or 9 => CustomerStatus.Inactive,
+        _ => throw new TranslationException($"Unknown ERP status flag: {flag}")
+    };
+
+    private static readonly Dictionary<string, Guid> _erpIdMap = new();
+}
+```
+
+---
+
+## Where the ACL Lives in Clean Architecture
+
+```
+Domain/          — pure domain model; knows nothing about ERP
+Application/
+  Interfaces/
+    IErpCustomerService.cs    ← Application defines the port it needs
+Infrastructure/
+  ExternalSystems/
+    Erp/
+      IErpClient.cs           ← Raw HTTP/SOAP client interface
+      ErpClient.cs            ← HTTP calls to the ERP endpoint
+      ErpCustomerDto.cs       ← External DTOs (ERP schema)
+      ErpCustomerTranslator.cs ← Translation logic (domain ↔ ERP)
+      ErpCustomerServiceAdapter.cs ← The ACL implementation
+```
+
+The ACL is an Infrastructure concern. The Application layer only knows `IErpCustomerService` — a port expressed in clean domain language.
+
+---
+
+## Testing the ACL in Isolation
+
+Because translation logic is isolated in `ErpCustomerTranslator`, it's trivially testable:
+
+```csharp
+public class ErpCustomerTranslatorTests
+{
+    private readonly ErpCustomerTranslator _sut = new();
+
+    [Fact]
+    public void Active_retail_customer_translates_correctly()
+    {
+        var dto = new ErpCustomerDto
+        {
+            CUST_ID = "CUST-001",
+            CUST_NM = "Acme Corp",
+            CUST_TYPE_CD = 1,          // Retail
+            STATUS_FLG = 1,            // Active
+            CREDIT_LMT = 50_000m,
+            CURRENCY_CD = "USD",
+            ADDR_LINE1 = "123 Main St",
+            ADDR_CITY = "Springfield",
+            COUNTRY_ISO2 = "US"
+        };
+
+        var customer = _sut.ToDomainCustomer(dto);
+
+        customer.Name.Value.Should().Be("Acme Corp");
+        customer.Type.Should().Be(CustomerType.Retail);
+        customer.Status.Should().Be(CustomerStatus.Active);
+        customer.CreditLimit.Should().Be(new Money(50_000m, "USD"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(9)]
+    public void Inactive_status_flags_translate_to_Inactive(int flag)
+    {
+        var dto = CreateValidDto() with { STATUS_FLG = flag };
+        var customer = _sut.ToDomainCustomer(dto);
+        customer.Status.Should().Be(CustomerStatus.Inactive);
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**The ACL Is More Than a Mapper — It's a Stability Contract**
+
+Teams often treat the ACL as "just a bunch of AutoMapper profiles." The more important purpose is to provide a **stability contract**: changes to the external system's API are absorbed by the ACL layer without propagating into the domain.
+
+When the ERP vendor releases a breaking API change (they always do), your domain code and unit tests don't change. Only `ErpClient` and `ErpCustomerTranslator` change. This is the real value: keeping your expensive, carefully-designed domain model insulated from the volatility of the external world.
+
+The ACL is also where you handle **semantic mismatches** — cases where the external model uses the same word differently. "Active" in your domain means "able to place orders." "Active" in the legacy ERP means "record is not soft-deleted." These are different. The ACL is where you write the explicit translation of `STATUS_FLG == 1 AND CUST_TYPE_CD != 3 → CustomerStatus.Active`.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="An Anti-Corruption Layer is just a DTO mapper"
+  reality="A DTO mapper converts shapes. An ACL translates between two different models — it can aggregate multiple external calls into one domain concept, handle semantic differences (what 'Active' means in each system), map error codes to domain exceptions, and shield the domain from transport-level concerns. The translation logic is the business logic of integration."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Anti-Corruption Layer pattern (Azure Architecture Center)", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer" },
+    { label: "Strangler Fig pattern (for legacy migration)", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/strangler-fig" },
+    { label: ".NET Microservices Architecture — Bounded context integration", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries" },
+  ]}
+/>

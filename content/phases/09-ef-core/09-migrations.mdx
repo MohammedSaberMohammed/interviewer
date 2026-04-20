@@ -1,24 +1,225 @@
 ---
-title: "Migrations"
+title: "Migrations: Model Snapshot, Conflicts, and Squashing"
 slug: "migrations"
 order: 9
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["migrations", "model snapshot", "ef core migrations", "database schema", "squash migrations", "team workflow"]
+summary: "EF Core migrations track schema changes via a model snapshot, not diffs against the database. Understanding this distinction is critical for resolving conflicts and squashing migrations safely."
+docsLinks:
+  - label: "Migrations Overview"
+    url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/"
+  - label: "Managing Migrations"
+    url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/managing"
+  - label: "Applying Migrations"
+    url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/applying"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## How Migrations Work: The Model Snapshot
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+EF Core migrations do **not** compare your model against the live database. Instead, they diff your current model against the **model snapshot** — a C# file (`AppDbContextModelSnapshot.cs`) that captures the full EF model as it was when the last migration was created.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+Model Snapshot = serialized representation of your EF model at the last migration
+New Migration = diff(current EF model, model snapshot)
+```
+
+This means:
+- If you hand-edit the database, EF has no idea — it only knows about changes through migrations
+- If you delete the snapshot, EF thinks everything is new
+- The snapshot file must be committed to source control
+
+```bash
+# Create a migration
+dotnet ef migrations add AddOrderShippingAddress
+
+# This generates:
+# Migrations/20240415_AddOrderShippingAddress.cs  — the Up()/Down() methods
+# Migrations/AppDbContextModelSnapshot.cs         — updated snapshot (always)
+
+# Apply pending migrations
+dotnet ef database update
+
+# Generate SQL script (for production — never run dotnet ef against prod directly)
+dotnet ef migrations script --idempotent --output migrate.sql
+```
+
+---
+
+## The Migration File Structure
+
+```csharp
+// Migrations/20240415120000_AddOrderShippingAddress.cs
+public partial class AddOrderShippingAddress : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.AddColumn<string>(
+            name: "ShippingStreet",
+            table: "Orders",
+            type: "nvarchar(200)",
+            nullable: true);
+
+        migrationBuilder.AddColumn<string>(
+            name: "ShippingCity",
+            table: "Orders",
+            type: "nvarchar(100)",
+            nullable: true);
+
+        migrationBuilder.AddColumn<string>(
+            name: "ShippingPostalCode",
+            table: "Orders",
+            type: "nvarchar(20)",
+            nullable: true);
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        // EF generates the reverse automatically
+        migrationBuilder.DropColumn(name: "ShippingStreet", table: "Orders");
+        migrationBuilder.DropColumn(name: "ShippingCity", table: "Orders");
+        migrationBuilder.DropColumn(name: "ShippingPostalCode", table: "Orders");
+    }
+}
+```
+
+---
+
+## Production Migration Strategy
+
+Never run `dotnet ef database update` against production. Generate an idempotent SQL script instead:
+
+```bash
+# Generate idempotent script — safe to run multiple times, skips already-applied migrations
+dotnet ef migrations script --idempotent --output ./deploy/migrate.sql
+
+# Generate script from a specific migration (for rollback scripts)
+dotnet ef migrations script 20240410_InitialCreate 20240415_AddShipping --output up.sql
+dotnet ef migrations script 20240415_AddShipping 20240410_InitialCreate --output down.sql
+```
+
+**Apply at application startup** (controlled, observable, safe for containerized deployments):
+
+```csharp
+// Program.cs — migrate at startup
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+    // Only run in non-production OR when explicitly enabled
+    if (app.Environment.IsDevelopment() || config.GetValue<bool>("AutoMigrate"))
+    {
+        await db.Database.MigrateAsync(); // applies pending migrations
+    }
+}
+```
+
+<Callout type="trap">
+**Database.EnsureCreated vs MigrateAsync**
+
+`Database.EnsureCreated()` creates the schema from scratch if the database doesn't exist — it does NOT use migrations. Once you call `EnsureCreated()`, you can never use migrations on that database (the `__EFMigrationsHistory` table won't exist). Use it only for testing/in-memory databases. Always use `MigrateAsync()` for real databases.
 </Callout>
+
+---
+
+## Resolving Migration Conflicts in Teams
+
+When two developers create migrations simultaneously from the same base snapshot:
+
+```
+main:    ... → Migration_A (Alice's migration)
+feature: ... → Migration_B (Bob's migration — created from same snapshot)
+
+Alice merges first. Bob now has a conflict: his snapshot is stale.
+```
+
+**Resolution:**
+
+```bash
+# 1. Bob rebases/merges Alice's Migration_A
+# 2. Bob deletes his conflicting Migration_B files
+# 3. Bob recreates the migration from the updated base:
+dotnet ef migrations add Migration_B
+# EF now diffs against the snapshot updated by Migration_A
+
+# Alternative: if both migrations are safe to coexist, use a merge migration
+dotnet ef migrations add MergeMigration --no-build
+# Edit the merge migration to resolve any conflicts manually
+```
+
+The key rule: **the snapshot file is the source of truth**. Whoever has the most recently updated snapshot wins.
+
+---
+
+## Squashing Migrations
+
+After months of development, you may have hundreds of migrations. Squashing collapses them into one:
+
+```bash
+# Step 1: Remove all existing migrations (ONLY safe if all environments are on latest)
+dotnet ef migrations remove --force  # repeat until all are removed
+# Or: delete all files in Migrations/ manually
+
+# Step 2: Create a single fresh migration from current model
+dotnet ef migrations add InitialSchema
+
+# Step 3: If the database already exists, tell EF it's already applied
+dotnet ef database update --connection "..." # only for NEW databases
+
+# For EXISTING databases, mark as applied without running:
+INSERT INTO __EFMigrationsHistory (MigrationId, ProductVersion)
+VALUES ('20240601000000_InitialSchema', '8.0.0');
+```
+
+<Callout type="senior">
+**Senior Insight: Safe Squash Without Downtime**
+
+The squash process above requires all deployments to be on the latest migration. In a blue/green or rolling deployment environment:
+
+1. Deploy a version that applies all current migrations (get all instances to "latest")
+2. Squash on a branch, test against a fresh database to confirm the squashed migration creates the correct schema
+3. For existing databases, manually insert the squashed migration ID into `__EFMigrationsHistory`
+4. Deploy — existing databases skip the squashed migration (already marked applied), new databases run it
+
+Never squash if you have multiple long-lived branches with divergent migrations. Squash only from a clean trunk state.
+
+Also: keep your migration history meaningful. Use descriptive names (`AddCustomerPhoneIndex`, not `Update7`). Future you will thank present you when debugging a production schema issue.
+</Callout>
+
+---
+
+<MythBuster
+  myth="EF Core migrations compare your entity classes directly against the live database to generate changes"
+  truth="EF Core diffs your current EF model against the ModelSnapshot file — a C# representation of what the model looked like when the last migration was created. It never queries the live database structure during migration generation. This is why hand-editing the database causes drift, and why the ModelSnapshot file must always be committed to source control alongside your migration files."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/migrations/challenge-1"
+  question="Two developers (Alice and Bob) both create migrations from the same base. Alice's migration is merged to main first. What should Bob do to safely integrate his migration?"
+  options={[
+    "Commit both migrations — EF will merge them automatically at runtime",
+    "Delete Bob's migration files, pull Alice's migration, then recreate Bob's migration with dotnet ef migrations add",
+    "Edit the ModelSnapshot to manually merge both changes",
+    "Use dotnet ef database update --force to override the conflict"
+  ]}
+  correctAnswer={1}
+  explanation="The correct procedure is to delete Bob's migration files (the .cs migration file AND the updated ModelSnapshot), pull Alice's changes (which include her migration and her updated ModelSnapshot), then recreate Bob's migration with 'dotnet ef migrations add'. EF will now diff against Alice's snapshot as the base, generating only Bob's changes. Never manually edit the ModelSnapshot — it is auto-generated and editing it manually causes subtle corruption. --force does not exist for database update."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Migrations Overview", url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/" },
+    { label: "Managing Migrations", url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/managing" },
+    { label: "Applying Migrations", url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/applying" },
+    { label: "Migration Operations Reference", url: "https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/operations" },
+  ]}
+/>

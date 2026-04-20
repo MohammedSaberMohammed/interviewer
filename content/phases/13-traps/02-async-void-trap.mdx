@@ -1,24 +1,228 @@
 ---
-title: "async void Trap"
+title: "async void — The Exception Black Hole"
 slug: "async-void-trap"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["async", "void", "exceptions", "event handlers", "fire-and-forget", "TPL"]
+summary: "async void swallows exceptions, cannot be awaited, and will crash your process — except in one legitimate use case."
+docsLinks:
+  - label: "Async/await best practices — avoid async void"
+    url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming"
+  - label: "async (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/async"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have an async method but you accidentally (or intentionally) mark it `async void` instead of `async Task`:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// THE BUG — async void with an exception
+public async void LoadDataAsync()
+{
+    await Task.Delay(100);
+    throw new InvalidOperationException("Data source unavailable");
+}
+
+// Caller:
+public void Initialize()
+{
+    LoadDataAsync(); // No await — looks like fire-and-forget
+    Console.WriteLine("Continuing..."); // This runs fine
+    // The exception from LoadDataAsync will be SWALLOWED or CRASH the process
+}
+```
+
+**What happens:** The `InvalidOperationException` is not caught by any `try/catch` wrapping `Initialize()`. Instead it is posted to the `SynchronizationContext` (if present, e.g., in a UI app it crashes the app; in ASP.NET it crashes the request thread with no useful stack trace; in a console app it terminates the process).
+
+<Callout type="trap">
+Exceptions thrown from `async void` methods cannot be caught by the caller with `try/catch`. They are rethrown on the captured `SynchronizationContext` — which in most environments means an **unhandled exception that kills the process**.
 </Callout>
+
+---
+
+## Why It Happens
+
+`async Task` vs `async void` differ fundamentally in what they return:
+
+```csharp
+// async Task — exception is stored in the returned Task object
+public async Task SafeAsync()
+{
+    throw new Exception("boom");
+    // Exception stored in the Task; rethrown when caller awaits
+}
+
+// async void — exception has NOWHERE to go except the SynchronizationContext
+public async void DangerousAsync()
+{
+    throw new Exception("boom");
+    // No Task to store the exception in!
+    // Posted to SynchronizationContext.Current.Post(...)
+    // If null SyncContext (thread pool): UnhandledException on AppDomain
+}
+```
+
+There is also a **second problem**: you cannot await an `async void` method, so you have no way to know when it completes or if it succeeded:
+
+```csharp
+async void DoWork() { await Task.Delay(1000); }
+
+await DoWork(); // COMPILE ERROR: cannot await void
+
+// This means you cannot:
+// - Know when it finishes
+// - Chain operations after it
+// - Cancel it
+// - Test it properly
+```
+
+---
+
+## The Fix
+
+**Almost always: return `Task` instead of `void`.**
+
+```csharp
+// CORRECT — async Task
+public async Task LoadDataAsync()
+{
+    await Task.Delay(100);
+    throw new InvalidOperationException("Data source unavailable");
+    // Exception stored in the Task
+}
+
+// Caller can now handle it:
+public async Task InitializeAsync()
+{
+    try
+    {
+        await LoadDataAsync(); // Exception surfaces here — catchable!
+    }
+    catch (InvalidOperationException ex)
+    {
+        Console.WriteLine($"Failed to load: {ex.Message}");
+    }
+}
+```
+
+**The one legitimate use: event handlers**
+
+```csharp
+// UI event handler — the framework calls this as void, you have no choice
+private async void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        // MUST wrap in try/catch since exceptions can't propagate to framework
+        await DoSomethingAsync();
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Error: {ex.Message}");
+    }
+}
+```
+
+Event handlers are the **only** correct place for `async void` because the event delegate signature (`EventHandler`) returns `void` and you cannot change it. But even then: **always wrap the body in try/catch**.
+
+---
+
+<MythBuster
+  myth="async void is fine for fire-and-forget background work"
+  truth="async void is never safe for fire-and-forget. Use Task.Run() and observe the returned Task, or use a proper background service. async void exceptions are unobservable and will crash your process."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/async-void-trap/challenge-1"
+  title="Will the catch block fire?"
+  description="Does the try/catch in Main catch the exception thrown in FireAndForget?"
+  code={`static async void FireAndForget()
+{
+    await Task.Delay(10);
+    throw new Exception("Oops!");
+}
+
+static async Task Main()
+{
+    try
+    {
+        FireAndForget();
+        await Task.Delay(1000);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("Caught: " + ex.Message);
+    }
+}`}
+  options={[
+    "Yes — the catch block prints 'Caught: Oops!'",
+    "No — the exception is swallowed silently",
+    "No — the exception crashes the process (unhandled exception)",
+    "Compile error — cannot call async void without await"
+  ]}
+  correctAnswer={2}
+  explanation="The catch block does NOT catch the exception. FireAndForget() is async void, so its exception is rethrown on the SynchronizationContext (or ThreadPool in console apps). In a .NET console app this triggers AppDomain.UnhandledException and terminates the process. The try/catch around the call site has no effect because the exception occurs asynchronously after FireAndForget() has already returned."
+/>
+
+---
+
+## Detecting async void in Your Codebase
+
+```csharp
+// Roslyn analyzer catches this — enable in .editorconfig:
+// dotnet_diagnostic.CA2000.severity = warning  (not specifically, but Async analyzers do)
+
+// Recommended NuGet: Microsoft.VisualStudio.Threading.Analyzers
+// Rule VSTHRD100: Avoid async void methods
+// Rule VSTHRD101: Avoid unsupported async delegates
+
+// Example — anonymous async void delegate (equally dangerous):
+button.Click += async (s, e) =>
+{
+    await Task.Delay(1000); // This is async void! Same trap.
+    throw new Exception(); // Will crash the app
+};
+
+// Fix for anonymous delegate:
+button.Click += async (s, e) =>
+{
+    try
+    {
+        await Task.Delay(1000);
+    }
+    catch (Exception ex)
+    {
+        // Handle it here — no other chance
+    }
+};
+```
+
+---
+
+<Callout type="senior">
+**Production story: the mystery ASP.NET crash**
+
+A team had an ASP.NET Web API that crashed once or twice a day with no useful stack trace — just "The process was terminated due to an unhandled exception." After two weeks of investigation (adding logging, analyzing memory dumps), they found a single `async void` method in a service class that was called on a background timer. The method occasionally threw a `DbException` when the database was briefly unavailable. Because it was `async void`, the exception bypassed all of ASP.NET's error handling and killed the worker process.
+
+The fix: change `async void` to `async Task`, and have the timer's callback observe the task. The crashes stopped immediately.
+
+ASP.NET Core is slightly more forgiving than classic ASP.NET here — it runs on the thread pool without a SynchronizationContext — but the exception still goes to `TaskScheduler.UnobservedTaskException` and terminates in most configurations.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Async/await best practices (MSDN Magazine)", url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming" },
+    { label: "async keyword (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/async" },
+    { label: "AppDomain.UnhandledException", url: "https://learn.microsoft.com/en-us/dotnet/api/system.appdomain.unhandledexception" },
+    { label: "Microsoft.VisualStudio.Threading.Analyzers", url: "https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca2007" },
+  ]}
+/>

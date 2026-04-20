@@ -1,24 +1,276 @@
 ---
-title: "Captured Variables in Anonymous Methods"
+title: "Captured Variables in Lambdas — Reference vs Value"
 slug: "captured-variables-anonymous"
 order: 20
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["closures", "lambdas", "captured variables", "anonymous methods", "reference semantics", "delegates"]
+summary: "Lambdas capture variables by reference, not by value — the value read at execution time may be completely different from the value at capture time."
+docsLinks:
+  - label: "Lambda expressions (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions"
+  - label: "Anonymous methods (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/statements-expressions-operators/anonymous-methods"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+This lesson covers the broader category of capture semantics beyond the loop variable case — including object mutation, async captures, and the subtle reference/value distinction.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// TRAP 1 — capturing a variable that changes before the lambda runs
+string message = "initial";
+
+Action printMessage = () => Console.WriteLine(message); // Captures the VARIABLE
+
+message = "updated"; // Change the variable
+
+printMessage(); // Prints "updated" — NOT "initial"!
+// The lambda does not snapshot the value at capture time.
+// It reads the variable's current value at execution time.
+```
+
+```csharp
+// TRAP 2 — capturing a mutable object (different from mutable variable)
+var config = new Config { Timeout = 30 };
+
+Func<int> getTimeout = () => config.Timeout; // Captures config reference
+
+config.Timeout = 60; // Mutate the object
+
+Console.WriteLine(getTimeout()); // 60 — sees the mutation through the reference
+```
+
+```csharp
+// TRAP 3 — async lambda and captured disposable
+async Task ProcessAsync()
+{
+    using var resource = new ExpensiveResource(); // Disposed when 'using' exits scope
+
+    // Fire-and-forget — lambda runs AFTER resource is disposed!
+    Task.Run(async () =>
+    {
+        await Task.Delay(1000); // resource has been disposed by now
+        resource.DoWork();      // ObjectDisposedException!
+    });
+
+} // resource disposed here — but lambda may still reference it
+```
+
+<Callout type="trap">
+Closures capture variables by reference to the **storage location**, not by copying the value. The actual value is read when the lambda **executes**, which may be long after the outer method has finished and the variable has changed or its container has been disposed.
 </Callout>
+
+---
+
+## The Reference vs Value Mental Model
+
+```csharp
+// Think of captured variables as pointers to the variable's slot:
+
+int x = 10;
+Action read = () => Console.WriteLine(x); // "read" holds a pointer to x's slot
+Action write = () => x = 99;              // "write" holds the same pointer
+
+write(); // Changes the slot to 99
+read();  // Reads from the same slot → prints 99
+
+// Compare: parameters are passed by VALUE — no capture:
+void TakeSnapshot(int value)
+{
+    Action print = () => Console.WriteLine(value); // value is a PARAMETER — local copy
+    // Changing the outer variable won't affect 'value' inside this method
+}
+```
+
+---
+
+## Fixing Each Trap
+
+**Fix Trap 1: Capture a local copy**
+
+```csharp
+string message = "initial";
+string captured = message; // Local copy of the VALUE at this moment
+
+Action printMessage = () => Console.WriteLine(captured); // Captures 'captured', not 'message'
+
+message = "updated";
+
+printMessage(); // Prints "initial" — captured is a separate variable
+```
+
+**Fix Trap 2: Capture an immutable snapshot**
+
+```csharp
+var config = new Config { Timeout = 30 };
+int timeoutSnapshot = config.Timeout; // Copy the primitive, not the reference
+
+Func<int> getTimeout = () => timeoutSnapshot; // Captures the int value, not config
+
+config.Timeout = 60;
+Console.WriteLine(getTimeout()); // 30 — snapshot is unaffected
+
+// Or use an immutable type:
+var frozenConfig = config with { }; // C# record — creates a new copy
+Func<int> getTimeout2 = () => frozenConfig.Timeout; // frozenConfig won't change
+```
+
+**Fix Trap 3: Await the task or copy the data before disposing**
+
+```csharp
+async Task ProcessAsync()
+{
+    using var resource = new ExpensiveResource();
+
+    // OPTION A: await — resource still alive when lambda runs
+    await Task.Run(async () =>
+    {
+        await Task.Delay(1000);
+        resource.DoWork(); // Safe — awaiting means 'using' hasn't exited yet
+    });
+
+    // OPTION B: extract data before firing off work
+    var data = resource.ExtractData(); // Copy the data out while resource is alive
+    _ = Task.Run(() =>
+    {
+        // Use data, not resource — no lifecycle dependency
+        ProcessData(data);
+    });
+}
+```
+
+---
+
+<MythBuster
+  myth="A lambda takes a snapshot of the variables it captures at the point it is created"
+  truth="A lambda captures a reference to the variable's storage location. The value is read at execution time. If the variable changes between capture and execution, the lambda sees the new value — not what was there when it was created."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/captured-variables-anonymous/challenge-1"
+  title="What does each delegate print?"
+  description="Three delegates are created with different capture patterns. What are their outputs?"
+  code={`int value = 1;
+
+Action a = () => Console.WriteLine(value);   // A: captures variable 'value'
+
+int snap = value;
+Action b = () => Console.WriteLine(snap);    // B: captures variable 'snap'
+
+value = 99;
+snap  = 99;
+
+a(); // ?
+b(); // ?`}
+  options={[
+    "a prints 1, b prints 1 — both capture the value at lambda creation",
+    "a prints 99, b prints 99 — both see the current values of their variables",
+    "a prints 99, b prints 1 — a captures 'value' (mutated), b captures 'snap' (also mutated!)",
+    "a prints 1, b prints 99 — a is a snapshot, b sees mutations"
+  ]}
+  correctAnswer={1}
+  explanation="Both print 99. Both 'value' and 'snap' are captured by reference to their storage locations. When 'value = 99' executes, it changes the slot that lambda a reads. When 'snap = 99' executes, it changes the slot that lambda b reads. Since both variables are changed before either lambda executes, both lambdas see 99. The only way to get a true snapshot is to capture into a fresh variable that is never subsequently modified — but in this code, 'snap' IS subsequently modified."
+/>
+
+---
+
+## The Async Capture Timing Problem
+
+```csharp
+// TRAP: capturing CancellationToken in a long-running async chain
+public async Task RunBatchAsync(IEnumerable<Item> items, CancellationToken ct)
+{
+    foreach (var item in items)
+    {
+        // The lambda captures 'item' — but item is the loop variable!
+        // In C# 5+, foreach is safe: each iteration has its own scope
+        await Task.Run(() => ProcessItem(item), ct); // item: safe per-iteration scope
+
+        // But if you use a local variable and modify it:
+        var current = item;
+        current = Normalize(current); // Changes 'current' — captured lambda still references it
+        await Task.Run(() => ProcessItem(current), ct); // sees Normalized version — intended here
+    }
+}
+
+// TRAP: HttpContext captured in async lambda (request may complete):
+app.MapGet("/data", async (HttpContext ctx) =>
+{
+    var userId = ctx.User.Identity?.Name; // Extract before any await
+    // Do NOT capture ctx across awaits — it may be recycled
+
+    await Task.Delay(100);
+    // WRONG: ctx.Response.WriteAsync("done") after await if response already started elsewhere
+    // RIGHT: use userId (the captured string, not the HttpContext)
+});
+```
+
+---
+
+## Variable Captured by Multiple Lambdas
+
+```csharp
+// Multiple lambdas sharing the same captured variable — unexpected aliasing:
+int counter = 0;
+
+Action increment = () => counter++;
+Action print     = () => Console.WriteLine(counter);
+Action reset     = () => counter = 0;
+
+increment(); // counter = 1
+increment(); // counter = 2
+print();     // 2 — sees increments from the other lambda
+reset();     // counter = 0
+print();     // 0 — sees the reset
+
+// All three lambdas share ONE counter variable.
+// This is sometimes useful (shared state between lambdas) but often surprising.
+```
+
+---
+
+<Callout type="senior">
+**The async pipeline capture anti-pattern**
+
+A data processing pipeline built using a list of `Func<Task>` delegates had this pattern:
+
+```csharp
+var pipeline = new List<Func<Task>>();
+var context = new ProcessingContext();
+
+foreach (var step in steps)
+{
+    context.CurrentStep = step; // Mutated each iteration
+    pipeline.Add(async () =>
+    {
+        await step.ExecuteAsync(context); // Captures context REFERENCE
+    });
+}
+
+// Later:
+foreach (var task in pipeline)
+    await task(); // All tasks use the SAME context with LAST step's state!
+```
+
+Every lambda captured the same `context` reference. By the time they ran, `context.CurrentStep` was the last step in the loop. All 50 pipeline stages executed with step 50's context.
+
+The fix: capture `context.CurrentStep` into a local before the lambda, or clone the context per step. The team also switched to an immutable record for `ProcessingContext` to make the copy-by-need pattern explicit.
+
+**Pattern to internalize:** if a variable is captured by a lambda and that variable is modified after capture, every lambda sees the modification. If you need a snapshot, make a local copy and capture that. And if multiple lambdas capture the same variable, they share a single mutable slot — treat it like a shared field.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Lambda expressions (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/lambda-expressions" },
+    { label: "Anonymous methods (C# guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/statements-expressions-operators/anonymous-methods" },
+    { label: "Closures — captured outer variables (spec)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/expressions#12193-captured-outer-variables" },
+  ]}
+/>

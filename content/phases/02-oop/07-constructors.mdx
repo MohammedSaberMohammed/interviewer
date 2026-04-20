@@ -3,22 +3,315 @@ title: "Constructors, Chaining, Primary Constructors"
 slug: "constructors"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["constructors", "constructor chaining", "primary constructors", "static constructors", "this", "base", "initialization"]
+summary: "Constructors are not just initialization boilerplate — chaining, static constructors, and C# 12 primary constructors each have precise semantics that affect correctness and testability."
+docsLinks:
+  - label: "Constructors (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/constructors"
+  - label: "Primary constructors (C# 12)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-12#primary-constructors"
+  - label: "Static constructors"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/static-constructors"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Instance Constructors: The Basics
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A constructor runs when a new instance is created. If you don't define one, C# provides a default parameterless constructor (unless the class has any other constructor, in which case the default is removed).
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class Product
+{
+    public string Name { get; }
+    public decimal Price { get; }
+    public string Category { get; }
+
+    // Constructor: must provide Name and Price
+    public Product(string name, decimal price)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Name required", nameof(name));
+        if (price < 0) throw new ArgumentOutOfRangeException(nameof(price), "Price cannot be negative");
+
+        Name = name;
+        Price = price;
+        Category = "General"; // default
+    }
+
+    // Overloaded constructor
+    public Product(string name, decimal price, string category) : this(name, price)
+    {
+        // ': this(name, price)' — calls the above constructor first
+        // After it returns, we run this body
+        Category = category;
+    }
+}
+
+var p1 = new Product("Widget", 9.99m);
+var p2 = new Product("Gadget", 19.99m, "Electronics");
+```
+
+---
+
+## Constructor Chaining with `this` and `base`
+
+Chaining eliminates duplicated validation and initialization logic:
+
+```csharp
+public class HttpRequest
+{
+    public string Method { get; }
+    public string Url { get; }
+    public Dictionary<string, string> Headers { get; }
+    public byte[]? Body { get; }
+
+    // "Master" constructor — all validation here
+    public HttpRequest(string method, string url, Dictionary<string, string> headers, byte[]? body)
+    {
+        Method  = method  ?? throw new ArgumentNullException(nameof(method));
+        Url     = url     ?? throw new ArgumentNullException(nameof(url));
+        Headers = headers ?? new Dictionary<string, string>();
+        Body    = body;
+    }
+
+    // Convenience overloads — all chain to master via this(...)
+    public HttpRequest(string method, string url)
+        : this(method, url, new Dictionary<string, string>(), null) { }
+
+    public HttpRequest(string method, string url, byte[] body)
+        : this(method, url, new Dictionary<string, string>(), body) { }
+}
+
+// Inheritance chaining with base()
+public class AuthenticatedRequest : HttpRequest
+{
+    public string Token { get; }
+
+    // Call base constructor, then do derived-specific init
+    public AuthenticatedRequest(string method, string url, string token)
+        : base(method, url)
+    {
+        Token = token ?? throw new ArgumentNullException(nameof(token));
+    }
+}
+```
+
+<Callout type="info">
+**Execution order with chaining:** When you chain constructors, the *target* constructor runs first. So `this(method, url, ...)` runs before the calling constructor's body. With `base(...)`, the base constructor runs before the derived constructor's body. Field initializers run even before the constructor body — but after the base constructor chain starts.
 </Callout>
+
+---
+
+## Static Constructors
+
+A static constructor initializes static state exactly **once**, before any instance is created or any static member is accessed. It has no parameters and no access modifier:
+
+```csharp
+public class ConfigurationManager
+{
+    private static readonly Dictionary<string, string> _settings;
+    private static readonly string _environment;
+
+    // Runs once, guaranteed, before any member is accessed
+    static ConfigurationManager()
+    {
+        _environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+            ?? "Development";
+
+        _settings = LoadSettings(_environment);
+        Console.WriteLine($"ConfigurationManager initialized for {_environment}");
+    }
+
+    private static Dictionary<string, string> LoadSettings(string env)
+    {
+        // Load from appsettings.json, environment vars, etc.
+        return new Dictionary<string, string>
+        {
+            ["ConnectionString"] = "Server=localhost;Database=MyDb",
+            ["LogLevel"] = env == "Production" ? "Warning" : "Debug"
+        };
+    }
+
+    public static string Get(string key)
+        => _settings.TryGetValue(key, out var val) ? val : "";
+}
+```
+
+<Callout type="warning">
+**Static constructor exceptions are fatal and permanent.** If a static constructor throws, the type is permanently marked as failed. Any subsequent attempt to access any static or instance member will throw a `TypeInitializationException` — for the lifetime of the application domain. There's no retry, no recovery. Keep static constructors simple: read config, initialize readonly state, nothing that can fail.
+
+```csharp
+static class Broken
+{
+    static Broken()
+    {
+        throw new Exception("oops"); // This type is now permanently broken
+    }
+}
+
+// Every access throws TypeInitializationException from here on:
+// var x = Broken.SomeValue; // TypeInitializationException
+```
+</Callout>
+
+---
+
+## Primary Constructors (C# 12)
+
+C# 12 introduced primary constructors for classes and structs. The parameters become **captured parameters** available throughout the class body:
+
+```csharp
+// Before C# 12 — boilerplate fields
+public class EmailService
+{
+    private readonly ISmtpClient _smtp;
+    private readonly ILogger<EmailService> _logger;
+
+    public EmailService(ISmtpClient smtp, ILogger<EmailService> logger)
+    {
+        _smtp   = smtp   ?? throw new ArgumentNullException(nameof(smtp));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public async Task SendAsync(string to, string subject, string body)
+    {
+        _logger.LogInformation("Sending email to {To}", to);
+        await _smtp.SendAsync(to, subject, body);
+    }
+}
+
+// C# 12 — primary constructor (parameters captured by the class)
+public class EmailService(ISmtpClient smtp, ILogger<EmailService> logger)
+{
+    // smtp and logger are available throughout the class body
+    // No need to declare private fields explicitly
+
+    public async Task SendAsync(string to, string subject, string body)
+    {
+        logger.LogInformation("Sending email to {To}", to); // Direct reference to parameter
+        await smtp.SendAsync(to, subject, body);
+    }
+}
+```
+
+<Callout type="trap">
+**Primary constructor parameters are captured, not fields — mutation leaks.** If a primary constructor parameter is mutable and you assign it to a public property, callers who hold a reference to the original object can't mutate it, but *you* can reassign the captured parameter inside the class body, which is surprising:
+
+```csharp
+public class Service(string name)
+{
+    // OK: name is read-only from callers' perspective
+    public string Name => name;
+
+    // Possible but confusing: reassigning the captured parameter
+    public void Rename(string newName) => name = newName; // Compiles! name is mutable inside
+}
+
+// Best practice: treat primary constructor parameters as readonly.
+// If you need a mutable field, create an explicit field:
+public class Service(string initialName)
+{
+    private string _name = initialName;
+    public string Name => _name;
+    public void Rename(string n) => _name = n; // Clear, explicit mutation
+}
+```
+</Callout>
+
+---
+
+```csharp
+// Primary constructors with validation
+public class BoundedValue(int value, int min, int max)
+{
+    // Validate in a field initializer using the primary constructor params
+    private readonly int _value = value is >= 0
+        ? (value >= min && value <= max
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value), $"Must be between {min} and {max}"))
+        : throw new ArgumentOutOfRangeException(nameof(value), "Cannot be negative");
+
+    // Or validate in a regular constructor body using 'this()'?
+    // No — primary constructors have no constructor body.
+    // Use field initializers or factory methods for complex validation.
+
+    public int Value => _value;
+}
+
+// Simpler validation pattern with primary constructors
+public class PositiveInt(int value)
+{
+    public int Value { get; } = value > 0
+        ? value
+        : throw new ArgumentOutOfRangeException(nameof(value), "Must be positive");
+}
+```
+
+---
+
+<Quiz
+  id="02-oop/constructors/quiz-1"
+  question="In a class with both a static constructor and instance constructor, what is the guaranteed execution order when creating the first instance of the class?"
+  options={[
+    "Instance constructor runs first, then static constructor if not already run",
+    "Static constructor runs first (before any instance constructor), then the instance constructor",
+    "They run concurrently — static on one thread, instance on another",
+    "Order is undefined — it depends on CLR implementation"
+  ]}
+  correctAnswer={1}
+  explanation="The CLR guarantees that a static constructor runs before any instance of the type is created and before any static member is accessed. The static constructor runs exactly once. So when you do 'new MyClass()', the CLR first checks if the type initializer has run — if not, it runs the static constructor under a lock. Only after the static constructor completes does the instance constructor run. This order is part of the C# specification, not an implementation detail."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Constructor Injection vs Primary Constructors in DI Scenarios**
+
+Primary constructors shine for ASP.NET Core controllers and services where DI provides all dependencies. But there's a subtle difference in testability:
+
+```csharp
+// Traditional: fields are explicitly typed — easy to mock
+public class OrderController : ControllerBase
+{
+    private readonly IOrderService _orderService;
+    private readonly ILogger<OrderController> _logger;
+
+    public OrderController(IOrderService orderService, ILogger<OrderController> logger)
+    {
+        _orderService = orderService;
+        _logger = logger;
+    }
+}
+
+// Primary constructor: parameters are directly visible in methods
+// Slightly cleaner, but the captured parameters are NOT fields
+// Reflection-based tools (some DI containers, AOP) may behave differently
+public class OrderController(IOrderService orderService, ILogger<OrderController> logger)
+    : ControllerBase
+{
+    [HttpGet("{id}")]
+    public async Task<IActionResult> Get(int id)
+    {
+        var order = await orderService.GetByIdAsync(id);
+        if (order is null) return NotFound();
+        logger.LogInformation("Retrieved order {Id}", id);
+        return Ok(order);
+    }
+}
+```
+
+The primary constructor version is idiomatic for .NET 8+ projects. One caveat: if you need to validate or transform constructor arguments before storing them, you still need either property initializers or explicit backing fields — primary constructor bodies don't exist. Use `required` properties + object initializers, or a static factory method pattern, for complex multi-step initialization.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Constructors (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/constructors" },
+    { label: "Primary constructors (C# 12)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-12#primary-constructors" },
+    { label: "Static constructors", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/static-constructors" },
+    { label: "Using constructors (C# Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/using-constructors" },
+  ]}
+/>

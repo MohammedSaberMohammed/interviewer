@@ -1,24 +1,227 @@
 ---
-title: "Generics: Constraints"
+title: "Generic Constraints: where Clauses"
 slug: "generics-constraints"
 order: 8
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["generics", "constraints", "where", "new()", "struct", "class", "IComparable", "type safety"]
+summary: "Generic constraints restrict what types can be used as type arguments, enabling safe access to members and enabling the compiler to optimize devirtualized calls."
+docsLinks:
+  - label: "Constraints on type parameters (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/constraints-on-type-parameters"
+  - label: "Generic classes and methods"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/generics"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Constraints Exist
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Without constraints, a generic type parameter `T` is treated as if it were `object` — you can only call methods defined on `object`. Constraints let you tell the compiler more about `T`, unlocking members and enabling safe operations:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// No constraint — T is treated as object, very limited
+T Max<T>(T a, T b)
+{
+    // return a > b ? a : b; // COMPILE ERROR — operator > not defined on object
+    return default!;
+}
+
+// With constraint — can call CompareTo
+T Max<T>(T a, T b) where T : IComparable<T>
+    => a.CompareTo(b) >= 0 ? a : b;
+
+Console.WriteLine(Max(3, 7));         // 7 — T=int, no boxing
+Console.WriteLine(Max("apple", "z")); // z — T=string, alphabetical
+```
+
+---
+
+## All Available Constraints
+
+```csharp
+// 1. Interface constraint — T must implement the interface
+void Print<T>(T item) where T : IFormattable
+    => Console.WriteLine(item.ToString("G", null));
+
+// 2. Base class constraint — T must be or inherit from the class
+void Process<T>(T item) where T : Stream
+    => Console.WriteLine(item.Length);
+
+// 3. 'class' constraint — T must be a reference type (class, interface, delegate)
+T? Clone<T>(T? source) where T : class
+    => source; // knowing T is a ref type, null assignment is valid
+
+// 4. 'struct' constraint — T must be a value type (non-nullable)
+T Parse<T>(string s) where T : struct, IParsable<T>
+    => T.Parse(s, null);
+
+// 5. 'new()' constraint — T must have a public parameterless constructor
+T Create<T>() where T : new()
+    => new T(); // allowed because of new() constraint
+
+// 6. 'notnull' constraint — T cannot be a nullable type or null reference type
+void AddToCache<T>(string key, T value) where T : notnull
+    => cache[key] = value;
+
+// 7. 'unmanaged' constraint — T must be an unmanaged type (no references)
+unsafe void WriteToBuffer<T>(T value, byte* buffer) where T : unmanaged
+{
+    *(T*)buffer = value; // safe because T has no managed references
+}
+
+// 8. Multiple constraints — combine with comma
+T Process<T>(T item) where T : class, IDisposable, new()
+{
+    using var instance = new T();
+    return instance;
+}
+
+// 9. Constraints on multiple type params
+TResult Convert<TInput, TResult>(TInput input)
+    where TInput  : class, IConvertible
+    where TResult : struct
+    => (TResult)System.Convert.ChangeType(input, typeof(TResult));
+```
+
+---
+
+## The new() Constraint
+
+The `new()` constraint allows `new T()` inside generic code. It must be the **last** constraint listed:
+
+```csharp
+// Factory pattern — create instances without knowing the concrete type
+public static class Factory
+{
+    public static T Create<T>() where T : new() => new T();
+
+    public static IEnumerable<T> CreateMany<T>(int count) where T : new()
+        => Enumerable.Range(0, count).Select(_ => new T());
+}
+
+// Works with any type that has a parameterless constructor
+var list  = Factory.CreateMany<List<int>>(5).ToArray();
+var point = Factory.Create<System.Drawing.Point>();
+```
+
+<Callout type="trap">
+**Trap: new() Constraint Does Not Allow Parameterized Constructors**
+
+`new()` only permits `new T()` — the parameterless constructor. If `T`'s primary constructor requires parameters, you get a compile error:
+
+```csharp
+// new() constraint only grants new T() — no parameters
+T Create<T>() where T : new()
+{
+    // new T("argument") — COMPILE ERROR even with new() constraint
+    return new T();
+}
+
+// For parameterized creation, use a factory delegate:
+T Create<T>(Func<T> factory) => factory();
+
+// Usage:
+var user = Create(() => new User("Alice", 30));
+```
 </Callout>
+
+---
+
+## struct and class Constraints Enable Nullability
+
+These constraints affect the C# 8+ nullable reference type system:
+
+```csharp
+// Without constraint — T? means "T or null" for ref types, "Nullable<T>" for value types
+T? GetOrDefault<T>(Dictionary<string, T> dict, string key)
+    => dict.TryGetValue(key, out var val) ? val : default;
+
+// With 'class' constraint — T? is explicitly a nullable reference type
+T? GetOrDefault<T>(Dictionary<string, T> dict, string key) where T : class
+    => dict.TryGetValue(key, out var val) ? val : null;
+
+// With 'struct' constraint — T? is Nullable<T> (value type wrapper)
+T? GetOrDefault<T>(Dictionary<string, T> dict, string key) where T : struct
+    => dict.TryGetValue(key, out var val) ? val : null;
+    // Returns Nullable<T> — can be checked with .HasValue
+```
+
+---
+
+<ComparisonTable
+  headers={["Constraint", "Syntax", "Allows", "Prevents"]}
+  rows={[
+    ["Interface", "where T : IFoo", "Members of IFoo", "Types not implementing IFoo"],
+    ["Base class", "where T : Base", "Members of Base", "Types not inheriting Base"],
+    ["Reference type", "where T : class", "null assignment, as/is cast", "struct types"],
+    ["Value type", "where T : struct", "Nullable\<T\>, no null concerns", "class/interface types"],
+    ["Constructor", "where T : new()", "new T()", "Types without parameterless ctor"],
+    ["Not null", "where T : notnull", "Compiler null-safety warning", "Nullable types"],
+    ["Unmanaged", "where T : unmanaged", "unsafe pointer operations", "Any managed type"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/generics-constraints/challenge-1"
+  title="Which Constraint Is Needed?"
+  description="What constraint must be added to make this compile and work correctly?"
+  code={`// Goal: create a new instance of T and initialize it
+static T CreateAndInitialize\<T\>(Action\<T\> initializer) /* where T : ??? */
+{
+    var instance = new T();  // line A
+    initializer(instance);
+    return instance;
+}
+
+// Must work for: CreateAndInitialize\<User\>(u => u.Name = "Alice")`}
+  options={[
+    "where T : class",
+    "where T : new()",
+    "where T : class, new()",
+    "where T : IInitializable"
+  ]}
+  correctAnswer={1}
+  explanation="new T() requires the new() constraint, which states that T must have a public parameterless constructor. The class constraint is NOT required — value types also support new T() with the new() constraint. However, if the Action<T> initializer needs to modify reference-type fields (like u.Name = 'Alice'), T likely is a class, making where T : class, new() the most precise. But for the minimum requirement to allow new T(): only new() is strictly needed. In real code, prefer where T : class, new() when you know T is a reference type, as it communicates intent."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Constraints Enable Devirtualization and Zero Boxing**
+
+When you use a generic method with an interface constraint, the JIT generates a specialized method body per value type. This enables two major optimizations:
+
+1. **No boxing** — `T` is used as its actual type, no heap allocation for the value
+2. **Devirtualization** — the JIT knows the exact concrete method to call and can inline it
+
+```csharp
+// Generic method with constraint — no boxing, devirtualized for each T
+T Max<T>(T a, T b) where T : IComparable<T>
+    => a.CompareTo(b) >= 0 ? a : b;
+
+// JIT generates specialized code for:
+// Max<int>    — uses int.CompareTo directly, inlined
+// Max<double> — uses double.CompareTo directly, inlined
+// Max<string> — uses string.CompareTo directly, inlined
+
+// vs. without constraint:
+object MaxObj(object a, object b) // boxing + virtual dispatch — much slower
+    => ((IComparable)a).CompareTo(b) >= 0 ? a : b;
+```
+
+This is the foundation of .NET 7+ Generic Math (`INumber<T>`, `IAdditionOperators<T,T,T>`, etc.) — all numeric algorithms are now expressed as generic methods with interface constraints, giving the JIT enough information to generate optimal code for every numeric type without a single boxing allocation.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Constraints on type parameters", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/constraints-on-type-parameters" },
+    { label: "Generic classes and methods", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/generics" },
+    { label: "Generic math in .NET 7+", url: "https://learn.microsoft.com/en-us/dotnet/standard/generics/math" },
+  ]}
+/>

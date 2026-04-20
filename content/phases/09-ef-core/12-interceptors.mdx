@@ -1,24 +1,247 @@
 ---
-title: "Interceptors"
+title: "EF Interceptors: SaveChangesInterceptor and DbCommandInterceptor"
 slug: "interceptors"
 order: 12
-difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "advanced"
+readingTime: 15
+status: "published"
+tags: ["interceptors", "savechangesinterceptor", "dbcommandinterceptor", "audit logging", "query logging", "ef core"]
+summary: "EF Core interceptors provide production-grade cross-cutting concerns: audit trails, query logging, soft deletes, and automatic timestamps — without polluting entity or service code."
+docsLinks:
+  - label: "Interceptors"
+    url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors"
+  - label: "SaveChanges Interceptors"
+    url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors#savechanges-interception"
+  - label: "Command Interceptors"
+    url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors#command-interception"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Interceptors?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+EF Core interceptors are hooks into the EF pipeline that let you intercept and optionally modify or suppress operations. They are registered at the DbContext level and are the recommended way to implement cross-cutting concerns in EF Core (instead of overriding `SaveChanges` in DbContext).
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Three primary interceptor types:
+- **`ISaveChangesInterceptor`** — fires before/after `SaveChanges()`
+- **`IDbCommandInterceptor`** — fires before/after every SQL command
+- **`IDbConnectionInterceptor`** — fires on connection open/close
+
+---
+
+## SaveChangesInterceptor: Audit Trails and Auto-Timestamps
+
+The most common production use case — automatically set audit fields on every save:
+
+```csharp
+// Interfaces for entities that need audit tracking
+public interface IAuditable
+{
+    DateTime CreatedAt { get; set; }
+    DateTime UpdatedAt { get; set; }
+    string? CreatedBy { get; set; }
+    string? UpdatedBy { get; set; }
+}
+
+// The interceptor
+public class AuditInterceptor : SaveChangesInterceptor
+{
+    private readonly ICurrentUserService _currentUser;
+    private readonly TimeProvider _time;
+
+    public AuditInterceptor(ICurrentUserService currentUser, TimeProvider time)
+    {
+        _currentUser = currentUser;
+        _time = time;
+    }
+
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData, InterceptionResult<int> result)
+    {
+        SetAuditFields(eventData.Context);
+        return base.SavingChanges(eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        SetAuditFields(eventData.Context);
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private void SetAuditFields(DbContext? context)
+    {
+        if (context is null) return;
+
+        var now = _time.GetUtcNow().UtcDateTime;
+        var user = _currentUser.UserId;
+
+        foreach (var entry in context.ChangeTracker.Entries<IAuditable>())
+        {
+            if (entry.State == EntityState.Added)
+            {
+                entry.Entity.CreatedAt = now;
+                entry.Entity.CreatedBy = user;
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.UpdatedBy = user;
+            }
+            else if (entry.State == EntityState.Modified)
+            {
+                entry.Entity.UpdatedAt = now;
+                entry.Entity.UpdatedBy = user;
+                // CreatedAt / CreatedBy should not change on update
+                entry.Property(e => e.CreatedAt).IsModified = false;
+                entry.Property(e => e.CreatedBy).IsModified = false;
+            }
+        }
+    }
+}
+```
+
+---
+
+## Registering Interceptors
+
+```csharp
+// Program.cs
+builder.Services.AddScoped<AuditInterceptor>();
+
+builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
+{
+    options.UseSqlServer(connectionString)
+           .AddInterceptors(
+               serviceProvider.GetRequiredService<AuditInterceptor>(),
+               new SlowQueryInterceptor(threshold: TimeSpan.FromSeconds(2)));
+});
+```
+
+Interceptors that need scoped services (like `ICurrentUserService`) must be resolved from the DI container, which requires the `(serviceProvider, options)` overload. Stateless interceptors can be registered as singletons:
+
+```csharp
+// Stateless interceptor — safe as singleton
+builder.Services.AddSingleton<SlowQueryInterceptor>();
+```
+
+---
+
+## DbCommandInterceptor: Query Logging and Modification
+
+```csharp
+// Log slow queries to a dedicated sink
+public class SlowQueryInterceptor : DbCommandInterceptor
+{
+    private readonly TimeSpan _threshold;
+    private readonly ILogger<SlowQueryInterceptor> _logger;
+
+    public SlowQueryInterceptor(TimeSpan threshold, ILogger<SlowQueryInterceptor> logger)
+    {
+        _threshold = threshold;
+        _logger = logger;
+    }
+
+    public override DbDataReader ReaderExecuted(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        DbDataReader result)
+    {
+        LogIfSlow(command, eventData.Duration);
+        return base.ReaderExecuted(command, eventData, result);
+    }
+
+    public override ValueTask<DbDataReader> ReaderExecutedAsync(
+        DbCommand command,
+        CommandExecutedEventData eventData,
+        DbDataReader result,
+        CancellationToken cancellationToken = default)
+    {
+        LogIfSlow(command, eventData.Duration);
+        return base.ReaderExecutedAsync(command, eventData, result, cancellationToken);
+    }
+
+    private void LogIfSlow(DbCommand command, TimeSpan duration)
+    {
+        if (duration > _threshold)
+        {
+            _logger.LogWarning("Slow EF query ({Duration}ms):\n{SQL}",
+                duration.TotalMilliseconds,
+                command.CommandText);
+        }
+    }
+}
+```
+
+---
+
+## Interceptor for Query Modification
+
+Interceptors can modify SQL before execution — useful for adding query hints:
+
+```csharp
+// Add NOLOCK hint to read-only queries (use with caution!)
+public class NoLockInterceptor : DbCommandInterceptor
+{
+    public override InterceptionResult<DbDataReader> ReaderExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result)
+    {
+        // Append OPTION hint or modify query text
+        // WARNING: This is a blunt instrument — prefer proper isolation levels
+        if (command.CommandText.Contains("SELECT", StringComparison.OrdinalIgnoreCase)
+            && !command.CommandText.Contains("WITH (NOLOCK)", StringComparison.OrdinalIgnoreCase))
+        {
+            // This approach is fragile — use only if you understand the trade-offs
+        }
+        return base.ReaderExecuting(command, eventData, result);
+    }
+}
+```
+
+<Callout type="senior">
+**Senior Insight: Interceptors vs. Overriding SaveChanges**
+
+Pre-EF Core 5, the common pattern was to override `SaveChanges()` in `DbContext`. Interceptors are strictly superior:
+
+1. **Separation of concerns** — the interceptor lives in its own class, not mixed into DbContext
+2. **DI-friendly** — interceptors can take scoped/transient dependencies via constructor injection
+3. **Multiple interceptors** — register many; they chain without coupling
+4. **Async-correct** — interceptors have proper async overrides; a single `SaveChanges` override can accidentally block async paths
+
+Override `SaveChanges` in DbContext only for the simplest cases (e.g., a guard assertion). For anything that needs DI or real logic, use an interceptor.
+
+Also: `IDbCommandInterceptor` is ideal for Application Performance Monitoring integration — you can send query duration and SQL to DataDog, New Relic, or OpenTelemetry from the interceptor, giving you rich EF Core tracing without changing query code.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Interceptors add significant performance overhead to every database operation"
+  truth="Interceptors are called synchronously in the EF pipeline with negligible overhead — they are direct method calls, not reflection or dynamic dispatch. The overhead of an interceptor that does nothing measurable is sub-microsecond. A logging interceptor that writes to a buffered logger is also negligible. The only interceptors with meaningful overhead are ones that do expensive work (like network calls) — which you should not be doing synchronously in an interceptor anyway."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/interceptors/challenge-1"
+  question="You need to automatically set CreatedAt and UpdatedAt on every entity save. Which approach is recommended in modern EF Core?"
+  options={[
+    "Override SaveChanges() in DbContext and set the timestamps in the override",
+    "Implement ISaveChangesInterceptor in a separate class registered via AddInterceptors()",
+    "Use a trigger in the database to set the timestamps server-side",
+    "Call a service method manually before every SaveChanges() call in each repository"
+  ]}
+  correctAnswer={1}
+  explanation="ISaveChangesInterceptor is the recommended EF Core approach. It lives in its own class (separation of concerns), can receive dependencies via DI (like ICurrentUserService, TimeProvider), and handles both sync and async correctly. Overriding SaveChanges in DbContext works but conflates the context with cross-cutting logic. Database triggers work but are invisible to the application (you must reload entities to see updated values) and cannot access application context like the current user ID. Manual calls in repositories are error-prone and violate DRY."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Interceptors Overview", url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors" },
+    { label: "SaveChanges Interception", url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors#savechanges-interception" },
+    { label: "Command Interception", url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/interceptors#command-interception" },
+  ]}
+/>

@@ -1,24 +1,268 @@
 ---
-title: "Anonymous Types vs Records vs ValueTuple"
+title: "Anonymous Types, Records, and Init-Only Properties"
 slug: "anonymous-types-records"
 order: 13
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["anonymous types", "records", "init", "with expression", "immutability", "value equality", "C# 9"]
+summary: "Records (C# 9) give you immutable reference types with value equality and non-destructive mutation — replacing anonymous types and many simple POCO classes."
+docsLinks:
+  - label: "Records (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record"
+  - label: "init accessor (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init"
+  - label: "Anonymous types (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/anonymous-types"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Anonymous Types
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Anonymous types are compiler-generated, immutable, read-only reference types — primarily used in LINQ `select` projections:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Anonymous type — compiler generates a class with read-only properties
+var user = new { Name = "Alice", Age = 30, IsAdmin = true };
+
+Console.WriteLine(user.Name);  // Alice
+Console.WriteLine(user.Age);   // 30
+
+// user.Name = "Bob"; // COMPILE ERROR — anonymous type properties are read-only
+
+// Common use: LINQ projection to reduce data
+var products = new[]
+{
+    new { Id = 1, Name = "Widget", Price = 9.99m, Cost = 4.00m, Stock = 100 }
+};
+
+var summary = products
+    .Where(p => p.Stock > 0)
+    .Select(p => new { p.Id, p.Name, Margin = p.Price - p.Cost }) // anonymous projection
+    .ToList();
+
+// summary[0].Id = 1, summary[0].Name = "Widget", summary[0].Margin = 5.99
+```
+
+### Limitations of Anonymous Types
+
+- Cannot be returned from methods (except as `object` or `dynamic`)
+- Cannot be used as method parameters (without `object`/`dynamic`)
+- Compiler equality: two anonymous type instances with same properties and values ARE equal
+
+```csharp
+var a = new { X = 1, Y = 2 };
+var b = new { X = 1, Y = 2 };
+Console.WriteLine(a.Equals(b)); // True — value equality (same type, same values)
+Console.WriteLine(a == b);      // False — == uses reference equality for classes!
+```
+
+---
+
+## Records (C# 9+)
+
+Records are a concise syntax for immutable data types with **value equality** built in:
+
+```csharp
+// Positional record — compact syntax, primary constructor
+public record Point(int X, int Y);
+
+// Equivalent expanded form (what the compiler generates):
+public record PointExpanded
+{
+    public int X { get; init; }
+    public int Y { get; init; }
+
+    public PointExpanded(int x, int y) { X = x; Y = y; }
+
+    // Auto-generated: Equals, GetHashCode, ToString, ==, !=, Deconstruct
+}
+
+// Usage
+var p1 = new Point(1, 2);
+var p2 = new Point(1, 2);
+var p3 = new Point(3, 4);
+
+Console.WriteLine(p1 == p2);    // True  — VALUE equality (compares X and Y)
+Console.WriteLine(p1 == p3);    // False
+Console.WriteLine(p1.ToString()); // Point { X = 1, Y = 2 }
+
+// Deconstruction — built in for positional records
+var (x, y) = p1;
+Console.WriteLine($"x={x}, y={y}"); // x=1, y=2
+```
+
+---
+
+## With Expressions: Non-Destructive Mutation
+
+Records are immutable — but you can create modified copies with `with`:
+
+```csharp
+public record Address(string Street, string City, string Country);
+public record Person(string Name, int Age, Address HomeAddress);
+
+var original = new Person("Alice", 30, new Address("123 Main St", "London", "UK"));
+
+// 'with' creates a shallow copy with specified properties changed
+var moved = original with { HomeAddress = original.HomeAddress with { City = "Manchester" } };
+
+Console.WriteLine(original.HomeAddress.City); // London   — original unchanged
+Console.WriteLine(moved.HomeAddress.City);    // Manchester
+
+// original and moved are different objects:
+Console.WriteLine(ReferenceEquals(original, moved)); // False
+Console.WriteLine(original == moved);                 // False (City differs)
+```
+
+---
+
+## Init-Only Properties (C# 9)
+
+The `init` accessor allows a property to be set during object initialization but not afterwards:
+
+```csharp
+public class Order
+{
+    // init-only — set in object initializer, immutable after
+    public int    Id      { get; init; }
+    public string Product { get; init; } = "";
+    public decimal Price  { get; init; }
+
+    // Regular setter — mutable
+    public string Status { get; set; } = "Pending";
+}
+
+var order = new Order
+{
+    Id      = 1,
+    Product = "Widget",
+    Price   = 9.99m
+};
+
+order.Status = "Shipped"; // OK — regular setter
+// order.Id = 2;          // COMPILE ERROR — init-only property
+
+// Works with object initializer patterns in tests:
+var testOrder = order with { }; // records use init under the hood
+```
+
+---
+
+<ComparisonTable
+  headers={["Feature", "Anonymous Type", "Record (class)", "Record struct", "Class with init"]}
+  rows={[
+    ["Value equality", "Yes (Equals)", "Yes (auto)", "Yes (auto)", "No (ref equality)"],
+    ["Immutable", "Yes", "Yes (init)", "Yes (init)", "Depends on init"],
+    ["Can return from method", "No (without object)", "Yes", "Yes", "Yes"],
+    ["with expression", "No", "Yes", "Yes (C# 10)", "No"],
+    ["Inheritance", "No", "Yes (record)", "No", "Yes (class)"],
+    ["Heap allocated", "Yes (class)", "Yes (class)", "No (struct)", "Yes (class)"],
+    ["Pattern matching", "Limited", "Full", "Full", "Limited"],
+    ["ToString()", "Auto-generated", "Auto-generated", "Auto-generated", "object.ToString()"],
+  ]}
+/>
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/anonymous-types-records/playground-1"
+  title="Records in Action"
+  code={`using System;
+
+public record Product(string Name, decimal Price, int Stock)
+{
+    // Records can have additional members
+    public bool InStock => Stock > 0;
+
+    // Custom validation in primary constructor body (C# 10+)
+    public Product
+    {
+        if (Price < 0) throw new ArgumentException("Price cannot be negative");
+        Name = Name.Trim(); // normalize
+    }
+}
+
+var widget = new Product("  Widget  ", 9.99m, 100);
+Console.WriteLine(widget);          // Product { Name = Widget, Price = 9.99, Stock = 100 }
+Console.WriteLine(widget.InStock);  // True
+
+// Non-destructive update
+var discounted = widget with { Price = 7.99m };
+Console.WriteLine(discounted.Price); // 7.99
+Console.WriteLine(widget.Price);     // 9.99 — original unchanged
+
+// Value equality
+var same = new Product("Widget", 9.99m, 100);
+Console.WriteLine(widget == same);   // True — same Name/Price/Stock`}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/anonymous-types-records/challenge-1"
+  title="Record Equality Trap"
+  description="What does this print?"
+  code={`public record Address(string City);
+public record Person(string Name, Address Home);
+
+var p1 = new Person("Alice", new Address("London"));
+var p2 = new Person("Alice", new Address("London"));
+var p3 = p1 with { };
+
+Console.WriteLine(p1 == p2);
+Console.WriteLine(p1 == p3);
+Console.WriteLine(ReferenceEquals(p1, p3));`}
+  options={[
+    "True, True, True — records are value types",
+    "True, True, False — value equality, but with creates a new instance",
+    "False, False, False — reference equality always",
+    "True, False, False — p1==p2 is true but with creates a different object"
+  ]}
+  correctAnswer={1}
+  explanation="Records use structural (value) equality — p1 == p2 is True because both have Name='Alice' and Home with City='London' (the nested Address is also a record with value equality). p1 == p3 is also True — `with { }` creates a shallow copy with no changes, so all properties match. ReferenceEquals(p1, p3) is False because `with` always creates a NEW object instance, even if no properties are changed. This is a common interview question: value equality vs reference equality for records."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Record Structs for Zero-Allocation Value Semantics**
+
+C# 10 added `record struct` — a value type with auto-generated value equality and `with` support, but no heap allocation:
+
+```csharp
+// record struct — value type + value equality + with
+public record struct Money(decimal Amount, string Currency);
+
+var price = new Money(9.99m, "USD");
+var discounted = price with { Amount = 7.99m };
+
+Console.WriteLine(price);       // Money { Amount = 9.99, Currency = USD }
+Console.WriteLine(discounted);  // Money { Amount = 7.99, Currency = USD }
+Console.WriteLine(price == discounted); // False
+
+// No heap allocation — Money lives on the stack like any struct
+// Ideal for: coordinates, currency, temperatures, colors, IDs
+
+// readonly record struct — immutable value type (C# 10)
+public readonly record struct Point(int X, int Y);
+// All properties are init-only; the struct cannot be mutated
+```
+
+Choosing between:
+- `record` (class): domain entities, DTOs, anything passed by reference or needing inheritance
+- `record struct`: small immutable value objects, high-performance scenarios (geometry, finance math)
+- `readonly record struct`: same as record struct but enforces immutability at the compiler level
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Records (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record" },
+    { label: "init accessor (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init" },
+    { label: "Anonymous types (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/anonymous-types" },
+    { label: "What's new in C# 10 — record structs", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-10" },
+  ]}
+/>

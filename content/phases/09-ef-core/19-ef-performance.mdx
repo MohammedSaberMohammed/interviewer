@@ -1,24 +1,246 @@
 ---
-title: "EF Core Performance"
+title: "EF Core Performance: Projections, Tracking, Compiled Queries, Profiling"
 slug: "ef-performance"
 order: 19
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["performance", "projections", "asnotracking", "compiled queries", "profiling", "miniprofiler", "ef core"]
+summary: "EF Core performance follows a clear priority order: eliminate N+1 first, then project to DTOs, then disable tracking, then compile queries, then profile what remains. This lesson ties all the optimizations together."
+docsLinks:
+  - label: "Performance Overview"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/"
+  - label: "Efficient Querying"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying"
+  - label: "Advanced Performance Topics"
+    url: "https://learn.microsoft.com/en-us/ef/core/performance/advanced-performance-topics"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The EF Core Performance Priority Order
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before micro-optimizing, fix the big issues first. In order of impact:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. **Eliminate N+1** — 10x to 1000x improvement (see lesson 5)
+2. **Project to DTOs** — eliminates unused column I/O and tracking overhead
+3. **Use AsNoTracking** — 20–40% faster materialization for read-only paths
+4. **Add database indexes** — often more impactful than any EF change
+5. **Use ExecuteUpdate/Delete** for bulk set operations
+6. **Compile hot queries** — ~10% improvement on extreme hot paths
+7. **Enable DbContext pooling** — 5–10% throughput improvement
+
+---
+
+## Projection: The Biggest Single Win
+
+Projection reduces data at the source — less network I/O, less memory, less CPU:
+
+```csharp
+// BASELINE: full tracked entities, all columns
+var orders = await db.Orders
+    .Include(o => o.Customer)
+    .Include(o => o.Items)
+    .Where(o => o.Status == OrderStatus.Pending)
+    .ToListAsync();
+// Fetches: all columns of Orders + Customers + OrderItems
+// Even columns you never use: CreatedAt, UpdatedAt, InternalNotes, ...
+
+// OPTIMIZED: projection to DTO — only what the caller needs
+var orderDtos = await db.Orders
+    .Where(o => o.Status == OrderStatus.Pending)
+    .Select(o => new PendingOrderDto
+    {
+        OrderId = o.Id,
+        CustomerName = o.Customer.Name,
+        CustomerEmail = o.Customer.Email,
+        ItemCount = o.Items.Count(),
+        Total = o.Total,
+        CreatedAt = o.CreatedAt
+    })
+    .AsNoTracking() // projections are never tracked, but explicit for clarity
+    .ToListAsync();
+// SQL: SELECT o.Id, c.Name, c.Email, COUNT(i.Id), o.Total, o.CreatedAt
+//      FROM Orders o JOIN Customers c ON ... LEFT JOIN OrderItems i ON ...
+//      WHERE o.Status = 1
+//      GROUP BY o.Id, c.Name, c.Email, o.Total, o.CreatedAt
+```
+
+---
+
+## Profiling EF Core Queries
+
+### Logging
+
+```csharp
+// Development: log all SQL to console/debug output
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .LogTo(Console.WriteLine, LogLevel.Information)
+           .EnableSensitiveDataLogging()
+           .EnableDetailedErrors());
+
+// Production: structured logging with ILogger (only warnings/errors)
+builder.Services.AddDbContext<AppDbContext>((sp, options) =>
+{
+    var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+    options.UseSqlServer(connectionString)
+           .UseLoggerFactory(loggerFactory)
+           .ConfigureWarnings(w => w
+               .Throw(RelationalEventId.MultipleCollectionIncludeWarning)  // throw on cartesian explosion
+               .Log((RelationalEventId.CommandExecuted, LogLevel.Warning))  // log all queries as Warning
+           );
+});
+```
+
+### MiniProfiler
+
+```csharp
+// NuGet: MiniProfiler.AspNetCore.Mvc + MiniProfiler.EntityFrameworkCore
+builder.Services.AddMiniProfiler(options =>
+{
+    options.RouteBasePath = "/profiler";
+    options.ColorScheme = StackExchange.Profiling.ColorScheme.Auto;
+    options.ShouldProfile = (request) => request.Path.StartsWithSegments("/api");
+}).AddEntityFramework();
+
+app.UseMiniProfiler();
+
+// Access profiler results at /profiler/results-index in development
+// Highlights: duplicate queries, slow queries, query count per request
+```
+
+---
+
+## Avoiding Common Performance Pitfalls
+
+```csharp
+// PITFALL 1: Calling Count() when you only need to know if records exist
+var count = await db.Orders.Where(o => o.CustomerId == id).CountAsync();
+if (count > 0) { } // BAD: counts all matching rows
+
+// FIX: Use AnyAsync() — generates EXISTS query
+bool hasOrders = await db.Orders.AnyAsync(o => o.CustomerId == id);
+// SQL: SELECT CASE WHEN EXISTS(SELECT 1 FROM Orders WHERE CustomerId = @p0) THEN 1 ELSE 0 END
+
+// PITFALL 2: Loading a collection to check its size
+var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+if (order.Items.Count > 5) { } // BAD: loaded all items just to count them
+
+// FIX: Project the count
+var itemCount = await db.Orders
+    .Where(o => o.Id == id)
+    .Select(o => o.Items.Count())
+    .FirstOrDefaultAsync();
+
+// PITFALL 3: Using ToList() mid-query then LINQ-to-objects
+var result = await db.Products.ToListAsync(); // fetches everything
+var filtered = result.Where(p => p.Price > 100).Take(10).ToList(); // in memory
+
+// FIX: Keep it IQueryable until the terminal operator
+var filtered = await db.Products
+    .Where(p => p.Price > 100)
+    .Take(10)
+    .ToListAsync(); // one SQL query with WHERE + TOP
+
+// PITFALL 4: Selecting an entity just to get one property
+var name = (await db.Customers.FindAsync(id))?.Name; // loads full entity
+
+// FIX: Project the property
+var name = await db.Customers
+    .Where(c => c.Id == id)
+    .Select(c => c.Name)
+    .FirstOrDefaultAsync(); // SQL: SELECT Name FROM Customers WHERE Id = @p0
+```
+
+---
+
+## Connection Pool and DbContext Pool Configuration
+
+```csharp
+// SQL Server connection pool (ADO.NET level — separate from DbContext pool)
+var connectionString = "Server=.;Database=App;Min Pool Size=5;Max Pool Size=200;...";
+
+// DbContext pool (EF Core level — reuses DbContext instances)
+builder.Services.AddDbContextPool<AppDbContext>(options =>
+    options.UseSqlServer(connectionString),
+    poolSize: 128); // 128 contexts available for reuse; adjust based on thread count
+
+// Combined effect: ~5–15% throughput improvement in high-TPS scenarios
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Measure with BenchmarkDotNet Before Optimizing**
+
+EF Core performance is highly context-dependent — what helps in one scenario hurts in another. The only reliable approach is measurement:
+
+```csharp
+[MemoryDiagnoser]
+[SimpleJob(RuntimeMoniker.Net80)]
+public class EfQueryBenchmarks
+{
+    private AppDbContext _db = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _db = new AppDbContext(/* options with in-memory or real DB */);
+    }
+
+    [Benchmark(Baseline = true)]
+    public async Task<List<Order>> FullEntityTracked()
+        => await _db.Orders.Include(o => o.Customer).ToListAsync();
+
+    [Benchmark]
+    public async Task<List<OrderDto>> ProjectedNoTracking()
+        => await _db.Orders
+            .Select(o => new OrderDto { Id = o.Id, CustomerName = o.Customer.Name })
+            .AsNoTracking()
+            .ToListAsync();
+
+    [Benchmark]
+    public async Task<List<Order>> CompiledQuery()
+        => (await CompiledQueries.GetAllOrders(_db)
+            .ToListAsync()); // hypothetical compiled query
+}
+```
+
+Run with: `dotnet run -c Release -- --filter *EfQueryBenchmarks*`
+
+The output will show exact allocations and timing. Never assume an optimization helps — prove it. In practice, the ordering is almost always: **N+1 elimination > projection > tracking > compiled queries**.
 </Callout>
+
+---
+
+<MythBuster
+  myth="AsNoTracking is the most important EF Core performance optimization"
+  truth="AsNoTracking is valuable but typically the third or fourth most impactful optimization. Eliminating N+1 queries (which can reduce 500 queries to 1) and projecting to DTOs (which reduces data fetched) have far greater impact. AsNoTracking gives 20-40% improvement on materialization time — significant on bulk reads, negligible on queries returning 10 rows. Fix the architectural problems first, then apply AsNoTracking as a consistent practice for read-only paths."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/ef-performance/challenge-1"
+  question="An API endpoint loading 200 products is slow. Profiling shows it fires 201 SQL queries and takes 800ms. After adding Include(p => p.Category), it fires 1 query but takes 600ms. What should you try next to get to under 100ms?"
+  options={[
+    "Add AsNoTracking() — tracking overhead is the remaining bottleneck",
+    "Add a compiled query — the query plan cache is causing 600ms of overhead",
+    "Switch to AsNoTrackingWithIdentityResolution for better memory efficiency",
+    "Project to a DTO selecting only ProductId, Name, Price, and CategoryName — reducing I/O and tracking"
+  ]}
+  correctAnswer={3}
+  explanation="The N+1 was fixed with Include() — going from 201 queries to 1 is the big win. The remaining 600ms is likely I/O overhead from fetching all columns of 200 products + 200 categories. Projecting to a DTO (Option D) reduces the SQL to SELECT only the needed columns, eliminates the need for Include() entirely, and naturally removes tracking. AsNoTracking alone (Option A) saves tracking overhead but still fetches all columns. Compiled queries (Option B) address cache lookup overhead, typically saving microseconds not hundreds of milliseconds."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "EF Core Performance Overview", url: "https://learn.microsoft.com/en-us/ef/core/performance/" },
+    { label: "Efficient Querying", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying" },
+    { label: "Advanced Performance Topics", url: "https://learn.microsoft.com/en-us/ef/core/performance/advanced-performance-topics" },
+    { label: "Logging and Diagnostics", url: "https://learn.microsoft.com/en-us/ef/core/logging-events-diagnostics/" },
+  ]}
+/>

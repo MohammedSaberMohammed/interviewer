@@ -1,24 +1,303 @@
 ---
-title: "Command"
+title: "Command — Encapsulating Actions"
 slug: "command"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["command", "behavioral", "undo/redo", "MediatR", "CQRS", "encapsulation"]
+summary: "Command encapsulates an action as an object — enabling undo/redo, queuing, logging of operations, and decoupling the caller from the executor."
+docsLinks:
+  - label: "MediatR — IRequest and IRequestHandler"
+    url: "https://github.com/jbogard/MediatR"
+  - label: "ICommand pattern in Azure Architecture"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Actions as First-Class Objects
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When you call `document.Bold()`, that action is gone — you can't undo it, queue it, log it, or replay it. Command solves this by wrapping the action (and all its parameters) in an object that can be stored, passed around, and executed later.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Classic Command Pattern
+
+```csharp
+// Command interface
+public interface ICommand
+{
+    void Execute();
+    void Undo();
+}
+
+// Receiver — the object that knows how to perform the operation
+public class TextEditor
+{
+    private readonly StringBuilder _text = new StringBuilder();
+
+    public void InsertText(string text, int position)
+    {
+        _text.Insert(position, text);
+        Console.WriteLine($"Text: '{_text}'");
+    }
+
+    public void DeleteText(int position, int length)
+    {
+        _text.Remove(position, length);
+        Console.WriteLine($"Text: '{_text}'");
+    }
+
+    public string GetText() => _text.ToString();
+}
+
+// Concrete command — encapsulates one action with its parameters
+public class InsertTextCommand : ICommand
+{
+    private readonly TextEditor _editor;
+    private readonly string     _text;
+    private readonly int        _position;
+
+    public InsertTextCommand(TextEditor editor, string text, int position)
+    {
+        _editor   = editor;
+        _text     = text;
+        _position = position;
+    }
+
+    public void Execute() => _editor.InsertText(_text, _position);
+    public void Undo()    => _editor.DeleteText(_position, _text.Length);
+}
+
+// Invoker — stores and executes commands, maintains undo history
+public class CommandHistory
+{
+    private readonly Stack<ICommand> _history = new();
+    private readonly Stack<ICommand> _redoStack = new();
+
+    public void Execute(ICommand command)
+    {
+        command.Execute();
+        _history.Push(command);
+        _redoStack.Clear(); // new action invalidates redo history
+    }
+
+    public void Undo()
+    {
+        if (_history.TryPop(out var command))
+        {
+            command.Undo();
+            _redoStack.Push(command);
+        }
+    }
+
+    public void Redo()
+    {
+        if (_redoStack.TryPop(out var command))
+        {
+            command.Execute();
+            _history.Push(command);
+        }
+    }
+}
+
+// Usage
+var editor  = new TextEditor();
+var history = new CommandHistory();
+
+history.Execute(new InsertTextCommand(editor, "Hello", 0));
+history.Execute(new InsertTextCommand(editor, " World", 5));
+Console.WriteLine(editor.GetText()); // "Hello World"
+
+history.Undo();
+Console.WriteLine(editor.GetText()); // "Hello"
+
+history.Redo();
+Console.WriteLine(editor.GetText()); // "Hello World"
+```
+
+---
+
+## Commands Without Undo: `Action` Delegates
+
+For simple cases where you just need to encapsulate an action (no undo), C# delegates serve as lightweight commands:
+
+```csharp
+// Queue of actions to run
+var queue = new Queue<Func<Task>>();
+
+// Enqueue commands as lambdas
+queue.Enqueue(() => SendEmailAsync("alice@example.com", "Welcome!"));
+queue.Enqueue(() => CreateAccountAsync(userId));
+queue.Enqueue(() => SendSlackNotificationAsync("#onboarding", "New user joined"));
+
+// Execute all (could be done by a background worker)
+while (queue.TryDequeue(out var command))
+    await command();
+```
+
+---
+
+## MediatR — Command Pattern in Modern .NET
+
+MediatR brings Command pattern to ASP.NET Core CQRS. A `IRequest<T>` is a command object; `IRequestHandler<TRequest, TResponse>` is the handler:
+
+```csharp
+// Command object — carries the data needed to perform the action
+public record CreateOrderCommand(
+    int    CustomerId,
+    string ProductSku,
+    int    Quantity
+) : IRequest<int>; // returns the new OrderId
+
+// Handler — executes the command
+public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, int>
+{
+    private readonly AppDbContext _db;
+    private readonly IEmailService _email;
+
+    public CreateOrderHandler(AppDbContext db, IEmailService email)
+    {
+        _db    = db;
+        _email = email;
+    }
+
+    public async Task<int> Handle(CreateOrderCommand cmd, CancellationToken ct)
+    {
+        var order = new Order
+        {
+            CustomerId = cmd.CustomerId,
+            ProductSku = cmd.ProductSku,
+            Quantity   = cmd.Quantity,
+            CreatedAt  = DateTime.UtcNow,
+        };
+
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync(ct);
+        await _email.SendOrderConfirmationAsync(order.Id, cmd.CustomerId);
+
+        return order.Id;
+    }
+}
+
+// Controller — sends the command via MediatR
+[ApiController, Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    public OrdersController(IMediator mediator) => _mediator = mediator;
+
+    [HttpPost]
+    public async Task<IActionResult> Create(CreateOrderCommand command)
+    {
+        int orderId = await _mediator.Send(command);
+        return CreatedAtAction(nameof(GetById), new { id = orderId }, null);
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  title="Command Pattern Approaches"
+  headers={["Approach", "Undo Support", "Queuing", "DI Integration", "Complexity"]}
+  rows={[
+    ["ICommand interface (GoF)", "Yes — Undo() method", "Yes — store in queue/history", "Manual", "Medium"],
+    ["Action / Func\<Task\> delegate", "No (unless wrapped)", "Yes — Queue<Func\<Task\>>", "Via lambda capture", "Low"],
+    ["MediatR IRequest\<T\>", "No (CQRS style)", "Via background queues", "Full DI support", "Low (framework handles wiring)"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/command/challenge-1"
+  title="MediatR Command vs Query"
+  description="In MediatR CQRS, what is the difference between a Command and a Query?"
+  code={`// A:
+public record GetOrderByIdQuery(int Id) : IRequest\<OrderDto\>;
+
+// B:
+public record CancelOrderCommand(int OrderId, string Reason) : IRequest\<bool\>;
+
+// Both use IRequest\<T\> — what distinguishes them conceptually?`}
+  options={[
+    "Nothing — Command and Query are just naming conventions with no behavioral difference in MediatR",
+    "Commands change state (write side); Queries retrieve data (read side) without side effects",
+    "Commands use IRequest; Queries use IRequest<T> with a return type",
+    "Commands run synchronously; Queries run asynchronously"
+  ]}
+  correctAnswer={1}
+  explanation="In CQRS, Commands (B) change system state — they have side effects (cancel order, send email). Queries (A) retrieve data without modifying state — they are idempotent. In MediatR, both use IRequest<T> syntactically — the distinction is semantic/architectural. Commands should be in the 'write model' (often just return success/failure); Queries are in the 'read model' and return DTOs optimized for display."
+/>
+
+---
+
+<Callout type="senior">
+**Commands for Auditability and Event Sourcing**
+
+When commands are objects (not just method calls), you can log every action and replay history — the foundation of Event Sourcing:
+
+```csharp
+// Command with audit metadata
+public abstract class AuditedCommand
+{
+    public Guid   CommandId  { get; } = Guid.NewGuid();
+    public string UserId     { get; init; } = "";
+    public DateTime Timestamp { get; } = DateTime.UtcNow;
+    public string ClientIp   { get; init; } = "";
+}
+
+public class TransferFundsCommand : AuditedCommand
+{
+    public int     FromAccountId { get; init; }
+    public int     ToAccountId   { get; init; }
+    public decimal Amount        { get; init; }
+}
+
+// Command store — persist every command before executing
+public class AuditingCommandDecorator<TCommand, TResponse>
+    : IRequestHandler<TCommand, TResponse>
+    where TCommand : AuditedCommand, IRequest<TResponse>
+{
+    private readonly IRequestHandler<TCommand, TResponse> _inner;
+    private readonly ICommandStore _store;
+
+    public async Task<TResponse> Handle(TCommand command, CancellationToken ct)
+    {
+        await _store.SaveAsync(command, ct);      // log BEFORE executing
+        TResponse result = await _inner.Handle(command, ct);
+        await _store.MarkCompletedAsync(command.CommandId, ct);
+        return result;
+    }
+}
+```
+
+This enables: **audit logs** (who did what when), **replay** (re-run commands from a point in time), and **outbox pattern** (commands are persisted atomically with the DB write).
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/command/quiz-1"
+  question="What key capability does the Command pattern provide that a simple method call does not?"
+  options={[
+    "Better performance through lazy evaluation",
+    "Commands can be stored, queued, logged, undone, and replayed — treating an action as a first-class object",
+    "Commands enable parallel execution of handlers",
+    "Commands enforce type safety on return values"
+  ]}
+  correctAnswer={1}
+  explanation="The essential value of Command is treating actions as first-class objects. A method call is fire-and-forget — once executed, it's gone. A command object can be: stored in history (undo/redo), queued for later execution, serialized and sent over a message bus, logged for audit, retried on failure, or replayed from a store. This decoupling of 'defining the action' from 'executing the action' is the pattern's core value."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "MediatR on GitHub", url: "https://github.com/jbogard/MediatR" },
+    { label: "CQRS pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" },
+    { label: "Event Sourcing pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing" },
+  ]}
+/>

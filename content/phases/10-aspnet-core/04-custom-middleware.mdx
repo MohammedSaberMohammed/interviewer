@@ -1,24 +1,317 @@
 ---
-title: "Custom Middleware"
+title: "Writing Custom Middleware"
 slug: "custom-middleware"
 order: 4
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["middleware", "IMiddleware", "UseMiddleware", "custom middleware", "asp.net core", "request pipeline"]
+summary: "Custom middleware lets you insert cross-cutting concerns anywhere in the pipeline. IMiddleware gives you DI-friendly, testable middleware classes."
+docsLinks:
+  - label: "Write custom ASP.NET Core middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write"
+  - label: "Test ASP.NET Core middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/test/middleware"
+  - label: "Factory-based middleware activation"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/extensibility"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Two Patterns for Custom Middleware
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+ASP.NET Core supports two approaches for writing middleware. The convention-based approach is simple but uses constructor injection with a limitation — the factory-based `IMiddleware` approach is more testable and DI-friendly.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+---
+
+## Convention-Based Middleware (Inline Lambda)
+
+For simple, stateless concerns a lambda is sufficient:
+
+```csharp
+// Inline lambda — good for short, one-off middleware
+app.Use(async (context, next) =>
+{
+    // Before downstream
+    var requestId = context.TraceIdentifier;
+    context.Response.Headers["X-Request-Id"] = requestId;
+
+    await next(context);
+
+    // After downstream (response phase)
+    // Note: headers may already be sent here — check HasStarted
+});
+```
+
+---
+
+## Convention-Based Middleware Class
+
+For more complex middleware, extract to a class. ASP.NET Core uses naming conventions to locate `InvokeAsync`:
+
+```csharp
+// Convention-based class middleware
+// Constructor receives singleton/transient dependencies + RequestDelegate
+public class CorrelationIdMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<CorrelationIdMiddleware> _logger;
+
+    // Constructor injection — only singleton/transient services work here!
+    // Scoped services cannot be injected into constructor (singleton lifetime issue)
+    public CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    // InvokeAsync (or Invoke) is called per-request
+    // Scoped services CAN be injected here as method parameters
+    public async Task InvokeAsync(HttpContext context, ICorrelationService correlationService)
+    {
+        var correlationId = context.Request.Headers["X-Correlation-Id"].FirstOrDefault()
+            ?? Guid.NewGuid().ToString("N");
+
+        correlationService.SetId(correlationId);
+        context.Response.Headers["X-Correlation-Id"] = correlationId;
+
+        using (_logger.BeginScope(new Dictionary<string, object>
+        {
+            ["CorrelationId"] = correlationId
+        }))
+        {
+            await _next(context);
+        }
+    }
+}
+
+// Extension method for clean registration
+public static class CorrelationIdMiddlewareExtensions
+{
+    public static IApplicationBuilder UseCorrelationId(this IApplicationBuilder app)
+        => app.UseMiddleware<CorrelationIdMiddleware>();
+}
+
+// Usage in Program.cs
+app.UseCorrelationId();
+```
+
+<Callout type="trap">
+**Trap: Scoped Services in Middleware Constructors**
+
+Convention-based middleware is activated **once** at app startup — it behaves like a singleton. Constructor-injected dependencies must be singleton-safe. Injecting a scoped service (like `DbContext`) into a constructor causes a captive dependency bug.
+
+The solution: inject scoped services into `InvokeAsync` parameters, not the constructor. ASP.NET Core resolves those parameters from the per-request scope:
+
+```csharp
+// WRONG — DbContext is scoped, middleware constructor is singleton
+public class BadMiddleware
+{
+    public BadMiddleware(RequestDelegate next, AppDbContext db) { } // Bug!
+}
+
+// CORRECT — inject scoped service into InvokeAsync
+public class GoodMiddleware
+{
+    private readonly RequestDelegate _next;
+    public GoodMiddleware(RequestDelegate next) { _next = next; }
+
+    public async Task InvokeAsync(HttpContext context, AppDbContext db) // OK!
+    {
+        var count = await db.Users.CountAsync();
+        await _next(context);
+    }
+}
+```
 </Callout>
+
+---
+
+## IMiddleware: Factory-Based Middleware
+
+`IMiddleware` is the preferred pattern for DI-friendly, testable middleware. The framework creates a new instance per request (or uses your registered lifetime):
+
+```csharp
+// IMiddleware — clean interface, full DI support
+public class RequestTimingMiddleware : IMiddleware
+{
+    private readonly ILogger<RequestTimingMiddleware> _logger;
+    private readonly IMetricsService _metrics; // Can be any lifetime!
+
+    public RequestTimingMiddleware(
+        ILogger<RequestTimingMiddleware> logger,
+        IMetricsService metrics)
+    {
+        _logger = logger;
+        _metrics = metrics;
+    }
+
+    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            await next(context);
+        }
+        finally
+        {
+            sw.Stop();
+            var path = context.Request.Path;
+            var statusCode = context.Response.StatusCode;
+            var elapsed = sw.ElapsedMilliseconds;
+
+            _logger.LogInformation(
+                "HTTP {Method} {Path} responded {StatusCode} in {ElapsedMs}ms",
+                context.Request.Method, path, statusCode, elapsed);
+
+            _metrics.RecordRequestDuration(path, elapsed);
+        }
+    }
+}
+
+// Registration — IMiddleware must be registered in DI
+builder.Services.AddScoped<RequestTimingMiddleware>(); // Scoped = per-request instance
+
+// Activation — UseMiddleware<T> detects IMiddleware and uses factory pattern
+app.UseMiddleware<RequestTimingMiddleware>();
+```
+
+---
+
+## Real-World Example: Global Exception Handling Middleware
+
+```csharp
+public class GlobalExceptionMiddleware : IMiddleware
+{
+    private readonly ILogger<GlobalExceptionMiddleware> _logger;
+    private readonly IProblemDetailsService _problemDetails;
+
+    public GlobalExceptionMiddleware(
+        ILogger<GlobalExceptionMiddleware> logger,
+        IProblemDetailsService problemDetails)
+    {
+        _logger = logger;
+        _problemDetails = problemDetails;
+    }
+
+    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    {
+        try
+        {
+            await next(context);
+        }
+        catch (ValidationException ex)
+        {
+            _logger.LogWarning(ex, "Validation error on {Path}", context.Request.Path);
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await _problemDetails.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                ProblemDetails = { Title = "Validation failed", Detail = ex.Message }
+            });
+        }
+        catch (NotFoundException ex)
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await _problemDetails.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                ProblemDetails = { Title = "Not found", Detail = ex.Message }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unhandled exception on {Path}", context.Request.Path);
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await _problemDetails.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = context,
+                ProblemDetails = { Title = "An error occurred" }
+            });
+        }
+    }
+}
+```
+
+---
+
+## Convention vs IMiddleware: When to Use Each
+
+<ComparisonTable
+  headers={["Aspect", "Convention-Based", "IMiddleware"]}
+  rows={[
+    ["Scoped DI in constructor", "No — must use InvokeAsync params", "Yes — normal constructor injection"],
+    ["Testability", "Harder — must use TestServer", "Easy — just new() and call InvokeAsync"],
+    ["Lifetime", "Singleton (activated once)", "Matches DI registration (Scoped recommended)"],
+    ["Registration", "UseMiddleware\<T\>() — no DI needed", "Must register in DI + UseMiddleware\<T\>"],
+    ["Per-request overhead", "Lower (no DI resolution)", "Slightly higher (DI resolve per request)"],
+    ["Recommended for", "Simple, stateless cross-cutting concerns", "Complex middleware needing scoped deps"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Middleware Branching and Conditional Pipelines**
+
+For microservice gateways or multi-tenant APIs, you often need completely different pipelines for different request paths. `MapWhen` and `Map` let you branch the pipeline without creating separate apps:
+
+```csharp
+// Branch the entire pipeline for webhook callbacks
+app.MapWhen(ctx => ctx.Request.Path.StartsWithSegments("/webhooks"), webhookBranch =>
+{
+    // This branch has NO auth — webhooks use HMAC signature validation instead
+    webhookBranch.UseMiddleware<WebhookSignatureValidationMiddleware>();
+    webhookBranch.UseRouting();
+    webhookBranch.MapControllers();
+});
+
+// Main branch has full auth pipeline
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapControllers();
+```
+
+Note: `MapWhen` creates an independent branch — the main pipeline does NOT continue after the branch executes. Use `UseWhen` if you want to run branch middleware conditionally but then rejoin the main pipeline:
+
+```csharp
+// UseWhen — runs middleware conditionally but rejoins main pipeline
+app.UseWhen(
+    ctx => ctx.Request.Headers.ContainsKey("X-Debug"),
+    debugBranch => debugBranch.UseMiddleware<RequestDumpMiddleware>());
+
+app.MapControllers(); // Still runs after the conditional branch
+```
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/custom-middleware/quiz-1"
+  question="You have a convention-based middleware class. Where is the correct place to inject a Scoped service like DbContext?"
+  options={[
+    "In the constructor, same as any other dependency",
+    "As a parameter of InvokeAsync — ASP.NET Core resolves it from the request scope",
+    "Via IServiceProvider.GetService() in InvokeAsync using the root provider",
+    "Scoped services cannot be used in middleware at all"
+  ]}
+  correctAnswer={1}
+  explanation="Convention-based middleware is instantiated once (like a singleton). Constructor-injected dependencies must be singleton-safe. Scoped services should be injected as parameters of InvokeAsync — ASP.NET Core resolves these from the per-request DI scope automatically, making them safe to use."
+/>
+
+---
+
+<MythBuster
+  myth="IMiddleware is just the same as convention-based middleware with a different interface"
+  truth="The key difference is lifetime and DI. Convention-based middleware is singleton-like — created once at startup. IMiddleware instances are resolved from DI per-request (when registered as Scoped), meaning they can safely take scoped dependencies in their constructor. This makes IMiddleware significantly easier to unit test — you can construct it directly with mock dependencies."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Write custom ASP.NET Core middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write" },
+    { label: "Factory-based middleware activation with IMiddleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/extensibility" },
+    { label: "Test ASP.NET Core middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/test/middleware" },
+  ]}
+/>

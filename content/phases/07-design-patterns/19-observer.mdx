@@ -1,24 +1,322 @@
 ---
-title: "Observer"
+title: "Observer — Events, IObservable<T>, and Reactive"
 slug: "observer"
 order: 19
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["observer", "behavioral", "events", "IObservable", "reactive", "pub/sub", "INotifyPropertyChanged"]
+summary: "Observer defines a one-to-many dependency — when one object changes state, all dependents are notified. C# events, IObservable<T>, and domain events all implement this pattern."
+docsLinks:
+  - label: "Events (C# programming guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/events-overview"
+  - label: "IObservable<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.iobservable-1"
+  - label: "INotifyPropertyChanged"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.componentmodel.inotifypropertychanged"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Keeping Dependents in Sync
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When an order is placed, multiple parts of your system need to react: send a confirmation email, update inventory, notify the shipping system, record an analytics event. Hard-coding calls to all of them from the order service creates tight coupling — adding a new reactor requires modifying the publisher.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Observer decouples publishers from subscribers: publishers emit events, subscribers register and handle them independently.
+
+---
+
+## C# Events — Built-in Observer
+
+```csharp
+// Subject (Observable) — raises events
+public class OrderService
+{
+    // Event declaration — the subscription mechanism
+    public event EventHandler<OrderPlacedEventArgs>? OrderPlaced;
+
+    public async Task PlaceOrderAsync(PlaceOrderDto dto)
+    {
+        // ... create the order ...
+        var order = new Order { Id = 42, CustomerId = dto.CustomerId };
+
+        // Notify all observers
+        OnOrderPlaced(new OrderPlacedEventArgs(order));
+    }
+
+    protected virtual void OnOrderPlaced(OrderPlacedEventArgs e)
+        => OrderPlaced?.Invoke(this, e);
+}
+
+public class OrderPlacedEventArgs : EventArgs
+{
+    public Order Order { get; }
+    public OrderPlacedEventArgs(Order order) => Order = order;
+}
+
+// Observers — subscribe to the event
+var orderService = new OrderService();
+
+orderService.OrderPlaced += async (sender, e) =>
+    await emailService.SendConfirmationAsync(e.Order.Id);
+
+orderService.OrderPlaced += async (sender, e) =>
+    await inventoryService.ReserveAsync(e.Order.Items);
+
+orderService.OrderPlaced += (sender, e) =>
+    analytics.Track("order_placed", new { e.Order.Id, e.Order.Total });
+
+// When PlaceOrderAsync runs, ALL subscribers are notified
+```
+
+---
+
+## `INotifyPropertyChanged` — Observer in WPF/MAUI/Blazor
+
+The MVVM pattern uses Observer for UI binding:
+
+```csharp
+// ViewModel implements INotifyPropertyChanged
+public class OrderViewModel : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private string _status = "Pending";
+    public string Status
+    {
+        get => _status;
+        set
+        {
+            if (_status == value) return;
+            _status = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Status)));
+            // UI controls observing this property automatically re-render
+        }
+    }
+}
+
+// Binding in MAUI/Blazor/WPF — UI is the subscriber
+// <Label Text="{Binding Status}" />
+// When Status changes, the label automatically updates — Observer pattern
+```
+
+---
+
+## `IObservable<T>` — Push-Based Reactive Streams
+
+`IObservable<T>` is the formal Observer interface in the BCL. Reactive Extensions (Rx.NET) builds on it:
+
+```csharp
+// IObservable<T> = subject that pushes data (producer)
+// IObserver<T>   = subscriber that receives data (consumer)
+
+public interface IObservable<out T>
+{
+    IDisposable Subscribe(IObserver<T> observer);
+}
+
+public interface IObserver<in T>
+{
+    void OnNext(T value);      // new item
+    void OnError(Exception ex); // error occurred
+    void OnCompleted();         // stream ended
+}
+
+// Using System.Reactive (Rx.NET)
+// Real-time stock price stream
+IObservable<decimal> priceStream = Observable.Interval(TimeSpan.FromSeconds(1))
+    .Select(_ => GetCurrentPrice("MSFT"));
+
+// Subscriber — process only significant changes
+IDisposable subscription = priceStream
+    .DistinctUntilChanged()              // skip unchanged prices
+    .Where(price => price > 400m)        // only prices above $400
+    .Buffer(TimeSpan.FromMinutes(1))     // batch into 1-minute windows
+    .Subscribe(
+        prices => Console.WriteLine($"High price window: {prices.Max():C}"),
+        error  => Console.WriteLine($"Stream error: {error.Message}"),
+        ()     => Console.WriteLine("Stream completed"));
+
+// Later — unsubscribe
+subscription.Dispose();
+```
+
+---
+
+## Domain Events — Observer for DDD
+
+In Domain-Driven Design, domain events use Observer to decouple domain logic from side effects:
+
+```csharp
+// Domain event
+public record OrderPlacedDomainEvent(Order Order) : INotification;
+
+// Domain entity raises events
+public class Order
+{
+    private readonly List<INotification> _domainEvents = new();
+    public IReadOnlyList<INotification> DomainEvents => _domainEvents;
+
+    public void Place()
+    {
+        Status = "Placed";
+        _domainEvents.Add(new OrderPlacedDomainEvent(this));
+    }
+
+    public void ClearDomainEvents() => _domainEvents.Clear();
+}
+
+// Infrastructure dispatches events after SaveChanges
+public class AppDbContext : DbContext
+{
+    private readonly IMediator _mediator;
+
+    public override async Task<int> SaveChangesAsync(CancellationToken ct = default)
+    {
+        int result = await base.SaveChangesAsync(ct);
+
+        // Dispatch domain events after successful persist
+        var events = ChangeTracker.Entries<Order>()
+            .SelectMany(e => e.Entity.DomainEvents)
+            .ToList();
+
+        foreach (var evt in events)
+            await _mediator.Publish(evt, ct);
+
+        return result;
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  title="Observer Implementations in C#"
+  headers={["Mechanism", "Push/Pull", "Unsubscribe", "Error Handling", "Use When"]}
+  rows={[
+    ["C# events", "Push", "event -= handler", "Try/catch in handler", "Simple UI/domain events"],
+    ["IObservable<T> (Rx.NET)", "Push", "subscription.Dispose()", "OnError callback", "Complex event transformations, streaming"],
+    ["MediatR Publish", "Push", "N/A (fire-and-forget)", "Handler throws", "Domain events, decoupled cross-service"],
+    ["INotifyPropertyChanged", "Push", "Automatic (weak ref in XAML)", "N/A", "UI data binding (MVVM)"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/observer/challenge-1"
+  title="Event Memory Leak"
+  description="This code has a classic C# event memory leak. What is the problem?"
+  code={`public class EventAggregator
+{
+    public event EventHandler<DataChangedArgs>? DataChanged;
+
+    public void RaiseDataChanged(DataChangedArgs args)
+        => DataChanged?.Invoke(this, args);
+}
+
+// Long-lived singleton
+var aggregator = new EventAggregator();
+
+// Short-lived views — created and destroyed frequently
+for (int i = 0; i < 1000; i++)
+{
+    var view = new DataView(aggregator); // subscribes in constructor
+    // view goes out of scope here — but is it garbage collected?
+}
+
+public class DataView
+{
+    public DataView(EventAggregator agg)
+    {
+        agg.DataChanged += OnDataChanged; // subscribe
+    }
+
+    private void OnDataChanged(object? sender, DataChangedArgs e)
+    {
+        Console.WriteLine("Data changed!");
+    }
+}`}
+  options={[
+    "No leak — the GC automatically cleans up unused event handlers",
+    "Memory leak — EventAggregator holds a reference to each DataView via the event delegate, preventing GC",
+    "Memory leak — DataView holds a reference to EventAggregator preventing GC of the aggregator",
+    "Stack overflow — 1000 subscriptions overflow the event handler list"
+  ]}
+  correctAnswer={1}
+  explanation="Classic event memory leak: the EventAggregator's DataChanged event holds a delegate that contains a reference to the DataView instance. As long as EventAggregator is alive (singleton), it keeps all 1000 DataView instances alive even though they're 'out of scope.' Fix: implement IDisposable in DataView and call agg.DataChanged -= OnDataChanged in Dispose(), ensuring unsubscription when the view is no longer needed."
+/>
+
+---
+
+<Callout type="senior">
+**Weak Events — Preventing Leaks Without Manual Unsubscription**
+
+WPF and MAUI provide WeakEventManager to break the strong reference chain:
+
+```csharp
+// WeakEventManager holds weak references to subscribers
+// The subscriber can be GC'd even while subscribed
+WeakEventManager<EventAggregator, DataChangedArgs>.AddHandler(
+    aggregator,
+    nameof(EventAggregator.DataChanged),
+    OnDataChanged);
+
+// Rx.NET approach — composition makes unsubscription automatic
+// Using .TakeUntil() to automatically unsubscribe when a signal fires
+var viewDestroyed = new Subject<Unit>();
+
+Observable.FromEventPattern<DataChangedArgs>(
+    h => aggregator.DataChanged += h,
+    h => aggregator.DataChanged -= h)
+    .TakeUntil(viewDestroyed) // auto-unsubscribe when view is destroyed
+    .Subscribe(e => Console.WriteLine("Data changed"));
+
+// When view is destroyed:
+viewDestroyed.OnNext(Unit.Default); // all subscriptions auto-cleaned up
+
+// The IDisposable pattern is the safest:
+public class DataView : IDisposable
+{
+    private readonly EventAggregator _agg;
+
+    public DataView(EventAggregator agg)
+    {
+        _agg = agg;
+        _agg.DataChanged += OnDataChanged;
+    }
+
+    private void OnDataChanged(object? s, DataChangedArgs e) { /* ... */ }
+
+    public void Dispose() => _agg.DataChanged -= OnDataChanged;
+}
+```
+
+**Interview talking point**: Event memory leaks are one of the most common C# bugs in long-running applications. Always unsubscribe in Dispose() or use weak event patterns.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/observer/quiz-1"
+  question="What is the key difference between IObservable<T> and C# events for the Observer pattern?"
+  options={[
+    "IObservable<T> is push-based; events are pull-based",
+    "IObservable<T> supports completion (OnCompleted) and error (OnError) signals, and supports LINQ-like composition; events are simpler but lack these capabilities",
+    "Events are type-safe; IObservable<T> uses object",
+    "IObservable<T> can only be used with Rx.NET library"
+  ]}
+  correctAnswer={1}
+  explanation="The key differences: IObservable<T> has three signals (OnNext, OnError, OnCompleted) — events only have OnNext-equivalent. IObservable<T> supports composition (Where, Select, Buffer, Merge, throttling) via Rx.NET operators; events require manual composition. IObservable<T> can represent finite sequences that complete; events have no completion signal. Events are simpler but IObservable<T> is more powerful for complex asynchronous event streams. Both are strongly typed."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Events in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/events-overview" },
+    { label: "IObservable<T> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.iobservable-1" },
+    { label: "INotifyPropertyChanged Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.componentmodel.inotifypropertychanged" },
+    { label: "Reactive Extensions for .NET (Rx.NET)", url: "https://github.com/dotnet/reactive" },
+  ]}
+/>

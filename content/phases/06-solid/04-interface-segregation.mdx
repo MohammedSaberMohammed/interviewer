@@ -3,22 +3,296 @@ title: "Interface Segregation Principle"
 slug: "interface-segregation"
 order: 4
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["SOLID", "ISP", "interfaces", "fat interface", "client segregation", "design principles"]
+summary: "Clients should not be forced to depend on methods they do not use — learn to spot fat interfaces, split them into focused role interfaces, and see how .NET's BCL applies ISP throughout."
+docsLinks:
+  - label: "Interfaces (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces"
+  - label: "Default interface methods (C# 8.0)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-8#default-interface-methods"
+  - label: "IReadOnlyCollection<T> — ISP-focused BCL interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlycollection-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Interface Segregation Principle?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Robert C. Martin's definition: **clients should not be forced to depend on interfaces they do not use.**
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+A "fat" or "polluted" interface forces implementing classes to provide methods they don't need, typically resulting in empty implementations or `throw new NotImplementedException()`. ISP says: prefer many small, focused interfaces over one large, general-purpose interface.
+
+---
+
+## The Fat Interface Problem
+
+```csharp
+// BAD: One interface that tries to cover everything
+public interface IWorker
+{
+    void Work();
+    void TakeBreak();
+    void AttendMeeting();
+    void SubmitTimesheet();
+    void ManageTeam();      // Not all workers manage teams!
+    void ApproveExpenses(); // Not all workers approve expenses!
+}
+
+// RobotWorker must implement methods that make no sense for it
+public class RobotWorker : IWorker
+{
+    public void Work() { /* does actual work */ }
+    public void TakeBreak() { /* robots don't take breaks */ }
+    public void AttendMeeting() { /* robots don't attend meetings */ }
+    public void SubmitTimesheet() { /* robots don't have timesheets */ }
+
+    // These are forced stubs — the interface demands them
+    public void ManageTeam()      => throw new NotImplementedException();
+    public void ApproveExpenses() => throw new NotImplementedException();
+}
+
+// ContractorWorker also suffers
+public class ContractorWorker : IWorker
+{
+    public void Work() { /* works */ }
+    public void TakeBreak() { /* takes breaks */ }
+    public void AttendMeeting() { /* attends meetings */ }
+    public void SubmitTimesheet() { /* submits timesheet */ }
+
+    // Contractors don't manage teams or approve expenses
+    public void ManageTeam()      => throw new NotImplementedException();
+    public void ApproveExpenses() => throw new NotImplementedException();
+}
+```
+
+The forcing problem: any code that depends on `IWorker` is coupled to all six methods, even if it only ever calls `Work()`. When `ManageTeam()` changes its signature, every `IWorker` implementor must be recompiled — including `RobotWorker`, which never wanted `ManageTeam()` in the first place.
+
+---
+
+## The Refactored Version: Role Interfaces
+
+```csharp
+// GOOD: Each interface represents a single capability (role)
+
+public interface IWorker
+{
+    void Work();
+}
+
+public interface IBreakTaker
+{
+    void TakeBreak();
+}
+
+public interface IMeetingAttendee
+{
+    void AttendMeeting();
+}
+
+public interface ITimesheetSubmitter
+{
+    void SubmitTimesheet();
+}
+
+public interface ITeamManager
+{
+    void ManageTeam();
+}
+
+public interface IExpenseApprover
+{
+    void ApproveExpenses();
+}
+
+// Each class implements only what it actually supports
+public class RobotWorker : IWorker
+{
+    public void Work() { /* actual work */ }
+    // No forced stubs — robots just don't implement the other interfaces
+}
+
+public class ContractorWorker : IWorker, IBreakTaker, IMeetingAttendee, ITimesheetSubmitter
+{
+    public void Work()            { /* works */ }
+    public void TakeBreak()       { /* breaks */ }
+    public void AttendMeeting()   { /* meetings */ }
+    public void SubmitTimesheet() { /* timesheet */ }
+}
+
+public class ManagerWorker : IWorker, IBreakTaker, IMeetingAttendee,
+                              ITimesheetSubmitter, ITeamManager, IExpenseApprover
+{
+    public void Work()            { /* works */ }
+    public void TakeBreak()       { /* breaks */ }
+    public void AttendMeeting()   { /* meetings */ }
+    public void SubmitTimesheet() { /* timesheet */ }
+    public void ManageTeam()      { /* manages team */ }
+    public void ApproveExpenses() { /* approves expenses */ }
+}
+
+// Callers depend only on what they need
+public class WorkScheduler
+{
+    // Only needs IWorker — doesn't care about meetings or expenses
+    public void ScheduleWork(IWorker worker) => worker.Work();
+}
+
+public class MeetingOrganizer
+{
+    // Only needs IMeetingAttendee
+    public void Schedule(IEnumerable<IMeetingAttendee> attendees)
+    {
+        foreach (var a in attendees) a.AttendMeeting();
+    }
+}
+```
+
+---
+
+## ISP in the .NET BCL
+
+The .NET BCL is a masterclass in ISP. Instead of one giant `ICollection` that does everything, there is a carefully layered hierarchy:
+
+```csharp
+// IEnumerable<T>     — only: iterate
+// IReadOnlyCollection<T> — iterate + Count
+// IReadOnlyList<T>   — iterate + Count + index access
+// ICollection<T>     — iterate + Count + Add/Remove
+// IList<T>           — all of the above + index access + Insert/RemoveAt
+
+// Each client depends only on what it needs:
+
+// A method that only reads items — use the narrowest interface
+void PrintAll<T>(IEnumerable<T> items)
+{
+    foreach (var item in items) Console.WriteLine(item);
+}
+
+// A method that needs the count too
+void ProcessBatch<T>(IReadOnlyCollection<T> batch)
+{
+    Console.WriteLine($"Processing {batch.Count} items");
+    foreach (var item in batch) Process(item);
+}
+
+// A method that needs to add items
+void Populate<T>(ICollection<T> target, IEnumerable<T> source)
+{
+    foreach (var item in source) target.Add(item);
+}
+
+static void Process<T>(T item) { }
+```
+
+By depending on `IEnumerable<T>` instead of `List<T>`, `PrintAll` works with arrays, lists, queues, lazy sequences, and anything else that implements `IEnumerable<T>` — without being coupled to mutation methods it doesn't use.
+
+---
+
+<Callout type="senior">
+**Senior Insight: ISP and Testability**
+
+ISP has a direct impact on testability. Fat interfaces are painful to mock:
+
+```csharp
+// BAD: Mocking IWorker forces you to set up 6 methods
+// even when your test only exercises Work()
+var mockWorker = new Mock<IWorker>();
+mockWorker.Setup(w => w.Work()); // the only thing you care about
+mockWorker.Setup(w => w.TakeBreak()); // forced by the interface
+mockWorker.Setup(w => w.AttendMeeting()); // forced
+// ... and so on
+
+// GOOD: Mocking IWorker (the segregated version) is trivial
+var mockWorker = new Mock<IWorker>();
+mockWorker.Setup(w => w.Work());
+// Done — only one method to care about
+```
+
+In practice, when you find yourself stubbing out five methods in a mock setup to test one behavior, the interface is probably violating ISP.
+
+C# 8 default interface methods provide an alternative for backward compatibility: you can add a new method to an existing interface with a default implementation, so existing implementors aren't broken. This is useful for evolving interfaces in published libraries, but it is not a substitute for ISP — it is a migration tool. The interface is still fat from the client's perspective.
 </Callout>
+
+---
+
+<MythBuster
+  myth="ISP means every interface should have exactly one method"
+  reality="ISP means interfaces should be cohesive around a single client's needs — not that they must be minimal. IDisposable has one method and that is correct. IComparer<T> has one method and that is correct. But ICollection<T> has many methods and is also fine because all of those methods represent a single coherent capability: mutable collection management. The smell ISP targets is when an interface forces implementors to provide methods that are irrelevant to their core purpose."
+/>
+
+---
+
+## Code Challenge: Split the Fat Interface
+
+<CodeChallenge
+  id="06-solid/interface-segregation/challenge-1"
+  title="How Many Interfaces Should This Become?"
+  description="IMultiFunctionDevice has methods that not all devices support. How many focused interfaces should it be split into?"
+  code={`public interface IMultiFunctionDevice
+{
+    void Print(Document doc);
+    void Scan(Document doc);
+    void Fax(Document doc);
+    void Copy(Document doc);
+}
+
+// BasicPrinter only prints — forced to stub the rest
+public class BasicPrinter : IMultiFunctionDevice
+{
+    public void Print(Document doc) { /* prints */ }
+    public void Scan(Document doc)  => throw new NotImplementedException();
+    public void Fax(Document doc)   => throw new NotImplementedException();
+    public void Copy(Document doc)  => throw new NotImplementedException();
+}`}
+  options={[
+    "1 — keep it as is, just add an IsSupported() check per operation",
+    "2 — IPrinter and IScanner (fax and copy are rarely needed)",
+    "4 — IPrinter, IScanner, IFax, ICopier with optional combination interfaces",
+    "8 — one interface per method, with one combined IAllInOne interface"
+  ]}
+  correctAnswer={2}
+  explanation="Splitting into 4 focused interfaces (IPrinter, IScanner, IFax, ICopier) is the textbook ISP answer. BasicPrinter implements only IPrinter. A scanner-printer implements IPrinter and IScanner. A full all-in-one implements all four. You can also add a combined interface IAllInOnePrinter : IPrinter, IScanner, IFax, ICopier for convenience without violating ISP — it is composed from focused interfaces rather than replacing them. Option 1 (IsSupported check) is an anti-pattern that pushes runtime failures into code that should have been caught at the interface level."
+/>
+
+---
+
+<Quiz
+  id="06-solid/interface-segregation/quiz-1"
+  questions={[
+    {
+      question: "What is the strongest signal that an interface violates ISP?",
+      options: [
+        "The interface has more than 5 methods",
+        "Implementors frequently use throw new NotImplementedException() for some methods",
+        "The interface is implemented by more than 3 classes",
+        "The interface name ends in 'Manager'"
+      ],
+      correctAnswer: 1,
+      explanation: "throw new NotImplementedException() in an interface implementation is the clearest ISP violation signal — it means the implementor was forced to include a capability it does not actually have. Method count alone is not the issue; a cohesive interface with many related methods is fine. NotImplementedException stubs mean the interface's contract is broader than the implementor's actual capability."
+    },
+    {
+      question: "Why does depending on IEnumerable\<T\> instead of List\<T\> in method parameters follow ISP?",
+      options: [
+        "IEnumerable<T> is faster than List<T>",
+        "The method only depends on the iteration capability it actually needs, not all mutation methods",
+        "List<T> violates LSP",
+        "IEnumerable<T> allows LINQ queries"
+      ],
+      correctAnswer: 1,
+      explanation: "ISP says clients should not depend on methods they do not use. A method that only reads a sequence does not need Add(), Remove(), Insert(), or any other mutation methods from List\<T\>. By depending on IEnumerable\<T\>, the method signals exactly what capability it needs, and callers can pass any sequence type — not just List\<T\>. This is also why the BCL has IReadOnlyList\<T\> and IReadOnlyCollection\<T\>: narrower contracts for read-only consumers."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Interfaces (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/interfaces" },
+    { label: "Default interface methods (C# 8.0)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-8#default-interface-methods" },
+    { label: "IReadOnlyCollection\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlycollection-1" },
+    { label: "IReadOnlyList\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlylist-1" },
+  ]}
+/>

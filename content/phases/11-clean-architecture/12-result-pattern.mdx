@@ -1,24 +1,295 @@
 ---
-title: "Result Pattern"
+title: "Result<T,E>: Returning Errors as Values"
 slug: "result-pattern"
 order: 12
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["result pattern", "error handling", "OneOf", "FluentResults", "railway-oriented", "exceptions", "domain errors"]
+summary: "Exceptions are for exceptional conditions. Business rule violations are expected outcomes — model them as return values with Result<T,E> and keep your control flow explicit."
+docsLinks:
+  - label: "Exception handling best practices (.NET)"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions"
+  - label: "Discriminated unions in C# (C# feature proposals)"
+    url: "https://github.com/dotnet/csharplang/issues/113"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem with Exceptions for Business Errors
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Exceptions are the correct mechanism for **unexpected runtime failures** (network down, disk full, null reference). They are problematic for **expected business outcomes** (user not found, validation failed, insufficient credit):
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Using exceptions for business logic — problematic
+public async Task<Order> ConfirmOrderAsync(Guid orderId)
+{
+    var order = await _orders.GetByIdAsync(new OrderId(orderId))
+        ?? throw new NotFoundException("Order not found."); // control flow via exception
+
+    if (order.Status == OrderStatus.Confirmed)
+        throw new BusinessRuleException("Order is already confirmed."); // expected case!
+
+    order.Confirm();
+    await _unitOfWork.SaveChangesAsync();
+    return order;
+}
+
+// Caller must know to catch both exception types
+try
+{
+    var order = await _orderService.ConfirmOrderAsync(id);
+}
+catch (NotFoundException ex) { return NotFound(ex.Message); }
+catch (BusinessRuleException ex) { return BadRequest(ex.Message); }
+catch (Exception ex) { return StatusCode(500); }
+```
+
+Problems:
+- Control flow via exceptions is expensive (stack unwinding) and invisible in signatures
+- The method signature `Task<Order>` doesn't tell callers it can fail with known errors
+- Callers must know which exception types to catch (undiscoverable from the type)
+- Every layer must either catch and rethrow or let exceptions bubble up
+
+---
+
+## Defining a Result Type
+
+```csharp
+// Application/Common/Result.cs
+public sealed class Result
+{
+    public bool IsSuccess { get; }
+    public bool IsFailure => !IsSuccess;
+    public string Error { get; }
+
+    private Result(bool isSuccess, string error)
+    {
+        IsSuccess = isSuccess;
+        Error = error;
+    }
+
+    public static Result Success() => new(true, string.Empty);
+    public static Result Failure(string error) => new(false, error);
+
+    // Implicit conversions for convenience
+    public static implicit operator Result(string error) => Failure(error);
+}
+
+// Application/Common/Result.generic.cs
+public sealed class Result<T>
+{
+    public bool IsSuccess { get; }
+    public bool IsFailure => !IsSuccess;
+    public T Value { get; }
+    public string Error { get; }
+
+    private Result(T value, bool isSuccess, string error)
+    {
+        Value = value;
+        IsSuccess = isSuccess;
+        Error = error;
+    }
+
+    public static Result<T> Success(T value) => new(value, true, string.Empty);
+    public static Result<T> Failure(string error) => new(default!, false, error);
+
+    // Map transforms the value if successful
+    public Result<TOut> Map<TOut>(Func<T, TOut> mapper)
+        => IsSuccess ? Result<TOut>.Success(mapper(Value)) : Result<TOut>.Failure(Error);
+
+    // Bind chains Result-returning operations
+    public Result<TOut> Bind<TOut>(Func<T, Result<TOut>> binder)
+        => IsSuccess ? binder(Value) : Result<TOut>.Failure(Error);
+
+    public static implicit operator Result<T>(T value) => Success(value);
+    public static implicit operator Result<T>(string error) => Failure(error);
+}
+```
+
+---
+
+## Using Result in Handlers
+
+```csharp
+// Application/Orders/Commands/ConfirmOrder/ConfirmOrderHandler.cs
+public sealed class ConfirmOrderHandler
+    : IRequestHandler<ConfirmOrderCommand, Result<OrderConfirmedDto>>
+{
+    private readonly IOrderRepository _orders;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public ConfirmOrderHandler(IOrderRepository orders, IUnitOfWork unitOfWork)
+    {
+        _orders = orders;
+        _unitOfWork = unitOfWork;
+    }
+
+    public async Task<Result<OrderConfirmedDto>> Handle(
+        ConfirmOrderCommand cmd, CancellationToken ct)
+    {
+        var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+
+        if (order is null)
+            return Result<OrderConfirmedDto>.Failure($"Order {cmd.OrderId} not found.");
+
+        if (order.CustomerId.Value != cmd.RequestingCustomerId)
+            return Result<OrderConfirmedDto>.Failure("Access denied.");
+
+        try
+        {
+            order.Confirm(); // may throw DomainException for business rules
+        }
+        catch (DomainException ex)
+        {
+            return Result<OrderConfirmedDto>.Failure(ex.Message);
+        }
+
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result<OrderConfirmedDto>.Success(new OrderConfirmedDto(
+            order.Id.Value,
+            order.Total.Amount,
+            order.Total.Currency));
+    }
+}
+
+// Presentation/Controllers/OrdersController.cs
+[HttpPost("{id:guid}/confirm")]
+public async Task<IActionResult> Confirm(Guid id, CancellationToken ct)
+{
+    var result = await _sender.Send(new ConfirmOrderCommand(id, UserId), ct);
+
+    return result.IsSuccess
+        ? Ok(result.Value)
+        : result.Error.StartsWith("Access denied")
+            ? Forbid()
+            : BadRequest(new { error = result.Error });
+}
+```
+
+---
+
+## Typed Error Results with OneOf
+
+For richer error discrimination, use typed errors instead of strings:
+
+```csharp
+// Application/Common/Errors/
+public sealed record NotFoundError(string EntityName, object Id)
+{
+    public string Message => $"{EntityName} with id '{Id}' was not found.";
+}
+
+public sealed record ValidationError(IReadOnlyList<string> Errors);
+public sealed record ForbiddenError(string Reason);
+public sealed record ConflictError(string Message);
+
+// Using OneOf for discriminated union
+using OneOf;
+
+public sealed class ConfirmOrderHandler
+    : IRequestHandler<ConfirmOrderCommand, OneOf<OrderConfirmedDto, NotFoundError, ForbiddenError, ConflictError>>
+{
+    // ...
+
+    public async Task<OneOf<OrderConfirmedDto, NotFoundError, ForbiddenError, ConflictError>> Handle(
+        ConfirmOrderCommand cmd, CancellationToken ct)
+    {
+        var order = await _orders.GetByIdAsync(new OrderId(cmd.OrderId), ct);
+
+        if (order is null)
+            return new NotFoundError("Order", cmd.OrderId);
+
+        if (order.CustomerId.Value != cmd.RequestingCustomerId)
+            return new ForbiddenError("Order belongs to a different customer.");
+
+        if (order.Status == OrderStatus.Confirmed)
+            return new ConflictError("Order is already confirmed.");
+
+        order.Confirm();
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return new OrderConfirmedDto(order.Id.Value, order.Total.Amount, order.Total.Currency);
+    }
+}
+
+// Controller uses OneOf's Match for exhaustive handling
+[HttpPost("{id:guid}/confirm")]
+public async Task<IActionResult> Confirm(Guid id, CancellationToken ct)
+{
+    var result = await _sender.Send(new ConfirmOrderCommand(id, UserId), ct);
+
+    return result.Match<IActionResult>(
+        dto => Ok(dto),
+        notFound => NotFound(new { error = notFound.Message }),
+        forbidden => Forbid(),
+        conflict => Conflict(new { error = conflict.Message }));
+}
+```
+
+---
+
+## FluentResults: A Production-Grade Library
+
+```csharp
+// Using FluentResults NuGet package
+using FluentResults;
+
+public async Task<Result<Order>> GetOrderAsync(OrderId id, CancellationToken ct)
+{
+    var order = await _orders.GetByIdAsync(id, ct);
+
+    if (order is null)
+        return Result.Fail<Order>(new NotFoundError("Order", id.Value));
+
+    return Result.Ok(order);
+}
+
+// Chain results with Map and Bind
+var result = await GetOrderAsync(orderId, ct)
+    .Bind(order => ValidateCreditAsync(order, ct))
+    .Map(order => new OrderDto(order));
+
+if (result.IsFailed)
+    foreach (var error in result.Errors)
+        _logger.LogError("Error: {Message}", error.Message);
+```
+
+---
+
+<ComparisonTable
+  headers={["Approach", "Pros", "Cons", "Best for"]}
+  rows={[
+    ["Throw exceptions", "Simple to write, familiar", "Invisible in signatures, expensive, undiscoverable errors", "Truly unexpected failures (infrastructure errors)"],
+    ["Result\<T\> with string error", "Simple, no dependencies", "String errors lose type info; callers can't switch on error kind", "Simple applications, small teams"],
+    ["Result\<T\> with typed errors", "Type-safe error handling, discoverable", "More ceremony, more types to define", "Domain-heavy apps where error kinds matter"],
+    ["OneOf\<T, E1, E2\>", "Exhaustive handling enforced at compile time", "Verbose generic signatures, requires OneOf package", "Complex use cases with multiple known error types"],
+    ["FluentResults", "Rich API, error chaining, error metadata", "External dependency, more complex than simple Result", "Large apps needing sophisticated error composition"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Exceptions and Results Are Complementary, Not Alternatives**
+
+The common mistake is going all-in on one or the other. The correct approach:
+
+- Use **exceptions** for infrastructure failures (DB connection refused, HTTP timeout, serialization failure). These are unexpected and should propagate to a global error handler that logs them and returns 500.
+- Use **Result types** for **expected business outcomes** that callers must handle (not found, validation failure, business rule violation, concurrent conflict). These are normal, expected states that the calling layer must be able to distinguish.
+
+The signal: if you're writing `catch (SomeException)` in a controller and returning a different HTTP status code based on the exception type, you've found a place where a Result type belongs. The exception is carrying information that should be in the return type.
+
+In a Clean Architecture app: domain exceptions (DomainException subclasses) raised inside aggregate methods are typically caught at the handler boundary, converted to Result failures, and returned as values. Infrastructure exceptions propagate up to global middleware.
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Exception handling best practices (.NET)", url: "https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions" },
+    { label: "FluentResults library", url: "https://github.com/altmann/FluentResults" },
+    { label: "OneOf library — discriminated unions for C#", url: "https://github.com/mcintyre321/OneOf" },
+  ]}
+/>

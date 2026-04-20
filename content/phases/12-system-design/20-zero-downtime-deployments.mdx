@@ -1,24 +1,338 @@
 ---
-title: "Zero-Downtime Deployments"
+title: "Zero-Downtime Deployments: Blue-Green, Canary, Rolling, Feature Flags"
 slug: "zero-downtime-deployments"
 order: 20
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["zero-downtime", "blue-green deployment", "canary release", "rolling deployment", "feature flags", "deployment strategies", "Azure", "system design"]
+summary: "Zero-downtime deployments require a strategy — blue-green, canary, and rolling each make different trade-offs on risk, rollback speed, and infrastructure cost that you must articulate in a system design interview."
+docsLinks:
+  - label: "Azure Deployment Slots — swap with no downtime"
+    url: "https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots"
+  - label: "Azure Kubernetes Service — rolling updates"
+    url: "https://learn.microsoft.com/en-us/azure/aks/tutorial-kubernetes-deploy-application"
+  - label: "Azure App Configuration — feature flags"
+    url: "https://learn.microsoft.com/en-us/azure/azure-app-configuration/concept-feature-management"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Zero-Downtime Matters
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Downtime during deployments has direct costs:
+- **Revenue loss**: Checkout downtime = lost sales
+- **SLA violation**: 99.9% SLA allows only 8.7 hours downtime per year — a 10-minute deployment window consumes 1.9% of the annual budget
+- **User trust**: Planned maintenance windows are user experience failures
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The goal: deploy new code without users experiencing errors, increased latency, or service unavailability.
+
+---
+
+## Strategy 1: Blue-Green Deployment
+
+Maintain two identical production environments — **Blue** (current version) and **Green** (new version). Deploy to Green, validate, then switch all traffic instantly.
+
+```
+Before deploy:           During validation:         After swap:
+Users ──► [Blue v1]      Users ──► [Blue v1]        Users ──► [Green v2]
+          [Green v2] ← testing                                [Blue v1] ← standby
+```
+
+**Rollback**: Switch traffic back to Blue. Near-instant.
+
+```csharp
+// Azure App Service Deployment Slots
+// az cli commands (from CI/CD pipeline)
+
+// 1. Deploy to staging slot (Green)
+// az webapp deployment source config-zip --slot staging ...
+
+// 2. Warm up staging slot — run smoke tests
+// curl https://myapp-staging.azurewebsites.net/health/ready
+
+// 3. Swap slots — atomic traffic switch
+// az webapp deployment slot swap --slot staging --target-slot production
+
+// In .NET — detect slot environment for slot-specific config
+var isStaging = builder.Configuration["ASPNETCORE_ENVIRONMENT"] == "Staging"
+    || Environment.GetEnvironmentVariable("WEBSITE_SLOT_NAME") == "staging";
+```
+
+**Trade-offs**:
+- Instant cutover — all users switch to v2 simultaneously
+- 2× infrastructure cost (two full environments)
+- Database migrations must be backward compatible with both v1 and v2 during the window
+- Connection draining must be configured to finish in-flight requests on Blue before swap
+
+---
+
+## Strategy 2: Canary Release
+
+Route a **small percentage** of traffic (5–10%) to the new version. Monitor metrics. Gradually increase traffic percentage if healthy.
+
+```
+Phase 1:  95% → v1,  5% → v2   (monitor error rate)
+Phase 2:  80% → v1, 20% → v2   (looks good)
+Phase 3:  50% → v1, 50% → v2
+Phase 4:   0% → v1, 100% → v2  (complete)
+```
+
+**Rollback**: Route 100% back to v1. Canary users may have had errors but the blast radius was small.
+
+```csharp
+// Azure Front Door — weighted routing for canary releases
+// appsettings equivalent via ARM/Bicep:
+{
+  "origins": [
+    { "name": "v1-backend", "weight": 95, "priority": 1, "address": "v1.app.com" },
+    { "name": "v2-backend", "weight": 5,  "priority": 1, "address": "v2.app.com" }
+  ]
+}
+
+// YARP — canary with weighted destinations
+{
+  "Clusters": {
+    "app-cluster": {
+      "LoadBalancingPolicy": "PowerOfTwoChoices",
+      "Destinations": {
+        "v1": { "Address": "http://app-v1:8080", "Metadata": { "Weight": "95" } },
+        "v2": { "Address": "http://app-v2:8080", "Metadata": { "Weight": "5" } }
+      }
+    }
+  }
+}
+```
+
+**Automating canary gates**:
+```csharp
+// Automated canary analysis using Azure Monitor metrics
+// Promoted only if error rate < 1% on v2 traffic
+public class CanaryGateService
+{
+    private readonly MetricsQueryClient _metricsClient;
+
+    public async Task<bool> ShouldPromoteAsync(string canaryResourceId, TimeSpan window)
+    {
+        var endTime = DateTimeOffset.UtcNow;
+        var startTime = endTime - window;
+
+        var result = await _metricsClient.QueryResourceAsync(
+            canaryResourceId,
+            new[] { "requests/failedCount", "requests/count" },
+            new MetricsQueryOptions { TimeRange = new QueryTimeRange(startTime, endTime) }
+        );
+
+        var failed = result.Value.Metrics.FirstOrDefault(m => m.Name == "requests/failedCount")
+            ?.TimeSeries.Sum(ts => ts.Data.Sum(d => d.Total ?? 0)) ?? 0;
+        var total = result.Value.Metrics.FirstOrDefault(m => m.Name == "requests/count")
+            ?.TimeSeries.Sum(ts => ts.Data.Sum(d => d.Total ?? 0)) ?? 1;
+
+        var errorRate = failed / total;
+        return errorRate < 0.01; // promote if error rate < 1%
+    }
+}
+```
+
+---
+
+## Strategy 3: Rolling Deployment
+
+Replace instances one (or a few) at a time. At any point, some instances run v1 and some run v2. Kubernetes supports this natively.
+
+```
+Step 1: [v1][v1][v1][v1] → [v2][v1][v1][v1]  (1 replaced)
+Step 2: [v2][v1][v1][v1] → [v2][v2][v1][v1]  (2 replaced)
+Step 3: [v2][v2][v2][v1]                       (3 replaced)
+Step 4: [v2][v2][v2][v2]                       (complete)
+```
+
+```yaml
+# Kubernetes Deployment — rolling update configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0    # never remove a pod without a replacement ready
+      maxSurge: 1          # allow 1 extra pod during rollout (total = 5 temporarily)
+  template:
+    spec:
+      containers:
+        - name: order-service
+          image: myregistry.azurecr.io/order-service:v2
+      # Graceful termination — finish in-flight requests
+      terminationGracePeriodSeconds: 30
+```
+
+```csharp
+// Handle graceful shutdown in .NET — finish in-flight requests before termination
+builder.Services.AddHostedService<GracefulShutdownService>();
+
+public class GracefulShutdownService : IHostedService
+{
+    public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
+
+    public async Task StopAsync(CancellationToken ct)
+    {
+        // Allow in-flight requests to complete — up to 25 seconds
+        // (terminationGracePeriodSeconds = 30, minus 5 for SIGTERM propagation)
+        await Task.Delay(TimeSpan.FromSeconds(25), CancellationToken.None);
+    }
+}
+
+// ASP.NET Core — automatically handles SIGTERM gracefully
+// Stops accepting new requests, waits for current ones to finish
+```
+
+---
+
+## Strategy 4: Feature Flags (Decoupled Deployments)
+
+Feature flags separate **code deployment** from **feature release**. Deploy code anytime; toggle the feature on/off independently.
+
+```csharp
+// Azure App Configuration Feature Flags
+// Install: Install-Package Microsoft.Azure.AppConfiguration.AspNetCore
+// Install: Install-Package Microsoft.FeatureManagement.AspNetCore
+
+// Registration
+builder.Configuration.AddAzureAppConfiguration(options =>
+{
+    options.Connect(builder.Configuration["AppConfig:ConnectionString"])
+           .UseFeatureFlags(featureOptions =>
+           {
+               featureOptions.CacheExpirationInterval = TimeSpan.FromSeconds(30);
+           });
+});
+
+builder.Services.AddFeatureManagement();
+
+// Usage in a controller
+[ApiController, Route("api/checkout")]
+public class CheckoutController : ControllerBase
+{
+    private readonly IFeatureManager _featureManager;
+
+    [HttpPost]
+    public async Task<IActionResult> Checkout(CheckoutRequest req)
+    {
+        // Gradual rollout — 10% of users see the new checkout flow
+        if (await _featureManager.IsEnabledAsync("NewCheckoutFlow", req.UserId))
+        {
+            return await NewCheckoutFlowAsync(req);
+        }
+
+        return await LegacyCheckoutFlowAsync(req);
+    }
+}
+
+// In appsettings or Azure App Config:
+// { "FeatureManagement": { "NewCheckoutFlow": { "EnabledFor": [
+//   { "Name": "Percentage", "Parameters": { "Value": 10 } }
+// ] } } }
+```
+
+---
+
+## Database Migrations: The Hard Part
+
+Zero-downtime deployments require backward-compatible database migrations. During a rolling or blue-green deployment, v1 and v2 run simultaneously — both must be compatible with the database schema.
+
+```
+Phase 1 — Expand:   Add new column (nullable), v1 ignores it, v2 writes to it
+Phase 2 — Migrate:  Backfill existing rows, deploy v2 fully
+Phase 3 — Contract: Remove old column once v1 is completely retired
+```
+
+```csharp
+// Migration step 1: Add column (backward compatible — nullable, no default required)
+migrationBuilder.AddColumn<string>(
+    name: "phone_number",
+    table: "Users",
+    nullable: true);
+
+// Migration step 2 (next sprint, after v1 is retired):
+// Make column required, add index
+migrationBuilder.AlterColumn<string>(
+    name: "phone_number",
+    table: "Users",
+    nullable: false,
+    defaultValue: "");
+migrationBuilder.CreateIndex("IX_Users_PhoneNumber", "Users", "phone_number");
+```
+
+---
+
+<ComparisonTable
+  headers={["Strategy", "Rollback Speed", "Infrastructure Cost", "Risk to Users", "Best For"]}
+  rows={[
+    ["Blue-Green", "Instant (swap back)", "2× cost during deploy", "All users switch at once", "Low-risk changes, Azure App Service"],
+    ["Canary", "Fast (re-route %)", "Small overhead (canary fleet)", "Minimal (5% of users)", "High-risk changes, gradual confidence building"],
+    ["Rolling", "Slow (roll back pods one by one)", "No extra cost", "Medium (v1/v2 mixed)", "Kubernetes, stateless services, frequent releases"],
+    ["Feature Flags", "Instant (toggle flag off)", "No infrastructure cost", "Configurable (% rollout)", "New features, A/B testing, kill switches"],
+    ["Recreate (stop all, start new)", "N/A (no rollback)", "No extra cost", "Downtime during deploy", "Dev/staging only — not for production"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Feature Flags Are More Than Deployment Safety**
+
+Feature flags unlock several powerful engineering practices:
+
+1. **Dark launching**: Deploy code that runs silently alongside old code. Compare outputs. Find bugs before users see them.
+2. **A/B testing**: Route 50% of users to variant A, 50% to variant B. Measure conversion. Ship the winner.
+3. **Kill switches**: Add a flag to any expensive or risky operation. If something goes wrong in production, flip the flag without a deployment.
+4. **Progressive delivery**: Roll out to internal users first, then beta users, then 1%, then 10%, then 100% — with automatic metric checks at each gate.
+
+The danger: flag debt. After 6 months, a codebase with 50 flags that were never cleaned up becomes unreadable. Establish a flag lifecycle policy: every flag gets a removal date, and the team that created it is responsible for cleaning it up after full rollout.
+
+```csharp
+// Good flag hygiene — mark with cleanup ticket
+[FeatureFlag("NewCheckoutFlow", ExpirationDate = "2025-06-01")]
+// GitHub issue #1234 — remove after full rollout
+if (await _featureManager.IsEnabledAsync("NewCheckoutFlow"))
+{
+    // New path
+}
+```
 </Callout>
+
+---
+
+<MythBuster
+  myth="Blue-green deployment eliminates all deployment risk."
+  reality="Blue-green eliminates downtime risk but not correctness risk. All users switch to v2 simultaneously — if v2 has a data-corrupting bug, 100% of users are affected instantly. Canary releases limit the blast radius. Additionally, blue-green requires backward-compatible database schemas and stateless services (or shared session stores). A session stored in-memory on the blue server is lost when traffic switches to green. Blue-green is a deployment mechanism, not a testing strategy — pair it with comprehensive pre-swap smoke tests."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/zero-downtime-deployments/challenge-1"
+  question="You need to add a NOT NULL column 'shipping_zone' to the Orders table. Orders and OrderService v2 must run simultaneously with v1 during a rolling deployment. What migration sequence prevents downtime?"
+  options={[
+    "Add the column as NOT NULL with a default value in a single migration, deploy v2 simultaneously",
+    "Stop v1, run the migration, then start v2 — brief downtime is unavoidable for schema changes",
+    "Add the column as nullable (expand), deploy v2 which writes to it, backfill existing rows, then in a later release make it NOT NULL (contract)",
+    "Use a separate database for v2 — avoid shared schema between versions"
+  ]}
+  correctAnswer={2}
+  explanation="The expand-migrate-contract pattern is the correct approach. Step 1 (expand): add 'shipping_zone' as a nullable column — v1 ignores it, v2 writes to it. Both versions work against the same schema. Step 2 (migrate): after v2 is fully deployed and v1 is retired, backfill null values for older rows. Step 3 (contract): in a subsequent release, add NOT NULL constraint and index. Adding NOT NULL directly (A) fails if existing rows have no value, and requires v1 and v2 to both handle the column — risky if v1 doesn't know about it. Stopping for maintenance (B) violates zero-downtime. Separate databases per version (D) creates a data split that is extremely difficult to reconcile."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Azure App Service — deployment slots", url: "https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots" },
+    { label: "Azure Kubernetes Service — rolling updates", url: "https://learn.microsoft.com/en-us/azure/aks/tutorial-kubernetes-deploy-application" },
+    { label: "Azure App Configuration — feature flags", url: "https://learn.microsoft.com/en-us/azure/azure-app-configuration/concept-feature-management" },
+    { label: "Microsoft.FeatureManagement — .NET library", url: "https://learn.microsoft.com/en-us/azure/azure-app-configuration/use-feature-flags-dotnet-core" },
+  ]}
+/>

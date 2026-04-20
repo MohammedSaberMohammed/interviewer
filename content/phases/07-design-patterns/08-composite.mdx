@@ -1,24 +1,273 @@
 ---
-title: "Composite"
+title: "Composite — Tree Structures and Uniform Treatment"
 slug: "composite"
 order: 8
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["composite", "structural", "tree", "recursive", "hierarchy", "uniform treatment"]
+summary: "Composite lets you treat individual objects and compositions uniformly — clients don't need to know whether they're dealing with a leaf or a branch."
+docsLinks:
+  - label: "IEnumerable<T> — composable sequences"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "Expression trees in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/expression-trees/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Treating Leaves and Branches Differently
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+File systems are the classic example. A `Folder` contains files and other folders. You want to calculate the total size of anything — file or folder — without checking which type it is:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Without Composite — client must check every type
+long GetSize(object fileSystemEntry)
+{
+    if (fileSystemEntry is File file)
+        return file.Size;
+    else if (fileSystemEntry is Folder folder)
+        return folder.Files.Sum(f => f.Size) + folder.SubFolders.Sum(sf => GetSize(sf));
+    throw new ArgumentException("Unknown type");
+}
+```
+
+Adding a new node type (e.g., `Link`) breaks all clients. Composite solves this.
+
+---
+
+## Structure
+
+```csharp
+// Component — the common interface for leaves and composites
+public interface IFileSystemEntry
+{
+    string Name { get; }
+    long   GetSize();
+    void   Print(int indent = 0);
+}
+
+// Leaf — no children
+public class File : IFileSystemEntry
+{
+    public string Name { get; }
+    public long   Size { get; }
+
+    public File(string name, long size) { Name = name; Size = size; }
+
+    public long GetSize()           => Size;
+    public void Print(int indent)   => Console.WriteLine($"{new string(' ', indent)}{Name} ({Size} bytes)");
+}
+
+// Composite — has children, same interface as Leaf
+public class Folder : IFileSystemEntry
+{
+    private readonly List<IFileSystemEntry> _children = new();
+
+    public string Name { get; }
+
+    public Folder(string name) => Name = name;
+
+    public void Add(IFileSystemEntry entry) => _children.Add(entry);
+    public void Remove(IFileSystemEntry entry) => _children.Remove(entry);
+
+    // Recursive — delegates to children, same as a leaf call
+    public long GetSize() => _children.Sum(c => c.GetSize());
+
+    public void Print(int indent = 0)
+    {
+        Console.WriteLine($"{new string(' ', indent)}[{Name}]");
+        foreach (var child in _children)
+            child.Print(indent + 2);
+    }
+}
+
+// Usage — uniform treatment
+var root = new Folder("root");
+var docs = new Folder("docs");
+docs.Add(new File("readme.txt", 1024));
+docs.Add(new File("design.pdf", 204800));
+
+root.Add(docs);
+root.Add(new File("config.json", 512));
+
+// Client doesn't care if it's a file or folder
+IFileSystemEntry entry = root;
+Console.WriteLine($"Total: {entry.GetSize()} bytes"); // recursive sum
+entry.Print();                                          // recursive print
+```
+
+---
+
+## Real .NET Example: Expression Trees
+
+`System.Linq.Expressions.Expression` uses Composite — `BinaryExpression`, `MethodCallExpression`, and `ConstantExpression` all implement `Expression` and can be nested arbitrarily deep:
+
+```csharp
+using System.Linq.Expressions;
+
+// Build: x => x.Age > 18 && x.Name.StartsWith("A")
+ParameterExpression param = Expression.Parameter(typeof(Person), "x");
+
+// Leaf expressions (constants and property accesses)
+MemberExpression ageProperty  = Expression.Property(param, "Age");
+ConstantExpression ageValue   = Expression.Constant(18);
+MemberExpression nameProperty = Expression.Property(param, "Name");
+ConstantExpression prefix     = Expression.Constant("A");
+
+// Composite expressions (combine leaves)
+BinaryExpression ageCheck   = Expression.GreaterThan(ageProperty, ageValue);
+MethodCallExpression nameCheck = Expression.Call(
+    nameProperty,
+    typeof(string).GetMethod("StartsWith", new[] { typeof(string) })!,
+    prefix);
+
+// Root composite — combines two composites
+BinaryExpression combined = Expression.AndAlso(ageCheck, nameCheck);
+
+// Build the lambda
+Expression<Func<Person, bool>> lambda =
+    Expression.Lambda<Func<Person, bool>>(combined, param);
+
+// EF Core translates this tree to SQL — each node type handled polymorphically
+var results = dbContext.People.Where(lambda).ToList();
+```
+
+EF Core's query translator visits this Composite tree recursively, translating each node to SQL — it doesn't check node types with `if`/`switch`.
+
+---
+
+## UI Component Example
+
+```csharp
+// UI widget composite — renders recursively
+public interface IWidget
+{
+    void Render(int depth = 0);
+}
+
+public class Label : IWidget
+{
+    private readonly string _text;
+    public Label(string text) => _text = text;
+    public void Render(int depth) => Console.WriteLine($"{Indent(depth)}<label>{_text}</label>");
+    private static string Indent(int d) => new(' ', d * 2);
+}
+
+public class Panel : IWidget
+{
+    private readonly List<IWidget> _children = new();
+    private readonly string _id;
+
+    public Panel(string id) => _id = id;
+
+    public void Add(IWidget widget) => _children.Add(widget);
+
+    public void Render(int depth = 0)
+    {
+        Console.WriteLine($"{new string(' ', depth * 2)}<panel id='{_id}'>");
+        foreach (var child in _children)
+            child.Render(depth + 1);
+        Console.WriteLine($"{new string(' ', depth * 2)}</panel>");
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  title="When to Use Composite vs a Flat Collection"
+  headers={["Situation", "Use Composite", "Use Flat Collection"]}
+  rows={[
+    ["Data structure", "Hierarchical / tree-shaped", "List or set of uniform items"],
+    ["Operations", "Recursive (sum, traverse, render)", "Aggregate (Sum, Max, Filter)"],
+    ["Nesting depth", "Arbitrary / unknown depth", "Fixed or shallow depth"],
+    ["Node types", "Multiple types (leaf/composite)", "Single type"],
+    ["Example", "File system, UI tree, expression tree", "Shopping cart items, search results"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/composite/challenge-1"
+  title="Composite Recursive Size"
+  description="Given the Folder/File Composite above, what does root.GetSize() return for this structure?"
+  code={`var root = new Folder("root");
+var src  = new Folder("src");
+
+src.Add(new File("Program.cs",  2048));
+src.Add(new File("Startup.cs",  4096));
+
+root.Add(src);
+root.Add(new File("README.md",  512));
+root.Add(new File("LICENSE",    1024));`}
+  options={[
+    "512 — only direct children are summed",
+    "6144 — only files directly in src",
+    "7680 — all files recursively: 2048 + 4096 + 512 + 1024",
+    "6656 — all files except README.md"
+  ]}
+  correctAnswer={2}
+  explanation="Composite's GetSize() is recursive. root.GetSize() calls GetSize() on each child: src.GetSize() = 2048 + 4096 = 6144, README.md = 512, LICENSE = 1024. Total = 6144 + 512 + 1024 = 7680. This is the Composite pattern's key benefit — the client calls GetSize() once on the root and the recursion handles arbitrary depth automatically."
+/>
+
+---
+
+<Callout type="senior">
+**Composite and the Visitor Pattern**
+
+The Composite pattern often pairs with the Visitor pattern. Composite provides the tree structure; Visitor provides a way to add new operations to the tree without modifying node classes.
+
+In EF Core, this combination powers query translation:
+
+```csharp
+// EF Core's ExpressionVisitor is a Visitor over the Composite Expression tree
+public class MyRewriter : ExpressionVisitor
+{
+    // Override specific node types to rewrite them
+    protected override Expression VisitBinary(BinaryExpression node)
+    {
+        // Rewrite: replace x + 0 with x
+        if (node.NodeType == ExpressionType.Add &&
+            node.Right is ConstantExpression { Value: 0 })
+            return Visit(node.Left)!; // return simplified left side
+
+        return base.VisitBinary(node); // recurse into children
+    }
+}
+
+// Apply rewriter to an expression tree
+Expression<Func<int, int>> expr = x => x + 0 + 1;
+var rewriter = new MyRewriter();
+Expression result = rewriter.Visit(expr);
+// result: x => x + 1 (the x + 0 was simplified)
+```
+
+**Design tip**: Composite gives you structure; Visitor gives you operations. When you have a stable structure but frequently add new operations, use Composite + Visitor. When operations are stable but structure changes, use Composite with virtual methods.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/composite/quiz-1"
+  question="What is the key design requirement for the Component interface in the Composite pattern?"
+  options={[
+    "It must declare Add/Remove methods for managing children",
+    "It must be an abstract class, not an interface",
+    "It must define operations that make sense for BOTH leaves and composites",
+    "It must use generics to be type-safe"
+  ]}
+  correctAnswer={2}
+  explanation="The Component interface (or abstract class) must define operations meaningful to both leaves and composites — that's what enables 'uniform treatment.' The leaf implements them directly; the composite delegates to its children. Add/Remove are often on the Composite only (not on the interface), to avoid leaves needing to throw NotSupportedException. Whether to use interface or abstract class is a choice; generics are optional."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Expression Class (System.Linq.Expressions)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions.expression" },
+    { label: "ExpressionVisitor Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions.expressionvisitor" },
+    { label: "How EF Core translates queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/how-query-works" },
+  ]}
+/>

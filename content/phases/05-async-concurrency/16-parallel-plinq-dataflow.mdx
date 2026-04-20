@@ -1,24 +1,368 @@
 ---
-title: "Parallel.For vs PLINQ vs TPL Dataflow"
+title: "Parallel.For, PLINQ, and TPL Dataflow: When to Use Each"
 slug: "parallel-plinq-dataflow"
 order: 16
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["Parallel.For", "PLINQ", "TPL Dataflow", "parallelism", "data parallelism", "pipeline", "CPU-bound", "concurrency"]
+summary: "Parallel.For, PLINQ, and TPL Dataflow solve different problems — know which to reach for based on your workload shape: data parallelism, query parallelism, or pipeline parallelism."
+docsLinks:
+  - label: "Parallel programming in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/"
+  - label: "PLINQ (Parallel LINQ)"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/parallel-linq-plinq"
+  - label: "TPL Dataflow library"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/dataflow-task-parallel-library"
+  - label: "Parallel class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.parallel"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Three Tools for Three Problems
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+.NET provides three higher-level parallelism abstractions, each suited to a different problem shape:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+<ComparisonTable
+  headers={["Tool", "Best for", "Ordering preserved?", "Async-native?"]}
+  rows={[
+    ["Parallel.For/ForEach", "CPU-bound loops over independent items", "No (by default)", "No — use ForEachAsync in .NET 6+"],
+    ["PLINQ (AsParallel())", "CPU-bound LINQ queries with many operators", "Optional (AsOrdered)", "No"],
+    ["TPL Dataflow", "Complex pipeline graphs: fan-out, fan-in, buffering, bounded concurrency", "Yes (within blocks)", "Yes — PostAsync, SendAsync"],
+  ]}
+/>
+
+All three use the ThreadPool internally. None should be used with I/O-bound async work in their core loops (use `async/await` + `Task.WhenAll` / `Channel<T>` for I/O).
+
+---
+
+## Parallel.For and Parallel.ForEach
+
+The simplest tool for CPU-bound data parallelism — splitting a collection across ThreadPool threads:
+
+```csharp
+// Parallel.For — numeric range
+Parallel.For(0, images.Length, i =>
+{
+    images[i] = ResizeImage(images[i], 800, 600); // CPU-bound operation
+});
+
+// Parallel.ForEach — any IEnumerable
+Parallel.ForEach(orders, order =>
+{
+    order.Total = CalculateTotal(order); // CPU-bound
+});
+
+// Controlling parallelism degree
+var options = new ParallelOptions
+{
+    MaxDegreeOfParallelism = Environment.ProcessorCount / 2, // Don't hog all cores
+    CancellationToken = cancellationToken
+};
+
+Parallel.ForEach(items, options, item =>
+{
+    Process(item);
+});
+```
+
+---
+
+## Parallel.ForEachAsync (.NET 6+)
+
+For I/O-bound operations where you want bounded concurrency:
+
+```csharp
+// .NET 6+: async-native bounded parallel foreach
+var options = new ParallelOptions
+{
+    MaxDegreeOfParallelism = 10, // Max 10 concurrent async operations
+    CancellationToken = ct
+};
+
+// CORRECT for I/O-bound async work with bounded concurrency:
+await Parallel.ForEachAsync(urls, options, async (url, token) =>
+{
+    var response = await _httpClient.GetStringAsync(url, token);
+    await SaveToDbAsync(url, response, token);
+});
+
+// This is equivalent to (but cleaner than) the SemaphoreSlim throttle pattern:
+var semaphore = new SemaphoreSlim(10);
+var tasks = urls.Select(async url =>
+{
+    await semaphore.WaitAsync(ct);
+    try { ... }
+    finally { semaphore.Release(); }
+});
+await Task.WhenAll(tasks);
+```
+
+---
+
+## Exception Handling in Parallel Loops
+
+```csharp
+// Parallel.ForEach collects all exceptions into AggregateException
+try
+{
+    Parallel.ForEach(items, item =>
+    {
+        if (item.Id < 0)
+            throw new ArgumentException($"Invalid ID: {item.Id}");
+        Process(item);
+    });
+}
+catch (AggregateException ae)
+{
+    // Multiple iterations may have thrown — ae.InnerExceptions has all of them
+    foreach (var ex in ae.InnerExceptions)
+        _logger.LogError(ex, "Item processing failed");
+}
+
+// Early exit with ParallelLoopState
+Parallel.ForEach(items, (item, state) =>
+{
+    if (IsPoisoned(item))
+    {
+        state.Stop(); // Signals other iterations to stop when convenient
+        return;
+    }
+    Process(item);
+});
+```
+
+---
+
+## PLINQ: Parallel LINQ
+
+PLINQ adds parallelism to LINQ queries with a single `.AsParallel()` call:
+
+```csharp
+// Sequential LINQ
+var results = documents
+    .Where(d => d.Size > 1024)
+    .Select(d => Parse(d.Content)) // CPU-heavy parse
+    .ToList();
+
+// Parallel LINQ — distributes .Select() work across all CPUs
+var results = documents
+    .AsParallel()                            // Enable parallelism
+    .WithDegreeOfParallelism(4)              // Optional: limit cores used
+    .WithCancellation(cancellationToken)      // Support cancellation
+    .Where(d => d.Size > 1024)              // Filters run in parallel
+    .Select(d => Parse(d.Content))           // Maps run in parallel
+    .ToList();                               // Merges results
+
+// Preserve ordering (at a performance cost):
+var ordered = numbers
+    .AsParallel()
+    .AsOrdered()         // Guarantees output order matches input order
+    .Select(n => Compute(n))
+    .ToList();
+
+// Force sequential for a single operator:
+var mixed = numbers
+    .AsParallel()
+    .Select(n => HeavyCompute(n))    // Parallel
+    .AsSequential()
+    .Where(n => n > 0)               // Sequential (order-dependent filter)
+    .ToList();
+```
+
+---
+
+## When PLINQ Hurts Performance
+
+```csharp
+// BAD: PLINQ on small collections — parallelism overhead exceeds savings
+var result = new[] { 1, 2, 3 }
+    .AsParallel()
+    .Select(n => n * 2)  // Trivial work: overhead >> savings
+    .ToList();
+
+// BAD: PLINQ with I/O-bound async work — threads block
+var results = urls
+    .AsParallel()
+    .Select(url => httpClient.GetStringAsync(url).Result) // BLOCKING! Don't do this
+    .ToList();
+
+// BAD: PLINQ with side effects or shared state
+int counter = 0;
+var results = items
+    .AsParallel()
+    .Select(item => { counter++; return Process(item); }) // Race condition on counter!
+    .ToList();
+
+// GOOD: PLINQ for CPU-bound, stateless, large data sets
+var parsed = rawFiles
+    .AsParallel()
+    .WithDegreeOfParallelism(Environment.ProcessorCount - 1)
+    .Select(f => ParseDocument(f)) // CPU-bound, stateless
+    .ToList();
+```
+
+---
+
+## TPL Dataflow: Pipeline Graphs
+
+`System.Threading.Tasks.Dataflow` (available as a NuGet package) builds complex processing graphs with typed blocks:
+
+```csharp
+// Pipeline: Fetch → Parse → Validate → Persist
+// Each block runs concurrently with configurable parallelism and buffering
+
+// Block 1: Transform (CPU-bound, 4 parallel workers)
+var parseBlock = new TransformBlock<string, ParsedDocument>(
+    url => DownloadAndParse(url),
+    new ExecutionDataflowBlockOptions
+    {
+        MaxDegreeOfParallelism = 4,
+        BoundedCapacity = 20 // Backpressure: block when 20 items buffered
+    });
+
+// Block 2: Filter (pass through only valid docs)
+var validateBlock = new TransformBlock<ParsedDocument, ParsedDocument>(
+    doc => doc, // Pass-through; use Predicate for filtering
+    new ExecutionDataflowBlockOptions { BoundedCapacity = 10 });
+
+// Block 3: Action (persist to DB)
+var persistBlock = new ActionBlock<ParsedDocument>(
+    async doc => await _db.SaveAsync(doc),
+    new ExecutionDataflowBlockOptions
+    {
+        MaxDegreeOfParallelism = 2, // Limit DB concurrency
+        BoundedCapacity = 5
+    });
+
+// Link blocks together — data flows automatically
+parseBlock.LinkTo(validateBlock, new DataflowLinkOptions { PropagateCompletion = true });
+validateBlock.LinkTo(persistBlock, new DataflowLinkOptions { PropagateCompletion = true });
+
+// Feed the pipeline:
+foreach (var url in urlsToProcess)
+    await parseBlock.SendAsync(url); // Awaits if block is at capacity (backpressure)
+
+parseBlock.Complete(); // Signal no more input
+await persistBlock.Completion; // Wait for pipeline to drain
+```
+
+---
+
+## TPL Dataflow Block Types
+
+```csharp
+// TransformBlock<TIn, TOut> — 1-to-1 transform, buffered I/O
+var transform = new TransformBlock<int, string>(n => n.ToString());
+
+// TransformManyBlock<TIn, TOut> — 1-to-many (flatMap)
+var expand = new TransformManyBlock<string, char>(s => s.ToCharArray());
+
+// ActionBlock<T> — terminal sink, no output
+var sink = new ActionBlock<string>(s => Console.WriteLine(s));
+
+// BroadcastBlock<T> — fan-out to multiple targets (copies each item to all linked blocks)
+var broadcast = new BroadcastBlock<Event>(e => e); // Clone function required
+
+// BatchBlock<T> — accumulate N items then send as array
+var batcher = new BatchBlock<int>(batchSize: 100);
+
+// JoinBlock<T1, T2> — fan-in: waits for one item from each source, outputs Tuple
+var join = new JoinBlock<Order, Shipment>();
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Choosing between Channel\<T\> and TPL Dataflow**
+
+Both Channel and TPL Dataflow support producer/consumer pipelines with backpressure. The choice depends on your needs:
+
+**Use Channel\<T\> when:**
+- Simple linear pipeline (one stage with bounded buffer)
+- Need maximum performance (Channel is lower overhead)
+- Want to expose `IAsyncEnumerable<T>` to callers
+- Writing library code (Channel has no external dependency)
+
+**Use TPL Dataflow when:**
+- Complex graph topology: fan-out, fan-in, merge, batch
+- Need `BroadcastBlock` (copies to multiple targets)
+- Need `JoinBlock` (waits for items from multiple sources)
+- Need `BatchBlock` (accumulate N items)
+- Pipeline blocks have different concurrency requirements
+
+```csharp
+// TPL Dataflow fan-out example: one event → two independent handlers
+var broadcast = new BroadcastBlock<OrderEvent>(e => e.Clone());
+var emailHandler = new ActionBlock<OrderEvent>(async e => await _mailer.SendAsync(e));
+var auditHandler = new ActionBlock<OrderEvent>(async e => await _audit.LogAsync(e));
+
+broadcast.LinkTo(emailHandler, new DataflowLinkOptions { PropagateCompletion = true });
+broadcast.LinkTo(auditHandler, new DataflowLinkOptions { PropagateCompletion = true });
+
+// Each OrderEvent goes to BOTH emailHandler AND auditHandler concurrently
+```
+
+In pure Channel terms, this fan-out requires manual code (two separate writers, both receiving from the source). Dataflow gives it for free.
 </Callout>
+
+---
+
+<MythBuster
+  myth="AsParallel() always speeds up LINQ queries"
+  reality="PLINQ adds parallelism overhead: partitioning the input, managing thread coordination, and merging results. For small collections or trivially fast operations, this overhead dominates — PLINQ is SLOWER than sequential LINQ. AsParallel() is only beneficial when: the collection is large enough (typically 1000+ items), the per-item work is CPU-bound and takes measurable time, and the items are independent (no shared state). Always benchmark before adding AsParallel() — it's not a free speedup."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/parallel-plinq-dataflow/challenge-1"
+  title="Pick the Right Tool"
+  description="Match each scenario to the best parallelism tool."
+  code={`// Scenario A: Process 1 million image files — resize each to 800x600
+// (CPU-bound, independent items, no async I/O)
+
+// Scenario B: Query 10 APIs in parallel, max 3 at a time, all async
+// (I/O-bound, bounded concurrency, async)
+
+// Scenario C: Events stream in → fan-out to audit log AND real-time dashboard
+// (fan-out pipeline, multiple independent consumers of same data)
+
+// Scenario D: LINQ query: filter + project + sort on 500 items, each projection takes 1ms
+// (small dataset, simple operators, mild CPU cost)`}
+  options={[
+    "A: PLINQ, B: Parallel.ForEachAsync, C: Channel<T>, D: Sequential LINQ",
+    "A: Parallel.ForEach, B: Parallel.ForEachAsync, C: TPL Dataflow BroadcastBlock, D: Sequential LINQ",
+    "A: Task.WhenAll, B: PLINQ, C: Channel<T>, D: Parallel.ForEach",
+    "A: TPL Dataflow, B: PLINQ with AsParallel(), C: Channel<T>, D: Parallel.ForEach"
+  ]}
+  correctAnswer={1}
+  explanation="A: Parallel.ForEach — CPU-bound, large dataset, independent items — the classic Parallel.ForEach use case. PLINQ also works but Parallel.ForEach is more straightforward for side-effectful work. B: Parallel.ForEachAsync (.NET 6+) — async I/O with bounded concurrency (MaxDegreeOfParallelism=3) is exactly what it's designed for. C: TPL Dataflow BroadcastBlock — fan-out to multiple independent consumers of the same item is built into Dataflow. Channel requires manual duplication. D: Sequential LINQ — 500 items × 1ms = 500ms total; PLINQ overhead would eat the gains. Sequential is correct here."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/parallel-plinq-dataflow/quiz-1"
+  question="What does BoundedCapacity in an ExecutionDataflowBlockOptions do?"
+  options={[
+    "Limits the maximum number of items the block will ever process",
+    "Limits the maximum number of items buffered in the block's input queue — causes backpressure (SendAsync awaits) when the block is full",
+    "Limits the total memory the block's items can consume",
+    "Sets the number of parallel workers in the block"
+  ]}
+  correctAnswer={1}
+  explanation="BoundedCapacity controls the input queue size of a Dataflow block. When the queue is full, SendAsync() returns an incomplete Task that completes only when space is available — this is backpressure. Without BoundedCapacity (default is unbounded), a fast upstream block can fill the downstream block's queue with unlimited items, consuming unbounded memory. Always set BoundedCapacity in production pipelines to prevent memory exhaustion when one stage is slower than its upstream."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Parallel programming in .NET", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/" },
+    { label: "PLINQ (Parallel LINQ)", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/parallel-linq-plinq" },
+    { label: "TPL Dataflow library", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/dataflow-task-parallel-library" },
+    { label: "Parallel.ForEachAsync (.NET 6+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.parallel.foreachasync" },
+  ]}
+/>

@@ -3,22 +3,240 @@ title: "Tuples & Deconstruction"
 slug: "tuples-deconstruction"
 order: 12
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["tuples", "ValueTuple", "deconstruction", "named tuples", "discard", "multiple return values"]
+summary: "ValueTuple (C# 7) lets you return multiple values without a class — and deconstruction unpacks tuples and any type with a Deconstruct method into individual variables."
+docsLinks:
+  - label: "Tuple types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-tuples"
+  - label: "Deconstructing tuples and other types"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/deconstruct"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## ValueTuple vs Tuple
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before C# 7, returning multiple values required an `out` parameter, a custom class, or `System.Tuple<T1, T2>`. `ValueTuple` (the `(T1, T2)` syntax) is the modern replacement:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Old: System.Tuple — reference type, heap-allocated, named Item1/Item2
+Tuple<int, string> old = Tuple.Create(42, "hello");
+Console.WriteLine(old.Item1); // 42
+Console.WriteLine(old.Item2); // hello
+
+// New: ValueTuple — value type, stack-allocated, named elements
+(int Count, string Label) modern = (42, "hello");
+Console.WriteLine(modern.Count);  // 42
+Console.WriteLine(modern.Label);  // hello
+
+// Short form — inferred element names from variables (C# 7.1+)
+int count = 42;
+string label = "hello";
+var inferred = (count, label); // element names: inferred.count, inferred.label
+```
+
+<ComparisonTable
+  headers={["Feature", "System.Tuple", "ValueTuple (C# 7+)"]}
+  rows={[
+    ["Type", "Reference type (class)", "Value type (struct)"],
+    ["Allocation", "Heap", "Stack (usually)"],
+    ["Field names", "Item1, Item2, ...", "User-defined or Item1, Item2"],
+    ["Mutability", "Immutable", "Mutable (fields)"],
+    ["Syntax", "Tuple.Create(a, b)", "(a, b) or (Type a, Type b)"],
+    ["Deconstruction", "No (without extension)", "Yes, built-in"],
+    ["Pattern matching", "Limited", "Full positional pattern support"],
+    ["Use case", "Legacy / public API", "Local variables, return values"],
+  ]}
+/>
+
+---
+
+## Named Elements and Inference
+
+```csharp
+// Named tuple — elements have names like properties
+(string FirstName, string LastName, int Age) GetPerson()
+    => ("Alice", "Smith", 30);
+
+var person = GetPerson();
+Console.WriteLine(person.FirstName); // Alice
+Console.WriteLine(person.Age);       // 30
+
+// Element names are compile-time only — erased at runtime
+// At runtime: person.Item1, person.Item2, person.Item3
+
+// Projection initializers (C# 7.1) — names inferred from variables
+string city    = "London";
+int population = 9_000_000;
+var tuple = (city, population);      // named: tuple.city, tuple.population
+```
+
+---
+
+## Deconstruction
+
+Deconstruction unpacks a tuple (or any type with `Deconstruct`) into individual variables:
+
+```csharp
+// Tuple deconstruction
+(string name, int age, bool isAdmin) = GetUserInfo();
+
+// With var shorthand
+var (name, age, isAdmin) = GetUserInfo();
+
+// Discard elements you don't need with _
+var (name, _, _) = GetUserInfo(); // only care about the name
+
+// Deconstruct in foreach
+var users = new[] { ("Alice", 30), ("Bob", 25) };
+foreach (var (userName, userAge) in users)
+    Console.WriteLine($"{userName} is {userAge}");
+
+// Swap two variables without a temp (classic use)
+int a = 1, b = 2;
+(a, b) = (b, a); // swap — no temp variable needed
+Console.WriteLine($"a={a}, b={b}"); // a=2, b=1
+```
+
+---
+
+## Custom Deconstruct Methods
+
+Any type can support deconstruction by providing a `Deconstruct` method:
+
+```csharp
+public class Rectangle
+{
+    public double Width  { get; init; }
+    public double Height { get; init; }
+
+    // Instance Deconstruct — called by the compiler for deconstruction
+    public void Deconstruct(out double width, out double height)
+    {
+        width  = Width;
+        height = Height;
+    }
+}
+
+var rect = new Rectangle { Width = 10, Height = 5 };
+var (w, h) = rect;           // calls Deconstruct
+Console.WriteLine($"{w}x{h}"); // 10x5
+
+// Extension method Deconstruct — add deconstruction to types you don't own
+public static class KeyValuePairExtensions
+{
+    public static void Deconstruct<K, V>(
+        this KeyValuePair<K, V> pair,
+        out K key,
+        out V value)
+    {
+        key   = pair.Key;
+        value = pair.Value;
+    }
+}
+
+var dict = new Dictionary<string, int> { ["a"] = 1, ["b"] = 2 };
+foreach (var (key, val) in dict) // deconstruction via extension method
+    Console.WriteLine($"{key}: {val}");
+```
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/tuples-deconstruction/playground-1"
+  title="Multiple Return Values with Tuples"
+  code={`using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// Return statistics without a custom class
+static (double Mean, double Median, double StdDev) Describe(IEnumerable\<double\> data)
+{
+    var sorted = data.OrderBy(x => x).ToArray();
+    double mean   = sorted.Average();
+    double median = sorted.Length % 2 == 0
+        ? (sorted[sorted.Length / 2 - 1] + sorted[sorted.Length / 2]) / 2.0
+        : sorted[sorted.Length / 2];
+    double variance = sorted.Average(x => Math.Pow(x - mean, 2));
+    return (mean, median, Math.Sqrt(variance));
+}
+
+double[] scores = { 72, 85, 91, 68, 79, 95, 88, 74 };
+var (mean, median, stdDev) = Describe(scores);
+
+Console.WriteLine(\$"Mean:   {mean:F1}");    // 81.5
+Console.WriteLine(\$"Median: {median:F1}");  // 82.0
+Console.WriteLine(\$"StdDev: {stdDev:F1}");  // 9.0`}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/tuples-deconstruction/challenge-1"
+  title="Tuple Element Names at Runtime"
+  description="What does this code print, and why?"
+  code={`(string Name, int Age) p = ("Alice", 30);
+
+// Access using Item syntax
+Console.WriteLine(p.Item1);
+Console.WriteLine(p.Name);
+
+// Check if they refer to the same thing
+var type = p.GetType();
+Console.WriteLine(type.GetField("Name") is not null);`}
+  options={[
+    "Alice, Alice, True — Name is a real field on the struct",
+    "Alice, Alice, False — Name is compiler sugar; the field is actually Item1",
+    "Compile error — cannot use both Item1 and Name",
+    "Alice, Alice, True — reflection sees the user-defined name"
+  ]}
+  correctAnswer={1}
+  explanation="ValueTuple element names (like 'Name') are purely a compiler/IDE feature stored in attributes (TupleElementNamesAttribute on method return types). At runtime, the struct fields are named Item1, Item2, etc. Reflection on the ValueTuple struct itself finds no 'Name' field — only Item1. Accessing p.Name compiles to p.Item1 in IL. This is why ValueTuple names don't survive serialization, reflection, or crossing assembly boundaries without the attribute metadata."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: When to Use Tuples vs Records vs Anonymous Types**
+
+Tuples are convenient for local, private use — they're terrible for public APIs:
+
+```csharp
+// BAD: tuple in public API — callers see Item1, Item2 and have no context
+public (int, string, bool) GetUserStatus(int id) => (id, "active", true);
+
+// GOOD: named record — self-documenting, versionable, testable
+public record UserStatus(int UserId, string State, bool IsVerified);
+public UserStatus GetUserStatus(int id) => new(id, "active", true);
+
+// GOOD LOCALLY: tuple for private/internal multi-value returns
+private (bool IsValid, string Error) Validate(string input)
+    => string.IsNullOrEmpty(input) ? (false, "required") : (true, "");
+
+// Guideline:
+// - Tuple for private helpers and local variables — fast, zero ceremony
+// - Record for domain objects and public APIs — named, documented, extensible
+// - Anonymous type ONLY in LINQ projections within a method — can't leave the method scope
+```
+
+Also: mutable tuple fields are rarely a good idea. If you're mutating a ValueTuple, you probably want a record (immutable) or a class/struct (explicit, named, tested).
 </Callout>
+
+---
+
+<MythBuster
+  myth="Tuples and anonymous types are the same thing."
+  reality="They are very different. Anonymous types (var x = new { Name = 'Alice', Age = 30 }) are compiler-generated reference types — heap-allocated, immutable, and scoped to the method they're defined in. They cannot be returned from a method or passed to other methods as their anonymous type. ValueTuples (var x = ('Alice', 30)) are value types — stack-allocated, mutable, and can be used anywhere including as return types and method parameters. For LINQ SELECT projections, both work; for returning multiple values, use ValueTuple."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Tuple types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/value-tuples" },
+    { label: "Deconstructing tuples and other types", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/deconstruct" },
+    { label: "System.ValueTuple", url: "https://learn.microsoft.com/en-us/dotnet/api/system.valuetuple" },
+  ]}
+/>

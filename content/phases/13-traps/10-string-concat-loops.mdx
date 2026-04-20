@@ -2,23 +2,191 @@
 title: "String Concatenation in Loops"
 slug: "string-concat-loops"
 order: 10
-difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 8
+status: "published"
+tags: ["string", "StringBuilder", "performance", "allocations", "O(n²)", "loops"]
+summary: "Concatenating strings in a loop with += produces O(n²) allocations because strings are immutable — each concatenation copies the entire accumulated string."
+docsLinks:
+  - label: "StringBuilder class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder"
+  - label: "String.Concat and String immutability"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.concat"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — string concatenation in a loop
+public string BuildReport(IEnumerable<OrderLine> lines)
+{
+    string result = "";
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    foreach (var line in lines)
+    {
+        result += $"{line.ProductName}: {line.Quantity} x {line.Price:C}\n";
+        //      ^^^ NEW string allocation every iteration!
+    }
+
+    return result;
+}
+
+// For 1,000 order lines:
+// Iteration 1: allocates string of length ~40
+// Iteration 2: allocates string of length ~80 (copies previous 40 chars + adds 40)
+// Iteration 3: allocates string of length ~120 (copies previous 80 + adds 40)
+// ...
+// Iteration 1000: allocates string of length ~40,000 (copies previous 39,960 + adds 40)
+// Total memory copied: 40 + 80 + 120 + ... + 40,000 ≈ 20 MILLION characters
+// Time complexity: O(n²)
+```
+
+<Callout type="trap">
+`string` is immutable in .NET. Every `+=` creates a **new string** that contains a copy of the old string plus the new content. In a loop of N iterations, this creates N string allocations totaling O(n²) characters copied — even though you only need O(n) total characters in the final result.
 </Callout>
+
+---
+
+## Why It Happens
+
+```csharp
+// Strings are immutable — this is what += really does:
+string result = "Hello";
+result += ", World"; // NOT: append to existing buffer
+                     // IS: string temp = "Hello" + ", World";
+                     //     result = temp; // "Hello" is now garbage
+
+// The compiler expands string += to string.Concat():
+result = string.Concat(result, ", World");
+// string.Concat allocates a new char[] of (result.Length + ", World".Length)
+// copies result into it, copies ", World" into it, creates a new string
+// The old "Hello" string becomes eligible for GC
+```
+
+**Memory visualization for 5 concatenations:**
+
+```
+After iteration 1: [copy1_________]        (10 chars copied)
+After iteration 2: [copy1_________copy2___] (20 chars copied, old discarded)
+After iteration 3: [copy1_________copy2___copy3__] (30 chars, old discarded)
+...each iteration copies ALL previous characters again
+```
+
+---
+
+## The Fix: StringBuilder
+
+```csharp
+// CORRECT — StringBuilder uses a growable char[] buffer
+public string BuildReport(IEnumerable<OrderLine> lines)
+{
+    var sb = new StringBuilder();
+
+    foreach (var line in lines)
+    {
+        sb.Append(line.ProductName);
+        sb.Append(": ");
+        sb.Append(line.Quantity);
+        sb.Append(" x ");
+        sb.Append(line.Price.ToString("C"));
+        sb.AppendLine();
+    }
+
+    return sb.ToString(); // Single allocation at the end
+}
+
+// Or with AppendFormat / interpolation via AppendLine:
+var sb = new StringBuilder(capacity: lines.Count * 50); // Pre-size if count known
+
+foreach (var line in lines)
+{
+    sb.AppendLine($"{line.ProductName}: {line.Quantity} x {line.Price:C}");
+}
+```
+
+**StringBuilder complexity:**
+- `Append`: amortized O(1) — doubles the buffer when needed (like `List<T>`)
+- Total: O(n) for n appends
+- `ToString()`: O(n) — single copy to create the final string
+- Grand total: O(n) vs O(n²) for concatenation
+
+---
+
+<MythBuster
+  myth="The compiler optimizes string += in loops the same way it handles string + for literals"
+  truth="The compiler optimizes string concatenation of LITERALS at compile time (e.g., 'a' + 'b' + 'c' becomes a single string). But string += in a loop is a runtime operation on variable values — no compile-time optimization occurs. Each iteration allocates."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/string-concat-loops/challenge-1"
+  title="How many string allocations?"
+  description="How many string objects are allocated by this loop (not counting the initial empty string)?"
+  code={`string s = "";
+
+for (int i = 0; i < 5; i++)
+{
+    s += i.ToString();
+}
+
+Console.WriteLine(s); // "01234"`}
+  options={[
+    "1 — the compiler fuses the loop into a single StringBuilder call",
+    "5 — one new string per iteration, each containing the full accumulated value",
+    "6 — five concatenations plus the i.ToString() calls",
+    "11 — five i.ToString() plus five concatenations plus the final string"
+  ]}
+  correctAnswer={1}
+  explanation="5 string allocations for the concatenations (plus 5 for i.ToString(), total 10+). Each iteration of 's += i.ToString()' creates a new string: '0', then '01', then '012', then '0123', then '01234'. The previous string is discarded each time. The compiler does NOT optimize this — it's a runtime loop. Total chars copied: 0+1+2+3+4 = 10, but each new string copies all previous chars, making it quadratic for large n."
+/>
+
+---
+
+## When String Concatenation IS Fine
+
+```csharp
+// 1. Outside loops — small number of concatenations (< ~5):
+string greeting = "Hello, " + name + "!"; // Fine — 2 allocations, trivial cost
+
+// 2. String interpolation for single expressions:
+string message = $"Order #{orderId} placed at {timestamp:g}"; // One string.Format call
+
+// 3. String.Join for combining a collection with a separator (single allocation):
+string csv = string.Join(",", items); // Optimal — StringBuilder internally
+
+// 4. String.Concat with an array:
+string combined = string.Concat(parts); // Also optimal
+
+// 5. ValueStringBuilder / stackalloc for hot paths (advanced):
+// Use when you need zero heap allocation for small strings
+Span<char> buffer = stackalloc char[256];
+var vsb = new System.Text.ValueStringBuilder(buffer);
+// ...append...
+string result = vsb.ToString();
+```
+
+---
+
+<Callout type="senior">
+**The O(n²) report generator story**
+
+A team built a data export feature that generated CSV reports from database results. For small datasets, it was fast. When a customer requested an export of 50,000 records, the endpoint timed out at 30 seconds. The profiler showed 99% of CPU time in `string.Concat`.
+
+The fix was a single change: replace `string report = ""` + `report +=` with `var sb = new StringBuilder()` + `sb.AppendLine()`. The same 50,000-row export went from 30-second timeout to completing in 180ms.
+
+This is why code review checklists should include: "Is there a `+=` on a string inside a loop?" It's one of the cheapest O(n²) bugs to fix and one of the most impactful.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "StringBuilder class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.stringbuilder" },
+    { label: "String immutability (C# guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/strings/" },
+    { label: "String.Join method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.string.join" },
+    { label: "Best practices for using strings in .NET", url: "https://learn.microsoft.com/en-us/dotnet/standard/base-types/best-practices-strings" },
+  ]}
+/>

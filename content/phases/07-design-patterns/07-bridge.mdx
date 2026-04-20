@@ -1,24 +1,284 @@
 ---
-title: "Bridge"
+title: "Bridge — Separating Abstraction from Implementation"
 slug: "bridge"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["bridge", "structural", "abstraction", "implementation", "composition over inheritance"]
+summary: "Bridge decouples an abstraction from its implementation so both can vary independently — preventing the class explosion that comes from combining two dimensions of variation."
+docsLinks:
+  - label: "Bridge pattern overview"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/"
+  - label: "Composition over inheritance"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/base-classes"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Class Explosion
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Imagine a `Shape` with two dimensions of variation: shape type (Circle, Square) and rendering platform (Vector, Raster). Solving this with inheritance produces a combinatorial explosion:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+CircleVectorRenderer
+CircleRasterRenderer
+SquareVectorRenderer
+SquareRasterRenderer
+TriangleVectorRenderer  ← adding Triangle needs 2 more classes
+TriangleRasterRenderer
+```
+
+Adding one new renderer requires adding N new classes (one per shape). Adding one new shape requires adding M new classes (one per renderer). Bridge eliminates this explosion.
+
+---
+
+## Structure
+
+```csharp
+// Implementation interface — the "implementation" side of the bridge
+public interface IRenderer
+{
+    void RenderCircle(double radius);
+    void RenderSquare(double side);
+}
+
+// Concrete implementations
+public class VectorRenderer : IRenderer
+{
+    public void RenderCircle(double r)  => Console.WriteLine($"Drawing circle (r={r}) in vector");
+    public void RenderSquare(double s)  => Console.WriteLine($"Drawing square (s={s}) in vector");
+}
+
+public class RasterRenderer : IRenderer
+{
+    public void RenderCircle(double r)  => Console.WriteLine($"Drawing circle (r={r}) as pixels");
+    public void RenderSquare(double s)  => Console.WriteLine($"Drawing square (s={s}) as pixels");
+}
+
+// Abstraction — holds a reference to the implementation (the bridge)
+public abstract class Shape
+{
+    protected readonly IRenderer _renderer; // THE BRIDGE
+
+    protected Shape(IRenderer renderer) => _renderer = renderer;
+
+    public abstract void Draw();
+    public abstract void Resize(double factor);
+}
+
+// Refined abstractions — one class per shape type only
+public class Circle : Shape
+{
+    private double _radius;
+
+    public Circle(IRenderer renderer, double radius) : base(renderer)
+        => _radius = radius;
+
+    public override void Draw()          => _renderer.RenderCircle(_radius);
+    public override void Resize(double f) => _radius *= f;
+}
+
+public class Square : Shape
+{
+    private double _side;
+
+    public Square(IRenderer renderer, double side) : base(renderer)
+        => _side = side;
+
+    public override void Draw()          => _renderer.RenderSquare(_side);
+    public override void Resize(double f) => _side *= f;
+}
+
+// Usage — vary shape and renderer independently
+IRenderer vector = new VectorRenderer();
+IRenderer raster = new RasterRenderer();
+
+Shape c1 = new Circle(vector, 5.0);
+Shape c2 = new Circle(raster, 5.0);
+Shape s1 = new Square(vector, 10.0);
+
+c1.Draw(); // "Drawing circle (r=5) in vector"
+c2.Draw(); // "Drawing circle (r=5) as pixels"
+
+// Adding a new renderer? Just implement IRenderer — zero changes to shapes.
+// Adding a new shape? Just extend Shape — zero changes to renderers.
+```
+
+---
+
+## Real .NET Example: `DbConnection` and ADO.NET
+
+ADO.NET's design is Bridge-like:
+
+```csharp
+// Abstraction: DbConnection (abstract class)
+//   ↓ bridge
+// Implementation: provider-specific drivers
+
+DbConnection connection = new SqlConnection(connectionString);  // SQL Server
+DbConnection pgConn     = new NpgsqlConnection(pgConnStr);      // PostgreSQL
+DbConnection sqLite     = new SqliteConnection("Data Source=:memory:"); // SQLite
+
+// DbCommand is the abstraction; SqlCommand/NpgsqlCommand are implementations
+DbCommand cmd = connection.CreateCommand();
+cmd.CommandText = "SELECT * FROM Orders";
+
+// The abstraction (DbCommand) works the same regardless of the concrete connection
+await using DbDataReader reader = await cmd.ExecuteReaderAsync();
+while (await reader.ReadAsync())
+{
+    Console.WriteLine(reader.GetString(0));
+}
+```
+
+`DbConnection` is the abstraction; the provider-specific implementations (`SqlConnection`, `NpgsqlConnection`) are the implementation side. Your code works against `DbConnection` and can switch providers.
+
+---
+
+## Logging Bridge in .NET
+
+`Microsoft.Extensions.Logging` also uses Bridge-like decomposition:
+
+```csharp
+// ILogger is the abstraction
+// ILoggerProvider implementations are the "implementation" side
+
+// Configure multiple implementations behind a single ILogger interface
+builder.Logging.AddConsole();    // ConsoleLoggerProvider
+builder.Logging.AddApplicationInsights(); // AppInsightsLoggerProvider
+
+// In your class — only knows about ILogger<T> (the abstraction)
+public class OrderService
+{
+    private readonly ILogger<OrderService> _logger;
+
+    public OrderService(ILogger<OrderService> logger) => _logger = logger;
+
+    public void PlaceOrder(Order order)
+    {
+        // The bridge dispatches to all registered providers
+        _logger.LogInformation("Order {Id} placed", order.Id);
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  title="Bridge vs Adapter vs Strategy"
+  headers={["Pattern", "Intent", "Structure", "Used when"]}
+  rows={[
+    ["Bridge", "Decouple abstraction from implementation — both evolve independently", "Abstraction holds Implementation ref", "You anticipate multiple variations on both sides"],
+    ["Adapter", "Make existing incompatible interfaces work together", "Adapter wraps Adaptee", "Interfaces already exist and are incompatible"],
+    ["Strategy", "Swap algorithms at runtime", "Context holds Strategy ref", "Only the algorithm varies, not the abstraction"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/bridge/challenge-1"
+  title="Bridge vs Adapter"
+  description="A developer wraps the legacy EmailService with a new INotifier interface. Is this Bridge or Adapter?"
+  code={`public interface INotifier
+{
+    Task SendAsync(string to, string message);
+}
+
+// LegacyEmailService already exists — we cannot modify it
+public class LegacyEmailService
+{
+    public void Send(string recipient, string subject, string body) { /* ... */ }
+}
+
+public class EmailNotifierAdapter : INotifier
+{
+    private readonly LegacyEmailService _email;
+
+    public EmailNotifierAdapter(LegacyEmailService email) => _email = email;
+
+    public Task SendAsync(string to, string message)
+    {
+        _email.Send(to, subject: "Notification", body: message);
+        return Task.CompletedTask;
+    }
+}`}
+  options={[
+    "Bridge — the abstraction (INotifier) is decoupled from the implementation",
+    "Adapter — translating an existing incompatible interface to fit INotifier",
+    "Facade — simplifying the LegacyEmailService API",
+    "Decorator — adding async behavior to a sync service"
+  ]}
+  correctAnswer={1}
+  explanation="This is the Adapter pattern. The intent is to make an EXISTING incompatible interface (LegacyEmailService) work with a new expected interface (INotifier). Bridge is designed UP FRONT — the abstraction and implementation hierarchies are created together with variability in mind. Adapter is applied AFTER THE FACT — it makes two pre-existing, incompatible interfaces collaborate."
+/>
+
+---
+
+<Callout type="senior">
+**Bridge as a Design Decision — Prefer Composition**
+
+The Bridge pattern formalizes a key object-oriented design principle: **favor composition over inheritance**. Whenever you find yourself creating class hierarchies with N×M combinations, ask: "Are there two independent dimensions of variation?" If yes, Bridge is likely the right tool.
+
+In modern C# with DI:
+
+```csharp
+// Instead of NxM inheritance hierarchy, use composition via DI
+public abstract class NotificationService
+{
+    private readonly IMessageChannel _channel; // implementation bridge
+
+    protected NotificationService(IMessageChannel channel) => _channel = channel;
+
+    protected abstract string FormatMessage(string content);
+
+    public async Task SendAsync(string content)
+    {
+        string formatted = FormatMessage(content);
+        await _channel.SendAsync(formatted);
+    }
+}
+
+// Channels (implementation dimension)
+public interface IMessageChannel { Task SendAsync(string message); }
+public class EmailChannel   : IMessageChannel { /* ... */ }
+public class SmsChannel     : IMessageChannel { /* ... */ }
+public class PushChannel    : IMessageChannel { /* ... */ }
+
+// Notification types (abstraction dimension)
+public class AlertNotification  : NotificationService { /* format as ALERT: ... */ }
+public class SummaryNotification: NotificationService { /* format as daily summary */ }
+
+// Register with DI — wiring up bridges declaratively
+builder.Services.AddKeyedSingleton<IMessageChannel, EmailChannel>("email");
+builder.Services.AddKeyedSingleton<IMessageChannel, SmsChannel>("sms");
+```
+
+In practice, teams achieve Bridge-like decoupling through DI without necessarily calling it "Bridge." The pattern is the principle, not the label.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/bridge/quiz-1"
+  question="What is the key structural difference between Bridge and Strategy patterns?"
+  options={[
+    "Bridge uses abstract classes; Strategy uses interfaces",
+    "Bridge decouples two hierarchies that evolve independently; Strategy only varies the algorithm within one abstraction",
+    "Bridge is a creational pattern; Strategy is behavioral",
+    "There is no meaningful difference — they solve the same problem"
+  ]}
+  correctAnswer={1}
+  explanation="The structural difference: Bridge intentionally decouples two separate class hierarchies (abstraction and implementation) that can both grow independently. Strategy has a single Context class that delegates to a replaceable algorithm — there's no separate abstraction hierarchy. In Bridge, both sides can be extended with new classes. In Strategy, only the algorithm (Strategy side) varies; the Context stays fixed."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DbConnection Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.data.common.dbconnection" },
+    { label: "Logging providers in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/logging-providers" },
+    { label: "Composition over inheritance (.NET design guidelines)", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/base-classes" },
+  ]}
+/>

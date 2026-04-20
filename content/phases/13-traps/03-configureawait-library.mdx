@@ -1,24 +1,200 @@
 ---
-title: "ConfigureAwait in Library Code"
+title: "ConfigureAwait(false) in Library Code"
 slug: "configureawait-library"
 order: 3
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["async", "ConfigureAwait", "SynchronizationContext", "library design", "deadlocks", "context"]
+summary: "Library code must use ConfigureAwait(false) on every await — omitting it can deadlock callers and leak UI thread affinity into general-purpose code."
+docsLinks:
+  - label: "ConfigureAwait FAQ"
+    url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/"
+  - label: "Task.ConfigureAwait method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.configureawait"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You write a reusable library method that fetches data. It looks perfectly fine:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Library code — THE TRAP
+public class DataService
+{
+    private readonly HttpClient _client;
+
+    public async Task<string> GetDataAsync(string url)
+    {
+        var response = await _client.GetAsync(url); // No ConfigureAwait!
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(); // No ConfigureAwait!
+    }
+}
+```
+
+A WPF or ASP.NET (classic) application calls it synchronously:
+
+```csharp
+// Application code — the consumer blocks
+public void Button_Click(object sender, EventArgs e)
+{
+    var result = dataService.GetDataAsync("https://api.example.com/data").Result;
+    label.Text = result;
+}
+```
+
+**Result: Deadlock.** The application hangs forever.
+
+<Callout type="trap">
+Without `ConfigureAwait(false)`, every `await` in library code tries to resume on the original `SynchronizationContext` (the UI thread or ASP.NET request context). If that context is blocked waiting for the Task to complete via `.Result` or `.Wait()`, you have a classic deadlock: the context waits for the task, the task waits for the context.
 </Callout>
+
+---
+
+## Why It Happens
+
+```
+1. UI thread calls GetDataAsync()
+2. GetDataAsync awaits GetAsync() — captures SyncContext (UI thread)
+3. UI thread calls .Result — BLOCKS the UI thread
+4. GetAsync() completes on thread pool
+5. Continuation wants to resume on UI thread (SyncContext)
+6. UI thread is BLOCKED waiting for .Result
+7. DEADLOCK — both sides wait for each other forever
+```
+
+```csharp
+// Without ConfigureAwait(false):
+var response = await _client.GetAsync(url);
+// After await, continuation MUST run on captured SynchronizationContext
+// If that context is blocked → deadlock
+
+// With ConfigureAwait(false):
+var response = await _client.GetAsync(url).ConfigureAwait(false);
+// After await, continuation runs on ANY available thread pool thread
+// The blocked context is irrelevant — no deadlock
+```
+
+---
+
+## The Fix
+
+Add `ConfigureAwait(false)` to **every** `await` in library code:
+
+```csharp
+// CORRECT library code
+public class DataService
+{
+    private readonly HttpClient _client;
+
+    public async Task<string> GetDataAsync(string url)
+    {
+        var response = await _client.GetAsync(url).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+    }
+
+    public async Task<T> GetJsonAsync<T>(string url)
+    {
+        using var response = await _client.GetAsync(url).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        return await JsonSerializer.DeserializeAsync<T>(stream).ConfigureAwait(false)
+               ?? throw new InvalidOperationException("Null response");
+    }
+}
+```
+
+**The real fix for application callers: go async all the way**
+
+```csharp
+// Application code — correct approach
+private async void Button_Click(object sender, EventArgs e)
+{
+    try
+    {
+        // Await properly — no blocking, no deadlock
+        var result = await dataService.GetDataAsync("https://api.example.com/data");
+        label.Text = result; // Safe — resumed on UI thread via SyncContext
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show(ex.Message);
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="ConfigureAwait(false) is just a performance micro-optimization I can skip"
+  truth="ConfigureAwait(false) is a correctness requirement for library code. Omitting it makes your library deadlock-prone when consumed by sync-over-async callers, and leaks UI/request context into general-purpose infrastructure."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/configureawait-library/challenge-1"
+  title="How Many Awaits Need ConfigureAwait(false)?"
+  description="In a library method with three sequential awaits, how many need ConfigureAwait(false) to prevent deadlocks?"
+  code={`// Library method
+public async Task ProcessAsync()
+{
+    var data   = await FetchAsync();           // await 1
+    var result = await TransformAsync(data);   // await 2
+    await SaveAsync(result);                   // await 3
+}`}
+  options={[
+    "Only the first await — once context is abandoned, the rest run on thread pool anyway",
+    "Only the last await — it is the one that returns to the caller",
+    "All three awaits need ConfigureAwait(false)",
+    "None — ConfigureAwait only matters in the outermost caller, not library internals"
+  ]}
+  correctAnswer={2}
+  explanation="All three awaits need ConfigureAwait(false). Each await independently captures the current SynchronizationContext when it suspends. If await 1 has ConfigureAwait(false), it resumes on the thread pool — and subsequent awaits inside the method will have a null SyncContext (no issue). But if the SyncContext is present and blocked at the call site, await 1 alone is the deadlock trigger. The rule: add ConfigureAwait(false) to every await in library code, no exceptions."
+/>
+
+---
+
+## When NOT to Use ConfigureAwait(false)
+
+```csharp
+// Application code that needs UI context AFTER the await:
+private async Task RefreshUIAsync()
+{
+    var data = await _service.LoadAsync(); // No ConfigureAwait(false) — we WANT to return to UI thread!
+
+    // Must run on UI thread:
+    textBox.Text = data.Name;
+    progressBar.Value = 100;
+}
+
+// ASP.NET Core — no SynchronizationContext, ConfigureAwait(false) is a no-op
+// but still recommended for library portability and clarity of intent
+```
+
+---
+
+<Callout type="senior">
+**The ConfigureAwait epidemic of 2012–2014**
+
+Stephen Toub's definitive ConfigureAwait FAQ emerged because the entire .NET ecosystem had a deadlock epidemic when async/await shipped. Every team that wrote async library code without `ConfigureAwait(false)` eventually received a bug report: "Your library deadlocks in our WPF/WinForms app."
+
+One critical subtlety: `ConfigureAwait(false)` only affects the **immediate** await — it does not propagate transitively. Every single `await` in the call chain must opt out independently. If you have a helper method inside your library that awaits without `ConfigureAwait(false)`, that helper can still cause deadlocks even if its callers use it correctly.
+
+Some teams use the Fody.ConfigureAwait NuGet package which applies `ConfigureAwait(false)` project-wide via a build-time IL transform — practical for library projects where you want the guarantee enforced everywhere.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ConfigureAwait FAQ (Stephen Toub)", url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/" },
+    { label: "Task.ConfigureAwait method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.configureawait" },
+    { label: "SynchronizationContext explained", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.synchronizationcontext" },
+    { label: "Async best practices — don't block on async code", url: "https://learn.microsoft.com/en-us/archive/msdn-magazine/2013/march/async-await-best-practices-in-asynchronous-programming" },
+  ]}
+/>

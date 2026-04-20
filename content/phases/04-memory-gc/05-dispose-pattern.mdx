@@ -1,24 +1,364 @@
 ---
-title: "The Full Dispose Pattern"
+title: "IDisposable and the Full Dispose Pattern"
 slug: "dispose-pattern"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["IDisposable", "dispose pattern", "finalizer", "SafeHandle", "unmanaged resources", "memory"]
+summary: "IDisposable is one of the most frequently misimplemented patterns in C#. Learn the canonical Dispose pattern, when to use SafeHandle, and the common pitfalls that cause resource leaks."
+docsLinks:
+  - label: "Implementing a Dispose method"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose"
+  - label: "IDisposable interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.idisposable"
+  - label: "SafeHandle class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.safehandle"
+  - label: "IAsyncDisposable interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.iasyncdisposable"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why IDisposable Exists
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+.NET's garbage collector manages **managed memory** automatically. But it knows nothing about:
+- File handles, sockets, database connections
+- Native library handles (P/Invoke)
+- GDI/Win32 resources (HBITMAP, HFONT)
+- COM object references
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+`IDisposable` provides a deterministic cleanup contract: "when you're done with me, call Dispose() and I'll release my unmanaged resources immediately — don't wait for the GC."
+
+---
+
+## The Minimal IDisposable (Managed Resources Only)
+
+When your class only wraps other `IDisposable` objects and holds no unmanaged resources directly, the pattern is simple — no finalizer needed:
+
+```csharp
+// Simple case: only wraps managed IDisposable objects
+public class DatabaseSession : IDisposable
+{
+    private SqlConnection? _connection;
+    private SqlTransaction? _transaction;
+    private bool _disposed;
+
+    public DatabaseSession(string connectionString)
+    {
+        _connection = new SqlConnection(connectionString);
+        _connection.Open();
+        _transaction = _connection.BeginTransaction();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Dispose in reverse order of acquisition
+        _transaction?.Dispose();
+        _connection?.Dispose();
+
+        // No unmanaged resources → no finalizer → no SuppressFinalize needed
+        // (though calling SuppressFinalize(this) here doesn't hurt — good habit)
+        GC.SuppressFinalize(this);
+    }
+
+    public void Execute(string sql) // ... use _connection, _transaction
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        // ... execute SQL
+    }
+}
+```
+
+---
+
+## The Full Dispose Pattern (Unmanaged Resources)
+
+When your class **directly holds unmanaged resources** (an `IntPtr` handle), you need the full pattern with a finalizer as a safety net:
+
+```csharp
+public class UnmanagedFileHandle : IDisposable
+{
+    private IntPtr _handle;       // raw unmanaged handle
+    private bool _disposed;
+
+    public UnmanagedFileHandle(string path)
+    {
+        _handle = NativeFileMethods.OpenFile(path, FileAccess.ReadWrite);
+        if (_handle == IntPtr.Zero)
+            throw new IOException(\$"Failed to open file: {path}");
+    }
+
+    // Public Dispose: called by user code or using() statement
+    public void Dispose()
+    {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this); // remove from finalization queue
+    }
+
+    // Protected virtual Dispose(bool): allows derived classes to extend cleanup
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (disposing)
+        {
+            // Safe to access managed objects here (called from Dispose())
+            // e.g., flush a managed buffer before closing the handle
+        }
+
+        // Always release unmanaged resources — called from both paths
+        if (_handle != IntPtr.Zero)
+        {
+            NativeFileMethods.CloseHandle(_handle);
+            _handle = IntPtr.Zero;
+        }
+    }
+
+    // Finalizer: safety net if Dispose() is never called
+    // ONLY here because we own an unmanaged resource directly
+    ~UnmanagedFileHandle()
+    {
+        Dispose(disposing: false); // disposing=false: don't touch managed objects
+    }
+
+    public void Write(ReadOnlySpan<byte> data)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        NativeFileMethods.WriteFile(_handle, data);
+    }
+}
+```
+
+The `disposing` parameter distinguishes the two call sites:
+- `disposing: true` → called from `Dispose()` — safe to touch managed objects
+- `disposing: false` → called from finalizer — **never touch managed objects** (they may be finalized already)
+
+---
+
+## Inheritance and the Dispose Pattern
+
+Derived classes should override `Dispose(bool)` — never override the public `Dispose()`:
+
+```csharp
+public class BufferedFileHandle : UnmanagedFileHandle
+{
+    private byte[]? _writeBuffer;  // managed resource
+
+    public BufferedFileHandle(string path) : base(path)
+    {
+        _writeBuffer = new byte[4096];
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            // Flush buffer before base class closes the handle
+            FlushBuffer();
+            _writeBuffer = null; // release managed array reference
+        }
+
+        // ALWAYS call base — it closes the unmanaged handle
+        base.Dispose(disposing);
+    }
+
+    private void FlushBuffer() { /* ... */ }
+}
+```
+
+---
+
+## The Modern Alternative: SafeHandle
+
+`SafeHandle` encapsulates a native handle with built-in Dispose pattern and CER (Constrained Execution Region) guarantees. Use it instead of raw `IntPtr` whenever possible:
+
+```csharp
+// Create a SafeHandle subclass for your native handle type
+public class NativeFileHandle : SafeHandleZeroOrMinusOneIsInvalid
+{
+    // Needed for P/Invoke marshaling
+    private NativeFileHandle() : base(ownsHandle: true) { }
+
+    // The GC-safe release method — called by SafeHandle's finalizer/Dispose
+    protected override bool ReleaseHandle()
+    {
+        return NativeFileMethods.CloseHandle(handle); // 'handle' is the IntPtr field
+    }
+}
+
+// Usage: your class no longer needs a custom finalizer!
+public class ManagedFileWrapper : IDisposable
+{
+    private NativeFileHandle _handle; // SafeHandle manages its own finalizer
+
+    public ManagedFileWrapper(string path)
+    {
+        _handle = NativeFileMethods.OpenFile(path);
+    }
+
+    public void Dispose()
+    {
+        _handle.Dispose(); // SafeHandle handles the rest
+        GC.SuppressFinalize(this);
+    }
+
+    // No ~ManagedFileWrapper() needed — SafeHandle has its own finalizer!
+}
+```
+
+---
+
+## IAsyncDisposable (.NET Core 3.0+)
+
+For resources that require async cleanup (flushing async writers, closing network connections gracefully):
+
+```csharp
+public class AsyncDatabaseSession : IAsyncDisposable, IDisposable
+{
+    private DbConnection? _connection;
+    private bool _disposed;
+
+    public AsyncDatabaseSession(DbConnection connection)
+    {
+        _connection = connection;
+    }
+
+    // Async path: preferred when available
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync(); // async close
+            _connection = null;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    // Sync path: fallback for non-async callers
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _connection?.Dispose(); // sync close
+        _connection = null;
+        GC.SuppressFinalize(this);
+    }
+}
+
+// Usage with await using:
+await using var session = new AsyncDatabaseSession(CreateConnection());
+await session.ExecuteAsync(sql);
+// DisposeAsync() called automatically
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The ObjectDisposedException Contract**
+
+A frequently overlooked part of the Dispose pattern: all **public methods** must throw `ObjectDisposedException` after disposal. This catches bugs where a disposed object is accidentally reused.
+
+In .NET 7+, use the new helper:
+```csharp
+public void DoWork()
+{
+    // .NET 7+ — preferred: throws ObjectDisposedException with type name
+    ObjectDisposedException.ThrowIf(_disposed, this);
+
+    // Pre-.NET 7:
+    if (_disposed) throw new ObjectDisposedException(GetType().Name);
+}
+```
+
+There are three other subtle requirements senior engineers must know:
+
+1. **Dispose must be idempotent** — calling it multiple times must not throw. The `if (_disposed) return;` check handles this.
+
+2. **Dispose must not throw** (by convention) — wrap cleanup in try/catch if the unmanaged close operation can fail. Exceptions in finalizers are swallowed by the runtime; exceptions in Dispose propagate and can hide the original exception if thrown inside a `using`.
+
+3. **Thread safety is your responsibility** — `Dispose()` is not inherently thread-safe. If multiple threads can call Dispose concurrently, use `Interlocked.Exchange`:
+```csharp
+public void Dispose()
+{
+    // Thread-safe dispose using Interlocked — only one thread wins
+    if (Interlocked.Exchange(ref _disposeState, 1) == 1) return;
+    // cleanup...
+    GC.SuppressFinalize(this);
+}
+private int _disposeState; // 0 = not disposed, 1 = disposed
+```
 </Callout>
+
+---
+
+## CodeChallenge: Identifying the Dispose Bug
+
+<CodeChallenge
+  id="04-memory-gc/dispose-pattern/challenge-1"
+  title="What's Wrong With This Dispose Pattern?"
+  description="This class wraps an unmanaged handle. Find the bug in its Dispose implementation."
+  code={`public class ResourceHandle : IDisposable
+{
+    private IntPtr _nativeHandle;
+    private Stream _logStream; // managed IDisposable
+    private bool _disposed;
+
+    public ResourceHandle(IntPtr handle, Stream logStream)
+    {
+        _nativeHandle = handle;
+        _logStream = logStream;
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Release unmanaged handle
+        NativeLib.CloseHandle(_nativeHandle);
+        _nativeHandle = IntPtr.Zero;
+
+        // Dispose managed stream
+        _logStream.Dispose();
+    }
+
+    public void Dispose()
+    {
+        Dispose(disposing: true);
+        GC.SuppressFinalize(this);
+    }
+
+    ~ResourceHandle()
+    {
+        Dispose(disposing: false);
+    }
+}`}
+  options={[
+    "GC.SuppressFinalize should be called inside Dispose(bool), not in the public Dispose()",
+    "The finalizer calls Dispose(disposing: false), but Dispose(bool) calls _logStream.Dispose() regardless of the disposing parameter — touching a managed object from the finalizer",
+    "The _disposed flag is not protected by a lock, causing thread safety issues",
+    "NativeLib.CloseHandle should only be called when disposing is true"
+  ]}
+  correctAnswer={1}
+  explanation="The bug is in Dispose(bool): it calls _logStream.Dispose() unconditionally, but when called from the finalizer (disposing: false), managed objects like _logStream may already have been finalized themselves. Disposing an already-finalized object can cause crashes or undefined behavior. The fix: wrap _logStream.Dispose() in 'if (disposing) { _logStream.Dispose(); }' so it's only called on the normal Dispose() path, not from the finalizer."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Implementing a Dispose method", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/implementing-dispose" },
+    { label: "IDisposable interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.idisposable" },
+    { label: "SafeHandle class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.safehandle" },
+    { label: "IAsyncDisposable interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.iasyncdisposable" },
+  ]}
+/>

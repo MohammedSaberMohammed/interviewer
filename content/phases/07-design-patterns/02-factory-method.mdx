@@ -1,24 +1,257 @@
 ---
-title: "Factory Method"
+title: "Factory Method — Virtual Constructor"
 slug: "factory-method"
 order: 2
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["factory method", "creational", "virtual constructor", "open/closed principle", "polymorphism"]
+summary: "Factory Method lets subclasses decide which class to instantiate — decoupling object creation from usage and keeping code open for extension."
+docsLinks:
+  - label: "DbProviderFactory (BCL example)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.data.common.dbproviderfactory"
+  - label: "Keyed services in .NET 8 DI"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#keyed-services"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Hard-Coded `new`
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When you write `new SqlConnection()` inside a method, you've coupled your code to a concrete type. Switching databases means touching every call site. The Factory Method pattern moves that `new` into an overridable method, letting subclasses swap the concrete type.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Tightly coupled — changing the parser means changing this class
+public class ReportGenerator
+{
+    public Report Generate(string data)
+    {
+        var parser = new CsvParser(); // hard-coded — no way to swap
+        return parser.Parse(data);
+    }
+}
+```
+
+---
+
+## Structure of Factory Method
+
+```csharp
+// Product interface
+public interface IParser
+{
+    Report Parse(string data);
+}
+
+// Concrete products
+public class CsvParser : IParser
+{
+    public Report Parse(string data) =>
+        new Report($"{data.Split('\n').Length} rows parsed from CSV");
+}
+
+public class JsonParser : IParser
+{
+    public Report Parse(string data) =>
+        new Report("JSON document parsed");
+}
+
+// Creator — declares the factory method as abstract
+public abstract class ReportGenerator
+{
+    // THE factory method — subclasses override this
+    protected abstract IParser CreateParser();
+
+    // Template algorithm uses the factory method
+    public Report Generate(string data)
+    {
+        IParser parser = CreateParser(); // polymorphic call
+        Report report = parser.Parse(data);
+        // shared post-processing here...
+        return report;
+    }
+}
+
+// Concrete creators — each overrides the factory method
+public class CsvReportGenerator : ReportGenerator
+{
+    protected override IParser CreateParser() => new CsvParser();
+}
+
+public class JsonReportGenerator : ReportGenerator
+{
+    protected override IParser CreateParser() => new JsonParser();
+}
+
+// Usage — adding XML requires zero changes to existing code
+ReportGenerator generator = new CsvReportGenerator();
+Report report = generator.Generate("name,age\nAlice,30");
+```
+
+Adding XML support means adding `XmlParser` and `XmlReportGenerator` — zero changes to existing classes (Open/Closed Principle).
+
+---
+
+## Simplified: Factory Method as a Delegate
+
+Modern C# often replaces the abstract class with a `Func<T>` delegate — lighter weight and more composable:
+
+```csharp
+public class ReportGenerator
+{
+    private readonly Func<IParser> _parserFactory;
+
+    public ReportGenerator(Func<IParser> parserFactory)
+    {
+        _parserFactory = parserFactory;
+    }
+
+    public Report Generate(string data)
+    {
+        IParser parser = _parserFactory(); // factory method via delegate
+        return parser.Parse(data);
+    }
+}
+
+// Inject the factory — easy to mock in tests
+var csvGenerator  = new ReportGenerator(() => new CsvParser());
+var jsonGenerator = new ReportGenerator(() => new JsonParser());
+
+// Or register in DI
+builder.Services.AddTransient<ReportGenerator>(sp =>
+    new ReportGenerator(() => new CsvParser()));
+```
+
+This trades inheritance for composition — often cleaner in modern C#.
+
+---
+
+## Real .NET BCL Example: `DbProviderFactory`
+
+ADO.NET's `DbProviderFactory` is a textbook Factory Method — it abstracts over SQL Server, PostgreSQL, SQLite, and others:
+
+```csharp
+// Get a provider-specific factory
+DbProviderFactory factory = DbProviderFactories.GetFactory("Microsoft.Data.SqlClient");
+
+// Factory methods return provider-specific objects — without knowing the concrete type
+DbConnection  connection = factory.CreateConnection()!;   // returns SqlConnection
+DbCommand     command    = factory.CreateCommand()!;      // returns SqlCommand
+DbDataAdapter adapter    = factory.CreateDataAdapter()!;  // returns SqlDataAdapter
+
+connection.ConnectionString = "Server=.;Database=MyDb;Trusted_Connection=true;";
+await connection.OpenAsync();
+
+// Switch to PostgreSQL — only the factory changes, nothing else
+DbProviderFactory pgFactory    = DbProviderFactories.GetFactory("Npgsql");
+DbConnection      pgConnection = pgFactory.CreateConnection()!; // NpgsqlConnection
+```
+
+---
+
+<ComparisonTable
+  title="Factory Method vs Simple Factory vs Abstract Factory"
+  headers={["Aspect", "Simple Factory", "Factory Method", "Abstract Factory"]}
+  rows={[
+    ["Structure", "Static helper method", "Override in subclass", "Interface with multiple methods"],
+    ["Extension", "Modify the factory", "Add new subclass", "Add new factory implementation"],
+    ["Scope", "One product type", "One product type", "Families of related products"],
+    ["When to use", "Few types, rarely changing", "Product varies by subclass", "Multiple coordinated products"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/factory-method/challenge-1"
+  title="Extend the Factory Without Modifying Existing Code"
+  description="Given the ReportGenerator hierarchy above, what is the correct way to add XML support following the Factory Method pattern?"
+  code={`// Option A — modify the base class with a switch
+public abstract class ReportGenerator
+{
+    public Report Generate(string data, string format)
+    {
+        IParser parser = format switch {
+            "csv"  => new CsvParser(),
+            "xml"  => new XmlParser(),  // added here
+            _      => throw new ArgumentException()
+        };
+        return parser.Parse(data);
+    }
+}
+
+// Option B — add a new subclass
+public class XmlReportGenerator : ReportGenerator
+{
+    protected override IParser CreateParser() => new XmlParser();
+}`}
+  options={[
+    "Option A — centralizing the switch makes it easier to maintain",
+    "Option B — adding a subclass follows Open/Closed Principle",
+    "Both options are equally valid Factory Method implementations",
+    "Neither — use a Dictionary<string, Func<IParser>> registry"
+  ]}
+  correctAnswer={1}
+  explanation="Option B is the Factory Method pattern applied correctly. New product types are added by creating new subclasses — extending the system without modifying existing code (Open/Closed Principle). Option A violates OCP: every new format requires modifying the base class. The Dictionary registry approach (Option D) is valid but is a Simple Factory variant, not the Factory Method pattern."
+/>
+
+---
+
+<Callout type="senior">
+**Factory Method in ASP.NET Core DI — Keyed Services**
+
+ASP.NET Core's DI container uses factory methods when you need per-resolution control. In .NET 8+, keyed services make named variants of an abstraction first-class:
+
+```csharp
+// Register named variants (.NET 8+)
+builder.Services.AddKeyedTransient<IParser, CsvParser>("csv");
+builder.Services.AddKeyedTransient<IParser, JsonParser>("json");
+builder.Services.AddKeyedTransient<IParser, XmlParser>("xml");
+
+// Resolve by key — the container acts as a factory
+public class ParserConsumer
+{
+    public ParserConsumer([FromKeyedServices("csv")] IParser parser)
+    {
+        // Gets CsvParser
+    }
+}
+
+// Or resolve dynamically via IKeyedServiceProvider
+public class DynamicParserFactory
+{
+    private readonly IKeyedServiceProvider _sp;
+    public DynamicParserFactory(IKeyedServiceProvider sp) => _sp = sp;
+
+    public IParser GetParser(string format) =>
+        _sp.GetRequiredKeyedService<IParser>(format);
+}
+```
+
+**Rule of thumb**: If your factory just news up objects, use DI. If your factory has logic (caching, pooling, configuration-driven decisions), a dedicated factory class adds value.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/factory-method/quiz-1"
+  question="Which SOLID principle does Factory Method most directly support?"
+  options={[
+    "Single Responsibility — each class does one thing",
+    "Open/Closed — open for extension, closed for modification",
+    "Liskov Substitution — subtypes are substitutable",
+    "Dependency Inversion — depend on abstractions"
+  ]}
+  correctAnswer={1}
+  explanation="Factory Method most directly supports the Open/Closed Principle. New product types are added by creating new subclasses (extending), without modifying the existing creator (closed). It also supports DIP by making the creator depend on the IProduct abstraction rather than a concrete type — but OCP is the primary motivation."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DbProviderFactory Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.data.common.dbproviderfactory" },
+    { label: "Factory-based middleware activation in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/extensibility" },
+    { label: "Keyed services in .NET 8 DI", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#keyed-services" },
+  ]}
+/>

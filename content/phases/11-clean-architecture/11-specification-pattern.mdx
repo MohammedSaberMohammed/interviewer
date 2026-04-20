@@ -1,24 +1,287 @@
 ---
-title: "Specification Pattern"
+title: "Specification Pattern: Composable Queries & EF Core Integration"
 slug: "specification-pattern"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["specification pattern", "EF Core", "composable queries", "domain logic", "Ardalis.Specification", "LINQ"]
+summary: "The Specification pattern encapsulates query logic as reusable, composable objects — keeping complex filtering logic in the domain or application layer, not scattered across repositories."
+docsLinks:
+  - label: "Specification pattern (.NET Microservices Architecture)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design#the-specification-pattern"
+  - label: "Ardalis.Specification library"
+    url: "https://specification.ardalis.com/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Query Logic Scattered Across Repositories
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Without specifications, every query variation requires a new repository method:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// After a few months, IOrderRepository has exploded:
+public interface IOrderRepository
+{
+    Task<IReadOnlyList<Order>> GetDraftsByCustomerAsync(CustomerId id, CancellationToken ct);
+    Task<IReadOnlyList<Order>> GetConfirmedByCustomerAsync(CustomerId id, CancellationToken ct);
+    Task<IReadOnlyList<Order>> GetConfirmedAfterAsync(DateTime after, CancellationToken ct);
+    Task<IReadOnlyList<Order>> GetHighValueConfirmedOrdersAsync(decimal minTotal, CancellationToken ct);
+    Task<IReadOnlyList<Order>> GetExpiredDraftsAsync(DateTime olderThan, CancellationToken ct);
+    // ...12 more methods
+}
+```
+
+This is the "repository explosion" problem. The Specification pattern replaces these one-off methods with composable query objects.
+
+---
+
+## A Minimal Specification Implementation
+
+```csharp
+// Domain/Common/Specification.cs
+public abstract class Specification<T>
+{
+    // The core query predicate — translatable to SQL by EF Core
+    public abstract Expression<Func<T, bool>> Criteria { get; }
+
+    // Optional includes, ordering, paging
+    public List<Expression<Func<T, object>>> Includes { get; } = new();
+    public Expression<Func<T, object>>? OrderBy { get; protected set; }
+    public Expression<Func<T, object>>? OrderByDescending { get; protected set; }
+    public int? Take { get; protected set; }
+    public int? Skip { get; protected set; }
+
+    protected Specification<T> AddInclude(Expression<Func<T, object>> include)
+    {
+        Includes.Add(include);
+        return this;
+    }
+
+    public bool IsSatisfiedBy(T entity)
+        => Criteria.Compile()(entity); // used for in-memory testing
+}
+```
+
+---
+
+## Concrete Specifications
+
+```csharp
+// Application/Orders/Specifications/DraftOrdersForCustomerSpec.cs
+public sealed class DraftOrdersForCustomerSpec : Specification<Order>
+{
+    public DraftOrdersForCustomerSpec(CustomerId customerId, DateTime? olderThan = null)
+    {
+        var predicate = BuildPredicate(customerId, olderThan);
+        Criteria = predicate;
+        AddInclude(o => o.Lines);
+        OrderByDescending = o => o.CreatedAt;
+    }
+
+    public override Expression<Func<Order, bool>> Criteria { get; }
+
+    private static Expression<Func<Order, bool>> BuildPredicate(CustomerId id, DateTime? olderThan)
+    {
+        if (olderThan.HasValue)
+            return o => o.CustomerId == id
+                     && o.Status == OrderStatus.Draft
+                     && o.CreatedAt < olderThan.Value;
+
+        return o => o.CustomerId == id && o.Status == OrderStatus.Draft;
+    }
+}
+
+// Application/Orders/Specifications/HighValueConfirmedOrdersSpec.cs
+public sealed class HighValueConfirmedOrdersSpec : Specification<Order>
+{
+    public HighValueConfirmedOrdersSpec(decimal minimumTotal, string currency)
+    {
+        Criteria = o => o.Status == OrderStatus.Confirmed
+                     && o.TotalAmount >= minimumTotal
+                     && o.Currency == currency;
+        OrderByDescending = o => o.TotalAmount;
+        Take = 100; // safety limit
+    }
+
+    public override Expression<Func<Order, bool>> Criteria { get; }
+}
+
+// Application/Orders/Specifications/OrderByIdWithLinesSpec.cs
+public sealed class OrderByIdWithLinesSpec : Specification<Order>
+{
+    public OrderByIdWithLinesSpec(OrderId orderId)
+    {
+        Criteria = o => o.Id == orderId;
+        AddInclude(o => o.Lines);
+    }
+
+    public override Expression<Func<Order, bool>> Criteria { get; }
+}
+```
+
+---
+
+## Specification-Aware Repository
+
+```csharp
+// Application/Interfaces/IRepository.cs
+public interface IRepository<T> where T : class
+{
+    Task<T?> FirstOrDefaultAsync(Specification<T> spec, CancellationToken ct = default);
+    Task<IReadOnlyList<T>> ListAsync(Specification<T> spec, CancellationToken ct = default);
+    Task<int> CountAsync(Specification<T> spec, CancellationToken ct = default);
+    Task AddAsync(T entity, CancellationToken ct = default);
+    void Remove(T entity);
+}
+
+// Infrastructure/Persistence/EfRepository.cs
+public class EfRepository<T> : IRepository<T> where T : class
+{
+    protected readonly AppDbContext Db;
+
+    public EfRepository(AppDbContext db) => Db = db;
+
+    public async Task<T?> FirstOrDefaultAsync(Specification<T> spec, CancellationToken ct = default)
+        => await ApplySpec(Db.Set<T>(), spec).FirstOrDefaultAsync(ct);
+
+    public async Task<IReadOnlyList<T>> ListAsync(Specification<T> spec, CancellationToken ct = default)
+        => await ApplySpec(Db.Set<T>(), spec).ToListAsync(ct);
+
+    public async Task<int> CountAsync(Specification<T> spec, CancellationToken ct = default)
+        => await Db.Set<T>().Where(spec.Criteria).CountAsync(ct);
+
+    public async Task AddAsync(T entity, CancellationToken ct = default)
+        => await Db.Set<T>().AddAsync(entity, ct);
+
+    public void Remove(T entity) => Db.Set<T>().Remove(entity);
+
+    private static IQueryable<T> ApplySpec(IQueryable<T> query, Specification<T> spec)
+    {
+        query = query.Where(spec.Criteria);
+
+        query = spec.Includes
+            .Aggregate(query, (q, include) => q.Include(include));
+
+        if (spec.OrderBy is not null)
+            query = query.OrderBy(spec.OrderBy);
+        else if (spec.OrderByDescending is not null)
+            query = query.OrderByDescending(spec.OrderByDescending);
+
+        if (spec.Skip.HasValue)
+            query = query.Skip(spec.Skip.Value);
+
+        if (spec.Take.HasValue)
+            query = query.Take(spec.Take.Value);
+
+        return query;
+    }
+}
+```
+
+---
+
+## Usage in Handlers
+
+```csharp
+// Application/Orders/Queries/GetExpiredDrafts/GetExpiredDraftsHandler.cs
+public sealed class GetExpiredDraftsHandler
+    : IRequestHandler<GetExpiredDraftsQuery, IReadOnlyList<ExpiredDraftDto>>
+{
+    private readonly IRepository<Order> _orders;
+
+    public GetExpiredDraftsHandler(IRepository<Order> orders) => _orders = orders;
+
+    public async Task<IReadOnlyList<ExpiredDraftDto>> Handle(
+        GetExpiredDraftsQuery query, CancellationToken ct)
+    {
+        var expiryCutoff = DateTime.UtcNow.AddDays(-7);
+        var spec = new DraftOrdersForCustomerSpec(
+            customerId: new CustomerId(query.CustomerId),
+            olderThan: expiryCutoff);
+
+        var orders = await _orders.ListAsync(spec, ct);
+
+        return orders.Select(o => new ExpiredDraftDto(
+            o.Id.Value,
+            o.CustomerId.Value,
+            o.CreatedAt,
+            o.Total.Amount)).ToList();
+    }
+}
+```
+
+---
+
+## Composing Specifications
+
+```csharp
+// Composable specifications via And/Or operators
+public abstract class Specification<T>
+{
+    // ... existing code ...
+
+    public AndSpecification<T> And(Specification<T> other)
+        => new(this, other);
+
+    public OrSpecification<T> Or(Specification<T> other)
+        => new(this, other);
+}
+
+public sealed class AndSpecification<T> : Specification<T>
+{
+    private readonly Specification<T> _left;
+    private readonly Specification<T> _right;
+
+    public AndSpecification(Specification<T> left, Specification<T> right)
+    {
+        _left = left;
+        _right = right;
+    }
+
+    public override Expression<Func<T, bool>> Criteria
+    {
+        get
+        {
+            var param = Expression.Parameter(typeof(T));
+            var left = Expression.Invoke(_left.Criteria, param);
+            var right = Expression.Invoke(_right.Criteria, param);
+            return Expression.Lambda<Func<T, bool>>(Expression.AndAlso(left, right), param);
+        }
+    }
+}
+
+// Usage: combine specs
+var confirmed = new ConfirmedOrdersSpec();
+var highValue = new HighValueSpec(1000m, "USD");
+var highValueConfirmed = confirmed.And(highValue);
+
+var results = await _orders.ListAsync(highValueConfirmed, ct);
+```
+
+---
+
+<Callout type="senior">
+**When NOT to Use the Specification Pattern**
+
+Specifications shine for reusable, composable filter logic that appears in multiple handlers or that has business meaning (an "expired draft order" is a domain concept worth naming). They're overkill for:
+
+1. **One-off queries in query handlers**: if `GetOrderDetailQuery` just needs one specific join, write the EF Core query inline in the handler. Don't create a `GetOrderDetailSpec` used in exactly one place.
+
+2. **Complex reporting queries**: specifications work well for predicate filtering, but a report with 8 joins, CTEs, and window functions belongs in a raw SQL or Dapper query, not a specification.
+
+3. **Queries that vary dynamically**: a search endpoint with 15 optional filters is better served by a dedicated query builder (Ardalis.Specification supports this well) rather than 2^15 composed specifications.
+
+The Ardalis.Specification library provides a polished, production-grade implementation with EF Core integration out of the box — worth considering before rolling your own.
 </Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Specification pattern (.NET Microservices Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design#the-specification-pattern" },
+    { label: "Ardalis.Specification — library docs", url: "https://specification.ardalis.com/" },
+    { label: "eShopOnWeb — specification pattern usage", url: "https://github.com/dotnet-architecture/eShopOnWeb" },
+  ]}
+/>

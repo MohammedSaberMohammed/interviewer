@@ -1,24 +1,354 @@
 ---
-title: "Object Pooling Patterns"
+title: "Object Pooling: ObjectPool<T> and Custom Pools"
 slug: "object-pooling"
 order: 13
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["object pooling", "ObjectPool", "Microsoft.Extensions.ObjectPool", "performance", "GC pressure", "reuse"]
+summary: "Object pooling extends the ArrayPool idea to arbitrary objects — expensive to create, cheap to reuse. Learn ObjectPool<T> from Microsoft.Extensions.ObjectPool, custom pool patterns, and when pooling helps vs hurts."
+docsLinks:
+  - label: "Object reuse with ObjectPool in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/objectpool"
+  - label: "Microsoft.Extensions.ObjectPool namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.objectpool"
+  - label: "DefaultObjectPool<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.objectpool.defaultobjectpool-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Object Pooling?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Some objects are expensive to construct but cheap to reset and reuse:
+- `StringBuilder` — allocates internal char buffer on creation
+- `MemoryStream` — allocates internal byte buffer
+- Database connections — TCP handshake + auth on creation
+- Regex matchers compiled to IL
+- JSON serializer state
+- Protobuf codecs
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+For these, pooling eliminates repeated allocation/GC at the cost of explicit "rent and return" lifecycle management.
+
+```csharp
+// Without pooling: 1 StringBuilder created per request
+public string FormatRequest(Request req)
+{
+    var sb = new StringBuilder(256); // heap allocation
+    sb.Append("GET ");
+    sb.Append(req.Path);
+    sb.Append(" HTTP/1.1\r\nHost: ");
+    sb.Append(req.Host);
+    sb.Append("\r\n\r\n");
+    return sb.ToString();
+} // sb becomes garbage
+
+// With pooling: StringBuilder reused across requests
+private static readonly ObjectPool<StringBuilder> _sbPool =
+    new DefaultObjectPoolProvider().CreateStringBuilderPool();
+
+public string FormatRequestPooled(Request req)
+{
+    StringBuilder sb = _sbPool.Get(); // from pool
+    try
+    {
+        sb.Append("GET ");
+        sb.Append(req.Path);
+        sb.Append(" HTTP/1.1\r\nHost: ");
+        sb.Append(req.Host);
+        sb.Append("\r\n\r\n");
+        return sb.ToString();
+    }
+    finally
+    {
+        _sbPool.Return(sb); // back to pool (pool resets it)
+    }
+}
+```
+
+---
+
+## Microsoft.Extensions.ObjectPool
+
+The `Microsoft.Extensions.ObjectPool` package (included in ASP.NET Core) provides `ObjectPool<T>`:
+
+```csharp
+// NuGet: Microsoft.Extensions.ObjectPool
+using Microsoft.Extensions.ObjectPool;
+
+// ObjectPool<T> API:
+public abstract class ObjectPool<T> where T : class
+{
+    public abstract T Get();
+    public abstract void Return(T obj);
+}
+
+// DefaultObjectPoolProvider creates pools using IPooledObjectPolicy<T>:
+var provider = new DefaultObjectPoolProvider();
+
+// Built-in: StringBuilder pool
+ObjectPool<StringBuilder> sbPool = provider.CreateStringBuilderPool(
+    initialCapacity: 256,
+    maximumRetainedCapacity: 4096
+);
+
+// Custom type pool — requires IPooledObjectPolicy<T>:
+public class MyServicePoolPolicy : PooledObjectPolicy<MyService>
+{
+    public override MyService Create() => new MyService();
+
+    public override bool Return(MyService obj)
+    {
+        obj.Reset(); // reset state before returning
+        return true; // return true to keep in pool, false to discard
+    }
+}
+
+ObjectPool<MyService> pool = provider.Create(new MyServicePoolPolicy());
+```
+
+---
+
+## Pool Size and Retention
+
+```csharp
+// DefaultObjectPool keeps at most Environment.ProcessorCount * 2 objects
+// This is intentional: per-CPU slots reduce contention
+
+// For a 16-core server:
+// DefaultObjectPool<T> retains max 32 objects (Environment.ProcessorCount * 2)
+
+// To customize retention:
+public class LargePool<T> : DefaultObjectPool<T> where T : class
+{
+    public LargePool(IPooledObjectPolicy<T> policy)
+        : base(policy, maximumRetained: 100) { }
+}
+
+// The right pool size depends on concurrency:
+// Too small: pool exhausts, falls back to new allocations (defeats purpose)
+// Too large: objects sit idle consuming memory
+
+// Rule: pool size ≈ max concurrent users of the object
+// For ASP.NET Core: max concurrent requests that use the object
+```
+
+---
+
+## Custom Lightweight Pool
+
+For simple scenarios, you don't need the full ObjectPool infrastructure:
+
+```csharp
+// Thread-safe simple pool using ConcurrentBag:
+public sealed class SimplePool<T> where T : class
+{
+    private readonly ConcurrentBag<T> _objects = new();
+    private readonly Func<T> _objectFactory;
+    private readonly Action<T>? _resetAction;
+    private readonly int _maxSize;
+
+    public SimplePool(Func<T> factory, Action<T>? reset = null, int maxSize = 32)
+    {
+        _objectFactory = factory;
+        _resetAction = reset;
+        _maxSize = maxSize;
+    }
+
+    public T Rent()
+        => _objects.TryTake(out T? item) ? item : _objectFactory();
+
+    public void Return(T item)
+    {
+        if (_objects.Count >= _maxSize) return; // discard if pool full
+        _resetAction?.Invoke(item);
+        _objects.Add(item);
+    }
+}
+
+// Usage:
+private static readonly SimplePool<List<int>> _listPool =
+    new(factory: () => new List<int>(64),
+        reset: list => list.Clear(),
+        maxSize: 16);
+
+public int[] GetSortedIds(IEnumerable<int> ids)
+{
+    List<int> list = _listPool.Rent();
+    try
+    {
+        list.AddRange(ids);
+        list.Sort();
+        return list.ToArray();
+    }
+    finally
+    {
+        _listPool.Return(list);
+    }
+}
+```
+
+---
+
+## DI Integration in ASP.NET Core
+
+```csharp
+// Register in DI:
+builder.Services.AddSingleton<ObjectPoolProvider, DefaultObjectPoolProvider>();
+builder.Services.AddSingleton(sp =>
+{
+    var provider = sp.GetRequiredService<ObjectPoolProvider>();
+    return provider.Create(new MyServicePoolPolicy());
+});
+
+// Inject and use:
+public class MyController : ControllerBase
+{
+    private readonly ObjectPool<ExpensiveProcessor> _pool;
+
+    public MyController(ObjectPool<ExpensiveProcessor> pool)
+    {
+        _pool = pool;
+    }
+
+    [HttpPost("process")]
+    public IActionResult Process([FromBody] Data data)
+    {
+        var processor = _pool.Get();
+        try
+        {
+            return Ok(processor.Process(data));
+        }
+        finally
+        {
+            _pool.Return(processor);
+        }
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="Object pooling always improves performance — more pooling is always better."
+  reality="Object pooling introduces overhead and complexity that outweighs the benefit in many cases. Pooling is only worthwhile when: (1) object construction is measurably expensive (> 1 microsecond), (2) the object is allocated frequently (> 1000/sec), and (3) the object can be safely reset between uses. For small, fast-allocating objects that die in Gen 0 anyway, pooling adds thread contention overhead (ConcurrentBag is not free), complicates ownership semantics, and may actually be slower than just allocating."
+  example={`// Pool overhead NOT worth it: simple short-lived DTO
+public record PointDto(double X, double Y); // dies in Gen 0, ~16 bytes
+
+// Pool overhead WORTH IT: compiled Regex pattern
+private static readonly ObjectPool\<Regex\> _regexPool =
+    new DefaultObjectPoolProvider().Create(
+        new StringBuilderPooledObjectPolicy() // just as example
+    );
+
+// Better yet: compiled Regex as static field — zero pool overhead:
+private static readonly Regex _emailPattern =
+    new Regex(@"^[^@]+@[^@]+\.[^@]+$", RegexOptions.Compiled);
+// Compiled static Regex: allocated once, never GC'd — best of all worlds`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Pooling Prevents the Double-Free Bug**
+
+The most dangerous bug in custom object pooling is **returning an object that is still in use**, then having another renter modify it. This creates race conditions that are extremely hard to debug because:
+
+1. The bug manifests as incorrect data, not a crash
+2. The race window may be tiny (microseconds), making it hard to reproduce
+3. Both "users" think they have exclusive access to the object
+
+Defensive patterns:
+```csharp
+// Pattern 1: Wrapper with ownership tracking (debug builds)
+public sealed class Pooled<T> : IDisposable where T : class
+{
+    private T? _value;
+    private readonly ObjectPool<T> _pool;
+
+    internal Pooled(T value, ObjectPool<T> pool)
+    {
+        _value = value;
+        _pool = pool;
+    }
+
+    public T Value => _value ?? throw new ObjectDisposedException(nameof(Pooled<T>));
+
+    public void Dispose()
+    {
+        if (_value is T v)
+        {
+            _value = null;   // null out to catch use-after-return
+            _pool.Return(v);
+        }
+    }
+}
+
+// Pattern 2: Make the pooled object's fields internal — only the pool can reset
+// Pattern 3: Unit test that verifies no state leaks between rentals:
+[Fact]
+public void Pool_DoesNotLeakStateBetweenRentals()
+{
+    var pool = CreatePool();
+    var first = pool.Rent();
+    first.LoadData("sensitive");
+    pool.Return(first);         // pool should reset it
+
+    var second = pool.Rent();   // may be the same object
+    Assert.Empty(second.Data);  // must not see previous rental's data
+    pool.Return(second);
+}
+```
 </Callout>
+
+---
+
+## CodeChallenge: Pool Policy Design
+
+<CodeChallenge
+  id="04-memory-gc/object-pooling/challenge-1"
+  title="Designing a Pool Policy"
+  description="You're pooling a JsonSerializerOptions object. The Return() method in the policy controls whether the object goes back to the pool. Which policy is correct?"
+  code={`public class JsonOptionsPoolPolicy : PooledObjectPolicy<JsonSerializerOptions>
+{
+    public override JsonSerializerOptions Create()
+        => new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+    public override bool Return(JsonSerializerOptions obj)
+    {
+        // Which implementation is correct?
+        // A:
+        return true;
+
+        // B:
+        obj = new JsonSerializerOptions(); // reset to defaults
+        return true;
+
+        // C:
+        return obj.PropertyNameCaseInsensitive; // only return if still configured
+
+        // D:
+        if (obj.IsReadOnly) return false; // discard if locked
+        return true;
+    }
+}`}
+  options={[
+    "Option A: return true — JsonSerializerOptions is immutable once configured, safe to reuse as-is",
+    "Option B: reset to defaults — ensures clean state but defeats the purpose (configuration is lost)",
+    "Option C: check configuration — validates state before returning to pool",
+    "Option D: discard if ReadOnly — ReadOnly JsonSerializerOptions cannot be reconfigured but are safe to reuse"
+  ]}
+  correctAnswer={3}
+  explanation="Option D is the key insight for JsonSerializerOptions pooling. Once JsonSerializerOptions is used in serialization, it becomes read-only (IsReadOnly = true) — any attempt to change its properties throws InvalidOperationException. Read-only options are actually IDEAL for pooling: they're fully configured, thread-safe, and can be reused across any number of concurrent serialization operations without resetting. If somehow an options object is not read-only (hasn't been used yet), it's also safe to return. The correct policy: return true always for JsonSerializerOptions because they are safe to share — but Option D reflects the deepest understanding of the type's thread safety guarantees."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Object reuse with ObjectPool in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/objectpool" },
+    { label: "Microsoft.Extensions.ObjectPool namespace", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.objectpool" },
+    { label: "DefaultObjectPool\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.objectpool.defaultobjectpool-1" },
+    { label: "ArrayPool\<T\> — related pooling concept", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1" },
+  ]}
+/>

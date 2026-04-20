@@ -1,24 +1,258 @@
 ---
-title: "Abstract Factory"
+title: "Abstract Factory — Families of Objects"
 slug: "abstract-factory"
 order: 3
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["abstract factory", "creational", "families of objects", "product consistency", "dependency injection"]
+summary: "Abstract Factory creates families of related objects without specifying concrete classes — ensuring product compatibility across an entire object family."
+docsLinks:
+  - label: "Abstract Factory pattern"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/"
+  - label: "Microsoft.Extensions.Logging factory"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/logging"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Inconsistent Families
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Imagine a UI toolkit that supports Windows and macOS themes. You need a `Button`, `Checkbox`, and `TextBox` — each themed consistently. If you create them independently, you risk mixing a Windows button with a macOS checkbox.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Abstract Factory solves this by grouping related object creation behind a single interface — you get a factory that creates a consistent family.
+
+---
+
+## Structure
+
+```csharp
+// Abstract products
+public interface IButton  { void Render(); }
+public interface ICheckbox { void Render(); }
+
+// Concrete products — Windows family
+public class WindowsButton  : IButton  { public void Render() => Console.WriteLine("Windows Button"); }
+public class WindowsCheckbox : ICheckbox { public void Render() => Console.WriteLine("Windows Checkbox"); }
+
+// Concrete products — macOS family
+public class MacOSButton   : IButton  { public void Render() => Console.WriteLine("macOS Button"); }
+public class MacOSCheckbox : ICheckbox { public void Render() => Console.WriteLine("macOS Checkbox"); }
+
+// Abstract factory — declares creation methods for each product
+public interface IUIFactory
+{
+    IButton   CreateButton();
+    ICheckbox CreateCheckbox();
+}
+
+// Concrete factories — one per product family
+public class WindowsUIFactory : IUIFactory
+{
+    public IButton   CreateButton()   => new WindowsButton();
+    public ICheckbox CreateCheckbox() => new WindowsCheckbox();
+}
+
+public class MacOSUIFactory : IUIFactory
+{
+    public IButton   CreateButton()   => new MacOSButton();
+    public ICheckbox CreateCheckbox() => new MacOSCheckbox();
+}
+
+// Client — uses only the abstract factory interface
+public class Application
+{
+    private readonly IButton   _button;
+    private readonly ICheckbox _checkbox;
+
+    public Application(IUIFactory factory)
+    {
+        _button   = factory.CreateButton();
+        _checkbox = factory.CreateCheckbox();
+    }
+
+    public void RenderUI()
+    {
+        _button.Render();
+        _checkbox.Render();
+    }
+}
+
+// Usage — swap the entire family by changing the factory
+IUIFactory factory = Environment.OSVersion.Platform == PlatformID.Win32NT
+    ? new WindowsUIFactory()
+    : new MacOSUIFactory();
+
+var app = new Application(factory);
+app.RenderUI(); // renders consistent family
+```
+
+---
+
+## Real .NET Example: `ILoggerFactory`
+
+`Microsoft.Extensions.Logging.ILoggerFactory` is an Abstract Factory:
+
+```csharp
+// ILoggerFactory is the abstract factory
+public interface ILoggerFactory : IDisposable
+{
+    ILogger CreateLogger(string categoryName); // factory method for loggers
+    void AddProvider(ILoggerProvider provider);
+}
+
+// Usage — the factory creates consistent loggers
+ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder
+        .AddConsole()           // ConsoleLoggerProvider family
+        .AddDebug()             // DebugLoggerProvider family
+        .SetMinimumLevel(LogLevel.Information);
+});
+
+// CreateLogger returns a logger wired to all registered providers
+ILogger<OrderService> logger = loggerFactory.CreateLogger<OrderService>();
+logger.LogInformation("Order {OrderId} created", orderId);
+
+// In DI — factory is registered and injected
+builder.Services.AddLogging(b => b.AddConsole());
+
+public class OrderService
+{
+    private readonly ILogger<OrderService> _logger;
+
+    // ILogger<T> is created by ILoggerFactory behind the scenes
+    public OrderService(ILogger<OrderService> logger) => _logger = logger;
+}
+```
+
+`ILoggerFactory` creates `ILogger` instances configured consistently — you don't mix providers accidentally.
+
+---
+
+## Database Access Example
+
+```csharp
+// Abstract factory for database access
+public interface IDbFactory
+{
+    IDbConnection  CreateConnection(string connectionString);
+    IDbTransaction CreateTransaction(IDbConnection connection);
+    IDbCommand     CreateCommand(string sql, IDbConnection connection);
+}
+
+// SQL Server implementation
+public class SqlServerDbFactory : IDbFactory
+{
+    public IDbConnection  CreateConnection(string cs)   => new SqlConnection(cs);
+    public IDbTransaction CreateTransaction(IDbConnection conn)
+        => conn.BeginTransaction();
+    public IDbCommand     CreateCommand(string sql, IDbConnection conn)
+        => new SqlCommand(sql, (SqlConnection)conn);
+}
+
+// SQLite implementation (for testing)
+public class SqliteDbFactory : IDbFactory
+{
+    public IDbConnection  CreateConnection(string cs)   => new SqliteConnection(cs);
+    public IDbTransaction CreateTransaction(IDbConnection conn)
+        => conn.BeginTransaction();
+    public IDbCommand     CreateCommand(string sql, IDbConnection conn)
+        => new SqliteCommand(sql, (SqliteConnection)conn);
+}
+
+// Register via DI
+builder.Services.AddSingleton<IDbFactory, SqlServerDbFactory>();
+// In tests:
+// services.AddSingleton<IDbFactory, SqliteDbFactory>();
+```
+
+---
+
+<ComparisonTable
+  title="Abstract Factory vs Factory Method"
+  headers={["Aspect", "Factory Method", "Abstract Factory"]}
+  rows={[
+    ["Creates", "One product type", "Families of related products"],
+    ["Extension point", "Subclass overrides one method", "New factory class for new family"],
+    ["Consistency guarantee", "No — each method is independent", "Yes — factory produces compatible products"],
+    ["Complexity", "Lower", "Higher — more interfaces and classes"],
+    ["Use when", "Product type varies by subclass", "Multiple products must be used together"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/abstract-factory/challenge-1"
+  title="Identify the Abstract Factory Components"
+  description="In the logging example, match each role to the correct class/interface."
+  code={`// Role: Abstract Factory    → ?
+// Role: Concrete Factory     → ?
+// Role: Abstract Product     → ?
+// Role: Concrete Product     → ?
+
+// Classes involved:
+// ILoggerFactory, LoggerFactory, ILogger, ConsoleLogger, ILoggerProvider`}
+  options={[
+    "Abstract Factory=ILoggerFactory, Concrete Factory=LoggerFactory, Abstract Product=ILogger, Concrete Product=ConsoleLogger",
+    "Abstract Factory=LoggerFactory, Concrete Factory=ILoggerProvider, Abstract Product=ILogger, Concrete Product=ConsoleLogger",
+    "Abstract Factory=ILoggerProvider, Concrete Factory=ConsoleLoggerProvider, Abstract Product=ILogger, Concrete Product=ConsoleLogger",
+    "Abstract Factory=ILogger, Concrete Factory=LoggerFactory, Abstract Product=ILoggerProvider, Concrete Product=ConsoleLoggerProvider"
+  ]}
+  correctAnswer={0}
+  explanation="ILoggerFactory is the abstract factory (declares CreateLogger). LoggerFactory is the concrete factory that aggregates providers. ILogger is the abstract product. ConsoleLogger is a concrete product — the logger implementation produced by ConsoleLoggerProvider. ILoggerProvider is a secondary factory in this system that ILoggerFactory delegates to."
+/>
+
+---
+
+<Callout type="senior">
+**Abstract Factory and the DI Container**
+
+In modern .NET, the DI container often replaces hand-rolled Abstract Factories. Instead of writing a factory interface, you register different concrete families and select them via configuration:
+
+```csharp
+// Register the "production" family
+if (builder.Environment.IsProduction())
+{
+    builder.Services.AddSingleton<IDbFactory, SqlServerDbFactory>();
+    builder.Services.AddSingleton<ICacheFactory, RedisFactory>();
+    builder.Services.AddSingleton<IMessagingFactory, ServiceBusFactory>();
+}
+else // test/dev family
+{
+    builder.Services.AddSingleton<IDbFactory, SqliteDbFactory>();
+    builder.Services.AddSingleton<ICacheFactory, InMemoryCacheFactory>();
+    builder.Services.AddSingleton<IMessagingFactory, InMemoryMessagingFactory>();
+}
+```
+
+The container acts as the abstract factory — resolving a consistent family of services based on registration.
+
+**Warning**: Avoid making your abstract factory "too abstract". If products are rarely created together or don't need to be compatible, separate Factory Methods are simpler. Abstract Factory shines when you have 3+ products that form a coherent family.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/abstract-factory/quiz-1"
+  question="What key guarantee does Abstract Factory provide that Factory Method does not?"
+  options={[
+    "It creates objects lazily to improve startup performance",
+    "Products from the same factory are guaranteed to be compatible with each other",
+    "It can create objects without any concrete classes",
+    "It uses generics to avoid casting"
+  ]}
+  correctAnswer={1}
+  explanation="The key guarantee of Abstract Factory is product compatibility. When you get a Button and Checkbox from the same factory, they belong to the same family (Windows or macOS) and work together. With separate Factory Methods, nothing prevents you from mixing a Windows Button with a macOS Checkbox — the Abstract Factory enforces consistency at the factory level."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ILoggerFactory Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.iloggerfactory" },
+    { label: "Logging in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/logging" },
+    { label: "Dependency injection in .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection" },
+  ]}
+/>

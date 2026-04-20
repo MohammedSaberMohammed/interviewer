@@ -1,24 +1,310 @@
 ---
-title: "ref struct: Why They Exist"
+title: "ref struct: Stack-Only Types"
 slug: "ref-struct"
 order: 8
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["ref struct", "stack", "Span", "stack-only", "value types", "C# 7.2", "unsafe"]
+summary: "ref structs are a special category of value type that can ONLY exist on the stack. They enable high-performance APIs like Span<T> and are the foundation of allocation-free processing in modern .NET."
+docsLinks:
+  - label: "ref struct types (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/ref-struct"
+  - label: "Write safe and efficient C# code"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code"
+  - label: "Span<T> struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.span-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Makes a ref struct Special?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A `ref struct` is a value type with one extra guarantee enforced by the compiler: **it can only ever live on the stack**. It can never be:
+- Boxed to the heap
+- Stored as a class field
+- Used as a generic type argument (in most contexts)
+- Captured by a lambda or async state machine
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+This restriction is not a bug — it's the **feature**. It allows `ref struct` types to safely hold references to stack memory (like `stackalloc` buffers) without the risk of the stack going away while the heap object lives on.
+
+```csharp
+// Declaring a ref struct:
+public ref struct StackOnlyParser
+{
+    private ReadOnlySpan<byte> _data;  // can hold stack references
+    private int _position;
+
+    public StackOnlyParser(ReadOnlySpan<byte> data)
+    {
+        _data = data;
+        _position = 0;
+    }
+
+    public bool TryReadByte(out byte value)
+    {
+        if (_position >= _data.Length) { value = 0; return false; }
+        value = _data[_position++];
+        return true;
+    }
+}
+
+// Usage:
+Span<byte> buffer = stackalloc byte[256];
+FillBuffer(buffer);
+var parser = new StackOnlyParser(buffer);
+// parser and buffer both live on the stack — no heap involved at all
+```
+
+---
+
+## Why the Restrictions Exist
+
+Consider what would happen if a `ref struct` could be stored on the heap:
+
+```csharp
+// Hypothetical ILLEGAL scenario — why the compiler prevents this:
+public class BrokenCache  // class lives on heap
+{
+    // Span<T> is a ref struct — this is ILLEGAL:
+    public Span<byte> Buffer; // COMPILE ERROR: ref struct cannot be a field in a class
+}
+
+// WHY this would be dangerous:
+void ProduceStackData(BrokenCache cache)
+{
+    Span<byte> stackSpan = stackalloc byte[64]; // lives on THIS method's stack frame
+    cache.Buffer = stackSpan; // if this were legal...
+} // stackSpan is now invalid — stack frame popped!
+
+void ConsumeData(BrokenCache cache)
+{
+    // cache.Buffer would point to dead stack memory → memory corruption
+    var b = cache.Buffer[0]; // use-after-free bug!
+}
+```
+
+The compiler's restriction prevents this class of memory safety bug entirely.
+
+---
+
+## Compiler-Enforced Rules for ref struct
+
+```csharp
+public ref struct MyRefStruct
+{
+    public int Value;
+}
+
+// Rule 1: Cannot be boxed
+MyRefStruct s = new MyRefStruct { Value = 42 };
+object boxed = s;          // COMPILE ERROR
+IComparable c = s;         // COMPILE ERROR (interface boxing)
+
+// Rule 2: Cannot be a field in a non-ref-struct type
+public class Foo
+{
+    MyRefStruct _field;    // COMPILE ERROR
+}
+
+// Rule 3: Can be a field in another ref struct:
+public ref struct Composite
+{
+    MyRefStruct Inner;     // OK — Composite is also a ref struct
+    ReadOnlySpan<char> Text; // OK — Span<T> is a ref struct
+}
+
+// Rule 4: Cannot be used across await points
+async Task FailAsync()
+{
+    MyRefStruct s = default;
+    await Task.Yield();    // COMPILE ERROR: cannot use ref struct across await
+    Console.WriteLine(s.Value);
+}
+
+// Rule 5: Cannot be captured by a lambda
+MyRefStruct local = default;
+Action act = () => Console.WriteLine(local.Value); // COMPILE ERROR
+
+// Rule 6: Cannot be used as a generic type argument (in most cases)
+List<MyRefStruct> list = new();  // COMPILE ERROR
+```
+
+---
+
+## Built-in ref struct Types
+
+The most important ref structs in the BCL are part of the high-performance pipeline:
+
+```csharp
+// Span<T> and ReadOnlySpan<T> — covered in lesson 07
+Span<byte> span = stackalloc byte[64];
+ReadOnlySpan<char> chars = "hello".AsSpan();
+
+// System.Text.Json — JsonElement (actually a regular struct, but similar constraints)
+// System.Text.UTF8JsonReader (a ref struct):
+ref struct Utf8JsonReaderUsage
+{
+    static void Parse(ReadOnlySpan<byte> jsonData)
+    {
+        var reader = new Utf8JsonReader(jsonData); // ref struct — stack only
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.PropertyName)
+            {
+                string? name = reader.GetString();
+            }
+        }
+    }
+}
+
+// System.Buffers.SequenceReader<T> — reads from ReadOnlySequence<T>
+// Used internally by ASP.NET Core's request parsing
+```
+
+---
+
+## Writing Your Own ref struct
+
+```csharp
+// A practical ref struct: a stack-only StringBuilder alternative for small strings
+public ref struct ValueStringBuilder
+{
+    private Span<char> _buffer;
+    private int _length;
+
+    public ValueStringBuilder(Span<char> initialBuffer)
+    {
+        _buffer = initialBuffer;
+        _length = 0;
+    }
+
+    public void Append(ReadOnlySpan<char> value)
+    {
+        value.CopyTo(_buffer[_length..]);
+        _length += value.Length;
+    }
+
+    public void Append(char c)
+    {
+        _buffer[_length++] = c;
+    }
+
+    public ReadOnlySpan<char> AsSpan() => _buffer[.._length];
+
+    public override string ToString() => _buffer[.._length].ToString();
+
+    public int Length => _length;
+}
+
+// Usage: build a short string with zero heap allocation
+static string FormatKey(int userId, int sessionId)
+{
+    Span<char> buffer = stackalloc char[32];
+    var sb = new ValueStringBuilder(buffer);
+    sb.Append("user:");
+    sb.Append(userId.ToString()); // still allocates — use TryFormat instead
+    sb.Append("/session:");
+    sb.Append(sessionId.ToString());
+    return sb.ToString(); // only one allocation: the final string
+}
+
+// Even better: use TryFormat to avoid the ToString() allocations:
+static string FormatKeyOptimal(int userId, int sessionId)
+{
+    Span<char> buffer = stackalloc char[32];
+    var sb = new ValueStringBuilder(buffer);
+    sb.Append("user:");
+    userId.TryFormat(sb._buffer[sb._length..], out int written);
+    // ... etc.
+    return sb.ToString();
+}
+```
+
+---
+
+## C# 13: ref struct Interfaces and Generic Constraints
+
+C# 13 (.NET 9) relaxes some restrictions on ref structs:
+
+```csharp
+// C# 13: ref structs can implement interfaces (with restrictions)
+public ref struct EnumerableRefStruct : IDisposable
+{
+    public void Dispose() { /* cleanup */ }
+    // Interfaces work, but boxing through the interface is still forbidden
+}
+
+// C# 13: generic type parameters can be constrained to allow ref structs
+public static void ProcessRef<T>(T value)
+    where T : allows ref struct  // new constraint in C# 13
+{
+    // Can now accept Span<byte>, custom ref structs, etc.
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: ref struct Is How .NET Achieves C-Level Performance**
+
+The combination of `ref struct` + `Span<T>` + `stackalloc` is how the .NET team rewrote critical BCL components in .NET 5-8 to match or beat native C performance:
+
+- `System.Text.Json` uses `Utf8JsonReader` (ref struct) to parse JSON directly from UTF-8 bytes without converting to UTF-16 strings
+- ASP.NET Core's HTTP/1.1 parser uses `SequenceReader<byte>` (ref struct) to parse headers from network buffers without any allocations
+- `System.Net.Http.Headers` uses `Span<char>` parsing instead of `string.Split()`
+
+The real-world impact is dramatic. The ASP.NET Core team measured that moving from string-based parsing to Span-based parsing reduced allocation in request parsing from ~30KB per request to near zero.
+
+For your own high-performance code, the design pattern is:
+```csharp
+// Layer 1: ref struct does the actual work on raw memory
+public ref struct LowLevelParser
+{
+    private ReadOnlySpan<byte> _data;
+    // ... parsing logic
+}
+
+// Layer 2: regular struct/class wraps ref struct for storage
+public class HighLevelParser
+{
+    private byte[] _buffer;
+
+    public ParseResult Parse()
+    {
+        var parser = new LowLevelParser(_buffer.AsSpan()); // ref struct on stack
+        return parser.ParseAll(); // result goes on heap, parser stays on stack
+    }
+}
+```
+
+The ref struct layer stays on the stack (zero allocation), while results are promoted to the heap only at the boundary where they must survive.
 </Callout>
+
+---
+
+## Quiz: ref struct Constraints
+
+<Quiz
+  id="04-memory-gc/ref-struct/quiz-1"
+  question="Why can a ref struct not be stored as a field in a regular class?"
+  options={[
+    "Because ref structs are too large to fit in the class object on the heap",
+    "Because a class lives on the heap, and a ref struct may contain references to stack memory that could be freed before the class is GC'd",
+    "Because the GC cannot scan ref struct fields for references",
+    "Because ref structs do not support inheritance and classes require inheritable fields"
+  ]}
+  correctAnswer={1}
+  explanation="The core reason is memory safety. A ref struct can hold a pointer into stack-allocated memory (via Span<T> wrapping a stackalloc buffer). If you could store a ref struct in a class (which lives on the heap), the heap object could outlive the stack frame that owns the stackalloc memory, resulting in a dangling pointer and memory corruption. The compiler prohibits this entire category at compile time, making the constraint a safety guarantee rather than a limitation."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ref struct types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/ref-struct" },
+    { label: "Write safe and efficient C# code", url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code" },
+    { label: "Span\<T\> struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.span-1" },
+    { label: "Utf8JsonReader struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.text.json.utf8jsonreader" },
+  ]}
+/>

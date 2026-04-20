@@ -1,24 +1,219 @@
 ---
-title: "FrozenDictionary (.NET 8+)"
+title: "FrozenDictionary & FrozenSet (.NET 8): Read-Optimized Collections"
 slug: "frozen-collections"
 order: 7
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["FrozenDictionary", "FrozenSet", ".NET 8", "read-optimized", "startup", "performance", "lookup"]
+summary: "FrozenDictionary<K,V> and FrozenSet<T> (.NET 8) are immutable collections optimized for maximum read throughput. They trade a slow, one-time construction phase for lookups that significantly outperform Dictionary and ImmutableDictionary — ideal for application startup initialization."
+docsLinks:
+  - label: "FrozenDictionary<TKey,TValue> (.NET 8)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozendictionary-2"
+  - label: "FrozenSet<T> (.NET 8)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozenset-1"
+  - label: "System.Collections.Frozen namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem FrozenDictionary Solves
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+In many applications, certain collections are built once at startup and then read millions of times without mutation:
+- HTTP route tables
+- Configuration maps
+- Country/currency code tables
+- Permission matrices
+- Keyword/reserved-word tables in parsers
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+For these cases, `Dictionary<K,V>` is good but not optimal — it uses a general-purpose hash table designed for both reads and writes. `ImmutableDictionary<K,V>` is immutable but uses a tree, paying O(log n) per lookup.
+
+`FrozenDictionary<K,V>` (.NET 8, `System.Collections.Frozen`) is purpose-built: **pay extra once at construction, get maximum lookup speed forever after**.
+
+---
+
+## Creating Frozen Collections
+
+```csharp
+using System.Collections.Frozen;
+
+// From any IDictionary or IEnumerable<KeyValuePair> via ToFrozenDictionary()
+Dictionary<string, int> source = new()
+{
+    ["red"]   = 0xFF0000,
+    ["green"] = 0x00FF00,
+    ["blue"]  = 0x0000FF
+};
+
+FrozenDictionary<string, int> colors = source.ToFrozenDictionary();
+// Or with a comparer:
+FrozenDictionary<string, int> ci = source.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+// Access — same API as Dictionary
+int hex = colors["red"];                       // 0xFF0000
+bool has = colors.TryGetValue("blue", out _);  // true
+bool cont = colors.ContainsKey("purple");      // false
+
+// FrozenSet<T>
+FrozenSet<string> keywords = new[] { "if", "else", "while", "for", "return" }
+    .ToFrozenSet(StringComparer.Ordinal);
+
+bool isKeyword = keywords.Contains("while"); // true
+```
+
+---
+
+## What Happens During ToFrozenDictionary()
+
+Construction is expensive. The runtime **analyzes the key set** and selects the optimal internal layout from several strategies:
+
+1. **Int32 keys / small sets**: direct array indexing or perfect hash lookup
+2. **String keys**: may build a trie-based structure or a minimal perfect hash tailored to the exact set of strings
+3. **General keys**: computes a **minimal perfect hash function** (no collisions possible) using the actual key data
+
+This analysis phase is O(n) to O(n²) in the worst case but runs once. After it, lookups have:
+- No collision chains to walk
+- No bounds checking beyond the hash
+- Better cache behavior (denser storage than chained hash tables)
+
+```csharp
+// Benchmarks from .NET team (approximate for string lookups, 100 keys):
+// Dictionary<string, T>:     ~25 ns per lookup
+// ImmutableDictionary:       ~100 ns per lookup (tree traversal)
+// FrozenDictionary<string, T>: ~15 ns per lookup (optimal for string keys)
+```
+
+---
+
+## Startup Initialization Pattern
+
+```csharp
+// Program.cs / Startup — build frozen collections once
+public static class AppData
+{
+    // Built once, read everywhere — no lock needed (immutable)
+    public static readonly FrozenDictionary<string, CountryInfo> Countries =
+        LoadCountries().ToFrozenDictionary(c => c.Code, StringComparer.OrdinalIgnoreCase);
+
+    public static readonly FrozenSet<string> ReservedUsernames =
+        LoadReservedNames().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    private static IEnumerable<CountryInfo> LoadCountries() { /* load from JSON/DB */ }
+    private static IEnumerable<string> LoadReservedNames() { /* load from config */ }
+}
+
+// Used in hot path — no allocation, no lock, maximum throughput
+bool IsValidCountry(string code) => AppData.Countries.ContainsKey(code);
+bool IsReserved(string name)     => AppData.ReservedUsernames.Contains(name);
+```
+
+---
+
+## Dependency Injection Integration
+
+```csharp
+// Register in DI as singleton — construction happens once at startup
+builder.Services.AddSingleton<FrozenDictionary<int, Product>>(sp =>
+{
+    var db = sp.GetRequiredService<ProductDbContext>();
+    return db.Products
+        .AsNoTracking()
+        .ToDictionary(p => p.Id)
+        .ToFrozenDictionary();
+});
+
+// Inject anywhere — lookup is zero-allocation, lock-free
+class ProductService(FrozenDictionary<int, Product> catalog)
+{
+    public Product? FindById(int id) =>
+        catalog.TryGetValue(id, out var p) ? p : null;
+}
+```
+
+---
+
+## What FrozenDictionary Cannot Do
+
+```csharp
+var frozen = source.ToFrozenDictionary();
+
+// No mutation — these don't exist:
+// frozen.Add("purple", 0x800080);     // compile error
+// frozen["yellow"] = 0xFFFF00;        // compile error (no set indexer)
+// frozen.Remove("red");               // compile error
+
+// Count and Keys/Values are available:
+Console.WriteLine(frozen.Count);       // read-only properties work
+foreach (var key in frozen.Keys)
+    Console.WriteLine(key);
+
+// To "update" — create a new FrozenDictionary (rare in practice)
+var updated = source.Append(KeyValuePair.Create("purple", 0x800080))
+    .ToFrozenDictionary(); // rebuild entirely
+```
+
+<Callout type="trap">
+**Trap: Don't Use FrozenDictionary for Frequently Changing Data**
+
+`FrozenDictionary` is designed for **write-once, read-many** scenarios. If your data changes even occasionally (e.g., feature flags refreshed every 5 minutes), the construction cost makes it inappropriate. Use `Dictionary<K,V>` under a `ReaderWriterLockSlim`, or `ImmutableDictionary` with `ImmutableInterlocked.Update`.
 </Callout>
+
+---
+
+<ComparisonTable
+  headers={["Property", "Dictionary<K,V>", "ImmutableDictionary<K,V>", "FrozenDictionary<K,V>"]}
+  rows={[
+    ["Mutable", "Yes", "No (returns new)", "No"],
+    ["Lookup performance", "O(1) avg ~25 ns", "O(log n) ~100 ns", "O(1) optimized ~15 ns"],
+    ["Construction cost", "O(n) fast", "O(n log n)", "O(n) to O(n²) slow"],
+    ["Thread-safe reads", "No", "Yes", "Yes"],
+    ["Thread-safe writes", "No", "N/A (immutable)", "N/A (frozen)"],
+    ["Collision chains", "Yes", "No (tree)", "No (perfect hash)"],
+    ["Supports updates", "Yes", "Via new instance", "Must rebuild entirely"],
+    ["Available since", ".NET 1.1", ".NET 4.5", ".NET 8"],
+  ]}
+/>
+
+---
+
+<Quiz
+  id="08-data-structures/frozen-collections/challenge-1"
+  question="Your ASP.NET Core app loads a table of 500 country codes from the database at startup and checks it on every HTTP request. There are roughly 10,000 requests/second. What should you use?"
+  options={[
+    "Dictionary<string, CountryInfo> under a ReaderWriterLockSlim — most familiar pattern",
+    "ImmutableDictionary<string, CountryInfo> — immutable means thread-safe",
+    "FrozenDictionary<string, CountryInfo> initialized in Program.cs or DI — optimal for this pattern",
+    "ConcurrentDictionary<string, CountryInfo> — designed for concurrent access"
+  ]}
+  correctAnswer={2}
+  explanation="FrozenDictionary is the ideal choice here: the data never changes after startup (write-once), is accessed at very high frequency (10,000 req/s), and being thread-safe by virtue of immutability means no lock overhead. ImmutableDictionary would be thread-safe but has O(log n) lookups — noticeably slower under load. ConcurrentDictionary is designed for concurrent mutation, not read-heavy workloads. Dictionary + ReaderWriterLockSlim adds synchronization overhead that FrozenDictionary completely avoids."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: FrozenDictionary's Internal Strategy Selection**
+
+FrozenDictionary doesn't use a single algorithm — it picks from a family of strategies based on key type and count:
+
+- **SmallFrozenDictionary**: ≤4 entries, linear scan (cache-line friendly beats hashing)
+- **Int32FrozenDictionary**: int keys, direct array or range-based perfect hash
+- **OrdinalStringFrozenDictionary**: Ordinal/OrdinalIgnoreCase string keys, uses a trie or unique character analysis to find the minimal hash discriminator
+- **DefaultFrozenDictionary**: general case, computes a minimal perfect hash using random seeds
+
+The string-specific strategies are particularly clever. For a set of strings like HTTP method names (`"GET"`, `"POST"`, `"PUT"`, `"DELETE"`), the runtime may find that just looking at character index 0 is enough to distinguish all keys — making lookup effectively O(1) with a single character comparison before the full hash.
+
+This is why `ToFrozenDictionary` with `StringComparer.Ordinal` can significantly outperform `StringComparer.OrdinalIgnoreCase` — the ordinal case enables more aggressive optimization.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "FrozenDictionary\<TKey,TValue\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozendictionary-2" },
+    { label: "FrozenSet\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen.frozenset-1" },
+    { label: "System.Collections.Frozen namespace", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.frozen" },
+    { label: "What's new in .NET 8 — Frozen collections", url: "https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-8/runtime#frozen-collections" },
+  ]}
+/>

@@ -2,23 +2,225 @@
 title: "Loading Strategies: Eager, Lazy, Explicit"
 slug: "loading-strategies"
 order: 4
-difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 15
+status: "published"
+tags: ["eager loading", "lazy loading", "explicit loading", "include", "theninclude", "navigation properties", "ef core"]
+summary: "EF Core offers three ways to load related data. Eager loading with Include is the default choice; lazy loading is a hidden N+1 trap; explicit loading gives precise control."
+docsLinks:
+  - label: "Loading Related Data"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/"
+  - label: "Eager Loading"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/eager"
+  - label: "Lazy Loading"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/lazy"
+  - label: "Explicit Loading"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/explicit"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Three Loading Strategies
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+EF Core never loads navigation properties automatically unless you explicitly ask it to (unless lazy loading is enabled). A navigation property left unloaded stays `null` for references or empty for collections.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Navigation properties are null/empty by default without loading
+var order = await db.Orders.FindAsync(1);
+Console.WriteLine(order.Customer);     // null — not loaded!
+Console.WriteLine(order.Items.Count);  // NullReferenceException or 0
+```
+
+---
+
+## Eager Loading: Include and ThenInclude
+
+Eager loading fetches related data **in the same query** using SQL JOINs:
+
+```csharp
+// Single level: Include()
+var orders = await db.Orders
+    .Include(o => o.Customer)
+    .Include(o => o.Items)
+    .ToListAsync();
+// SQL: SELECT ... FROM Orders
+//      LEFT JOIN Customers ON ...
+//      LEFT JOIN OrderItems ON ...
+
+// Two levels deep: ThenInclude()
+var orders = await db.Orders
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product)
+            .ThenInclude(p => p.Category)
+    .ToListAsync();
+// SQL joins Orders → OrderItems → Products → Categories in one query
+
+// Multiple branches
+var orders = await db.Orders
+    .Include(o => o.Customer)
+        .ThenInclude(c => c.Address)
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product)
+    .Where(o => o.Status == OrderStatus.Pending)
+    .ToListAsync();
+```
+
+**Filtered Include** (EF Core 5+) — load only a subset of related entities:
+
+```csharp
+var blogs = await db.Blogs
+    .Include(b => b.Posts
+        .Where(p => p.IsPublished)
+        .OrderByDescending(p => p.PublishedAt)
+        .Take(5))
+    .ToListAsync();
+// Only loads the 5 most recent published posts per blog
+```
+
+---
+
+## Lazy Loading: The Hidden N+1
+
+Lazy loading transparently fetches navigation properties on first access. It sounds convenient but it is a performance trap in nearly every real-world scenario.
+
+**Setup** (requires proxies package):
+
+```csharp
+// NuGet: Microsoft.EntityFrameworkCore.Proxies
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .UseLazyLoadingProxies()); // enables lazy loading via Castle proxies
+
+// Entities must have virtual navigation properties
+public class Order
+{
+    public int Id { get; set; }
+    public virtual Customer Customer { get; set; } = null!;   // virtual = lazy
+    public virtual ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
+}
+```
+
+**The N+1 trap in action:**
+
+```csharp
+// This looks innocent...
+var orders = await db.Orders.ToListAsync(); // Query 1: SELECT * FROM Orders (100 rows)
+
+foreach (var order in orders)
+{
+    // LAZY LOAD fires here — one query per order!
+    Console.WriteLine(order.Customer.Name); // Query 2..101: SELECT * FROM Customers WHERE Id = ?
+}
+// Total: 101 queries for 100 orders. This is the N+1 problem.
+```
+
+<Callout type="trap">
+**Lazy Loading Across Async Boundaries**
+
+Lazy loading is synchronous. If you await something between accessing a lazy property and the context being disposed, you get an `InvalidOperationException`. Lazy loading also requires the DbContext to still be alive — returning lazy-loaded entities from a repository to a controller that disposes the scope will produce `ObjectDisposedException` on first access of an unloaded property.
 </Callout>
+
+---
+
+## Explicit Loading: Precision Control
+
+Explicit loading fetches a specific navigation property on demand:
+
+```csharp
+var order = await db.Orders.FindAsync(1); // loads just the order
+
+// Explicitly load a reference navigation
+await db.Entry(order).Reference(o => o.Customer).LoadAsync();
+
+// Explicitly load a collection navigation
+await db.Entry(order).Collection(o => o.Items).LoadAsync();
+
+// Explicit load with query (filtered/ordered)
+await db.Entry(order)
+    .Collection(o => o.Items)
+    .Query()
+    .Where(i => i.Quantity > 1)
+    .OrderBy(i => i.ProductId)
+    .LoadAsync();
+
+// Check if a navigation is already loaded
+bool isLoaded = db.Entry(order).Reference(o => o.Customer).IsLoaded;
+```
+
+Explicit loading is useful when:
+- You conditionally need related data (avoid loading when not needed)
+- You are adding items to an existing collection without loading all existing items
+- You want to apply filters to a collection after the parent is loaded
+
+---
+
+<ComparisonTable
+  title="Loading Strategy Comparison"
+  headers={["Strategy", "SQL Queries", "Control", "Risk", "Best For"]}
+  rows={[
+    ["Eager (Include)", "1 query (JOIN)", "Explicit", "Cartesian explosion", "APIs, known query shape"],
+    ["Lazy (proxies)", "N+1 queries", "Automatic", "N+1 trap, proxy overhead", "Avoid in production APIs"],
+    ["Explicit (Load)", "1 per call", "Precise", "Forgotten loads (null)", "Conditional loading"],
+    ["Filtered Include", "1 query", "Explicit+filter", "Cartesian explosion", "Paged sub-collections"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Include Does Not Always JOIN**
+
+When you include a collection navigation property, EF Core may generate a single query with a JOIN — but for multiple collection includes, it can generate **split queries** automatically (EF Core 5+) to avoid cartesian explosion. In EF Core 8, the default split query behavior changed; always verify the generated SQL for queries with multiple collection includes.
+
+More importantly, use `Select()` projections instead of `Include()` whenever you do not need the full entity:
+
+```csharp
+// Include loads the full Customer entity even if you only need the name
+var orders = await db.Orders
+    .Include(o => o.Customer)
+    .Select(o => new OrderSummaryDto
+    {
+        Id = o.Id,
+        CustomerName = o.Customer.Name,     // EF translates to JOIN internally
+        ItemCount = o.Items.Count()         // EF translates to subquery or COUNT
+    })
+    .ToListAsync();
+// No Include needed — EF handles the join as part of the projection
+// Only the requested columns are fetched
+```
+
+This pattern eliminates the need for `Include()` in the majority of read scenarios.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Lazy loading is convenient and does not affect performance much"
+  truth="Lazy loading is one of the most common EF Core performance killers in production. A page showing 50 orders with lazy-loaded customers and items can fire 150+ database queries. Eager loading or projections should be the default. Lazy loading has legitimate niche uses (desktop apps, unit-of-work patterns) but is almost always harmful in web APIs."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/loading-strategies/challenge-1"
+  question="You need to display a list of 200 blog posts, each showing the author's name. Which approach minimizes database queries while fetching only what is needed?"
+  options={[
+    "Use lazy loading — the author will be fetched automatically when the name is accessed",
+    "Use Include(p => p.Author) to eagerly load all authors with the posts",
+    "Use Select() to project to a DTO with Id, Title, and Author.Name",
+    "Use explicit loading — call db.Entry(post).Reference(p => p.Author).LoadAsync() in a loop"
+  ]}
+  correctAnswer={2}
+  explanation="Select() projection is optimal: one query, only the columns needed (no full Author entity loaded), and no tracking overhead. Include() would work (one query with JOIN) but fetches the entire Author entity for all 200 posts. Lazy loading fires 201 queries (N+1). Explicit loading in a loop also fires 201 queries. The projection approach is both the fastest and most memory-efficient."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Loading Related Data", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/" },
+    { label: "Eager Loading with Include", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/eager" },
+    { label: "Lazy Loading", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/lazy" },
+    { label: "Explicit Loading", url: "https://learn.microsoft.com/en-us/ef/core/querying/related-data/explicit" },
+  ]}
+/>

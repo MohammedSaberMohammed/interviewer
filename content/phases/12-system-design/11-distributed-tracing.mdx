@@ -1,24 +1,294 @@
 ---
-title: "Distributed Tracing"
+title: "Distributed Tracing: Activity, W3C Trace Context, Jaeger"
 slug: "distributed-tracing"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 16
+status: "published"
+tags: ["distributed tracing", "Activity", "W3C Trace Context", "Jaeger", "OpenTelemetry", "spans", "context propagation", ".NET"]
+summary: "Distributed tracing stitches together the story of a request across service boundaries — understanding the Activity API, W3C Trace Context headers, and context propagation is essential for any .NET distributed systems role."
+docsLinks:
+  - label: "Distributed tracing in .NET"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/distributed-tracing"
+  - label: "W3C Trace Context specification"
+    url: "https://www.w3.org/TR/trace-context/"
+  - label: "OpenTelemetry .NET — tracing"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem Tracing Solves
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When a request fails or is slow in a microservices system, your logs might show errors in three different services with no obvious connection. Distributed tracing creates a **causal chain** — every operation across every service that participated in handling a single request is linked by a common Trace ID.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+Without tracing:                   With tracing:
+Log A: ERROR in OrderService       Trace abc-123:
+Log B: TIMEOUT in PaymentService     OrderService (200ms)
+Log C: DB slow query                   └── PaymentService (150ms) ← SLOW
+                                              └── DB Query (140ms) ← ROOT CAUSE
+                                   → Database query missing index
+```
+
+---
+
+## .NET Activity API: The Tracing Primitive
+
+.NET's `System.Diagnostics.Activity` is the native tracing API, aligned with OpenTelemetry. An `Activity` represents a span — a named, timed operation.
+
+**Key concepts**:
+- `ActivitySource`: Factory for creating activities, identified by name and version
+- `Activity`: A single span. Has a TraceId, SpanId, and optionally a ParentSpanId
+- `Activity.Current`: Thread-local/async-local context — automatically flows across `await` points
+
+```csharp
+// Define an ActivitySource — one per service or component (singleton)
+public static class Telemetry
+{
+    public static readonly ActivitySource Source = new("MyApp.OrderService", "1.0.0");
+}
+
+// Create spans in your business logic
+public class OrderService
+{
+    public async Task<Order> PlaceOrderAsync(CreateOrderCommand cmd)
+    {
+        using var activity = Telemetry.Source.StartActivity("PlaceOrder");
+
+        // Tags — key-value metadata searchable in Jaeger/Application Insights
+        activity?.SetTag("customer.id", cmd.CustomerId);
+        activity?.SetTag("order.item_count", cmd.Items.Count);
+
+        // Span events — timestamped notes within a span
+        activity?.AddEvent(new ActivityEvent("inventory-reservation-started"));
+
+        try
+        {
+            var order = await CreateOrderCoreAsync(cmd);
+
+            activity?.SetTag("order.id", order.Id);
+            activity?.SetStatus(ActivityStatusCode.Ok);
+            return order;
+        }
+        catch (Exception ex)
+        {
+            // Attach exception details to the span
+            activity?.RecordException(ex);
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
+        }
+    }
+
+    private async Task<Order> CreateOrderCoreAsync(CreateOrderCommand cmd)
+    {
+        // Child spans automatically become children of Activity.Current
+        using var dbSpan = Telemetry.Source.StartActivity("SaveOrder.Database");
+        var order = await _repo.SaveAsync(cmd);
+        dbSpan?.SetTag("db.table", "Orders");
+        return order;
+    }
+}
+```
+
+---
+
+## W3C Trace Context: The Propagation Standard
+
+For tracing to work across service boundaries, the trace context must be propagated in HTTP headers. The W3C Trace Context standard defines two headers:
+
+```
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             │  │                                │                │
+             │  TraceId (16 bytes, hex)           SpanId (8 bytes) │
+             version                                               Sampled flag (01=sampled)
+
+tracestate: vendor-specific key-value pairs (e.g., rojo=00f067aa0ba902b7)
+```
+
+In .NET, `HttpClient` with `AddHttpClientInstrumentation()` automatically:
+1. Reads incoming `traceparent` and sets `Activity.Current` parent
+2. Injects `traceparent` into all outgoing requests
+
+```csharp
+// How HttpClient propagates trace context automatically (simplified)
+// When you use AddHttpClientInstrumentation(), this happens transparently:
+
+// Incoming request handler sets Activity.Current from headers
+app.Use(async (context, next) =>
+{
+    // ASP.NET Core with OpenTelemetry instrumentation does this automatically
+    // The traceparent header is parsed and Activity.Current is set as child
+    await next();
+});
+
+// Outgoing HttpClient call automatically injects traceparent
+// No code needed — AddHttpClientInstrumentation() handles it
+var response = await httpClient.GetAsync("http://inventory-service/api/stock");
+// The request includes: traceparent: 00-<same-traceId>-<new-spanId>-01
+```
+
+---
+
+## Manual Context Propagation (Non-HTTP Channels)
+
+For message queues, gRPC, or custom protocols, you propagate context manually.
+
+```csharp
+// Publishing a message with trace context embedded
+public class TracedMessagePublisher
+{
+    private readonly IMessageBus _bus;
+
+    public async Task PublishAsync<T>(T message)
+    {
+        var properties = new Dictionary<string, string>();
+
+        // Inject current trace context into message properties
+        var propagator = Propagators.DefaultTextMapPropagator;
+        propagator.Inject(
+            new PropagationContext(Activity.Current?.Context ?? default, Baggage.Current),
+            properties,
+            (dict, key, value) => dict[key] = value
+        );
+
+        await _bus.PublishAsync(message, properties);
+    }
+}
+
+// Consuming a message — extract and restore trace context
+public class TracedMessageConsumer
+{
+    public async Task ConsumeAsync<T>(T message, IDictionary<string, string> properties)
+    {
+        var propagator = Propagators.DefaultTextMapPropagator;
+        var parentContext = propagator.Extract(
+            default,
+            properties,
+            (dict, key) => dict.TryGetValue(key, out var val) ? new[] { val } : Array.Empty<string>()
+        );
+
+        // Create a new span as a child of the publisher's span
+        using var activity = Telemetry.Source.StartActivity(
+            "ConsumeMessage",
+            ActivityKind.Consumer,
+            parentContext.ActivityContext
+        );
+
+        activity?.SetTag("message.type", typeof(T).Name);
+        await ProcessAsync(message);
+    }
+}
+```
+
+---
+
+## Baggage: User-Defined Context
+
+`Baggage` is metadata that propagates alongside the trace — accessible in any downstream service. Use it for correlation IDs, tenant IDs, or feature flag values.
+
+```csharp
+// Set baggage at the API layer
+Baggage.SetBaggage("tenant.id", tenantId);
+Baggage.SetBaggage("user.id", userId);
+
+// Read baggage deep in a downstream service
+var tenantId = Baggage.GetBaggage("tenant.id");
+// Use for log enrichment, data partitioning, etc.
+```
+
+<Callout type="trap">
+**Trap: Baggage propagates to ALL downstream services**
+
+Baggage travels with every HTTP request and message in the entire trace. Do not put secrets, PII, or large payloads in baggage. Treat it like HTTP headers — small, non-sensitive routing metadata only.
 </Callout>
+
+---
+
+## Sampling Strategies
+
+Tracing every request at scale is expensive. Sampling controls what fraction of traces are collected.
+
+```csharp
+// Head-based sampling: decision made at trace start
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing =>
+    {
+        tracing
+            // Sample 10% of traces in production
+            .SetSampler(new TraceIdRatioBasedSampler(0.1))
+
+            // Always sample errors (combine with ratio sampler)
+            // .SetSampler(new ParentBasedSampler(new TraceIdRatioBasedSampler(0.1)))
+
+            .AddAspNetCoreInstrumentation()
+            .AddOtlpExporter(o => o.Endpoint = new Uri("http://jaeger:4317"));
+    });
+
+// Tail-based sampling (in Jaeger or OpenTelemetry Collector):
+// Collect ALL spans, but only persist traces that contain errors or exceed latency threshold
+// More accurate but requires buffering — handled by the collector, not the SDK
+```
+
+---
+
+<ComparisonTable
+  headers={["Concept", "What It Is", "Scope", ".NET API"]}
+  rows={[
+    ["TraceId", "Unique ID for the entire request chain", "Cross-service", "Activity.TraceId"],
+    ["SpanId", "ID of one unit of work", "Single service/operation", "Activity.SpanId"],
+    ["Parent SpanId", "Links this span to its parent", "Causality", "Activity.ParentSpanId"],
+    ["Tags/Attributes", "Key-value metadata on a span", "Single span", "activity.SetTag(...)"],
+    ["Events", "Timestamped notes within a span", "Single span", "activity.AddEvent(...)"],
+    ["Baggage", "User context propagated across services", "Entire trace", "Baggage.SetBaggage(...)"],
+    ["traceparent header", "W3C standard for HTTP propagation", "Cross-service HTTP", "Auto-injected by HttpClient instrumentation"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: ActivitySource.StartActivity() Returns Null When Not Sampled**
+
+`ActivitySource.StartActivity()` returns `null` if there is no registered listener or if the sampler decided not to sample this trace. This is by design — it means tracing is zero-cost when nothing is listening (e.g., in unit tests).
+
+Always use the null-conditional operator: `activity?.SetTag(...)`. Never write:
+
+```csharp
+// WRONG — will throw NullReferenceException in tests or when not sampled
+var activity = Telemetry.Source.StartActivity("DoWork");
+activity.SetTag("key", "value"); // throws if activity is null
+
+// CORRECT
+using var activity = Telemetry.Source.StartActivity("DoWork");
+activity?.SetTag("key", "value"); // safe — noop if null
+```
+
+This is a very common production bug in teams new to OpenTelemetry. The test environment typically has no listener registered, so `StartActivity` always returns null — and tests pass. The crash only appears in staging when a real exporter is registered.
+</Callout>
+
+---
+
+<Quiz
+  id="12-system-design/distributed-tracing/challenge-1"
+  question="A request to /api/checkout passes through API Gateway → OrderService → PaymentService. Each service creates its own Activity. What links all three spans into a single trace?"
+  options={[
+    "A shared database transaction ID stored in all three databases",
+    "The W3C traceparent header propagated in HTTP requests — each service reads the incoming TraceId and uses it as the parent",
+    "A correlation ID manually logged by each service in its log output",
+    "The deployment timestamp — spans created within the same second are grouped"
+  ]}
+  correctAnswer={1}
+  explanation="The W3C traceparent header carries the TraceId across service boundaries. API Gateway creates the root span (generating a new TraceId) and injects traceparent into the HTTP request to OrderService. OrderService reads the header, sets its Activity's parent to the incoming SpanId, and injects a new traceparent into its request to PaymentService. All three spans share the same TraceId but have distinct SpanIds and ParentSpanIds that form a tree. This happens automatically with OpenTelemetry's HttpClient and ASP.NET Core instrumentation."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Distributed tracing in .NET — concepts", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/distributed-tracing" },
+    { label: "Implement distributed tracing — .NET", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/distributed-tracing-instrumentation-walkthroughs" },
+    { label: "OpenTelemetry context propagation", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel" },
+    { label: "Azure Monitor — distributed tracing", url: "https://learn.microsoft.com/en-us/azure/azure-monitor/app/distributed-trace-data" },
+  ]}
+/>

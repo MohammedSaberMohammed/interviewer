@@ -1,24 +1,350 @@
 ---
-title: "Template Method"
+title: "Template Method — Algorithm Skeleton"
 slug: "template-method"
 order: 22
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["template method", "behavioral", "abstract class", "algorithm skeleton", "hooks", "inheritance"]
+summary: "Template Method defines the skeleton of an algorithm in a base class, deferring specific steps to subclasses — without changing the overall structure. The foundation of many framework hooks."
+docsLinks:
+  - label: "Abstract classes and methods (C# guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/abstract"
+  - label: "BackgroundService base class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.hosting.backgroundservice"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Algorithm with Variable Steps
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have a process that's always the same in structure but varies in specific steps. Without Template Method, you duplicate the structure in every subclass. With it, the base class owns the structure; subclasses customize just the steps that vary.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Without Template Method — duplicated structure in each subclass
+public class CsvReportExporter
+{
+    public void Export(IEnumerable<Order> orders, Stream output)
+    {
+        // Same structure, but CsvReportExporter duplicates Open/Close logic
+        OpenStream(output);
+        WriteHeader(output, "Id,Date,Total");
+        foreach (var order in orders)
+            WriteRow(output, $"{order.Id},{order.Date},{order.Total}");
+        CloseStream(output);
+    }
+}
+
+public class JsonReportExporter
+{
+    public void Export(IEnumerable<Order> orders, Stream output)
+    {
+        // Same Open/Close structure — duplicated!
+        OpenStream(output);
+        // ... different row format ...
+        CloseStream(output);
+    }
+}
+```
+
+---
+
+## Structure
+
+```csharp
+// Abstract base — defines the algorithm skeleton
+public abstract class ReportExporter
+{
+    // Template method — the invariant algorithm (sealed to prevent override)
+    public sealed void Export(IEnumerable<Order> orders, Stream output)
+    {
+        OpenOutput(output);
+        WriteHeader(output);              // hook — subclass defines content
+        foreach (var order in orders)
+            WriteRow(output, order);      // hook — subclass defines format
+        WriteFooter(output);             // optional hook with default impl
+        CloseOutput(output);
+    }
+
+    // Abstract hooks — MUST be implemented by subclasses
+    protected abstract void WriteHeader(Stream output);
+    protected abstract void WriteRow(Stream output, Order order);
+
+    // Optional hook — subclass CAN override but doesn't have to
+    protected virtual void WriteFooter(Stream output) { /* default: no footer */ }
+
+    // Invariant steps — base class handles these, not subclasses
+    private static void OpenOutput(Stream output) { /* ... */ }
+    private static void CloseOutput(Stream output) { /* ... */ }
+}
+
+// Concrete subclasses — implement only the variable steps
+public class CsvReportExporter : ReportExporter
+{
+    protected override void WriteHeader(Stream output)
+        => Write(output, "Id,Date,Total\n");
+
+    protected override void WriteRow(Stream output, Order order)
+        => Write(output, $"{order.Id},{order.Date:yyyy-MM-dd},{order.Total:F2}\n");
+
+    private static void Write(Stream output, string text)
+        => output.Write(System.Text.Encoding.UTF8.GetBytes(text));
+}
+
+public class JsonReportExporter : ReportExporter
+{
+    private readonly List<string> _rows = new();
+
+    protected override void WriteHeader(Stream output) { } // JSON has no header
+
+    protected override void WriteRow(Stream output, Order order)
+        => _rows.Add($@"  {{""id"":{order.Id},""date"":""{order.Date:yyyy-MM-dd}"",""total"":{order.Total}}}");
+
+    protected override void WriteFooter(Stream output)
+    {
+        string json = $"[\n{string.Join(",\n", _rows)}\n]";
+        output.Write(System.Text.Encoding.UTF8.GetBytes(json));
+    }
+}
+
+// Usage — same algorithm, different output format
+ReportExporter exporter = new CsvReportExporter();
+exporter.Export(orders, csvStream);
+
+exporter = new JsonReportExporter();
+exporter.Export(orders, jsonStream);
+```
+
+---
+
+## Real .NET BCL Example: `BackgroundService`
+
+`BackgroundService` is a classic Template Method base class in ASP.NET Core:
+
+```csharp
+// BackgroundService defines the lifecycle template
+public abstract class BackgroundService : IHostedService, IDisposable
+{
+    private Task? _executingTask;
+    private CancellationTokenSource? _stoppingCts;
+
+    // Template method — the fixed algorithm
+    public virtual Task StartAsync(CancellationToken cancellationToken)
+    {
+        _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _executingTask = ExecuteAsync(_stoppingCts.Token); // calls the abstract hook
+        return _executingTask.IsCompleted ? _executingTask : Task.CompletedTask;
+    }
+
+    // Abstract hook — subclass MUST implement this
+    protected abstract Task ExecuteAsync(CancellationToken stoppingToken);
+
+    public virtual async Task StopAsync(CancellationToken cancellationToken)
+    {
+        // Fixed stop logic — cancel + wait
+        _stoppingCts!.Cancel();
+        await Task.WhenAny(_executingTask!, Task.Delay(Timeout.Infinite, cancellationToken));
+    }
+}
+
+// Your implementation — only needs to define ExecuteAsync
+public class OrderProcessingService : BackgroundService
+{
+    private readonly IServiceProvider _services;
+    private readonly ILogger<OrderProcessingService> _logger;
+
+    public OrderProcessingService(IServiceProvider services, ILogger<OrderProcessingService> logger)
+    {
+        _services = services;
+        _logger   = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Order processor started");
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await ProcessPendingOrdersAsync(stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+
+    private async Task ProcessPendingOrdersAsync(CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        // ... process orders ...
+    }
+}
+
+// Register
+builder.Services.AddHostedService<OrderProcessingService>();
+```
+
+---
+
+## Template Method with `abstract` vs `virtual` Hooks
+
+```csharp
+// Design choice: abstract vs virtual hooks
+public abstract class DataProcessor
+{
+    // Template method — fixed algorithm
+    public void Process()
+    {
+        var data = LoadData();           // abstract — must override
+        data = Transform(data);          // virtual — optional override
+        Validate(data);                  // abstract — must override
+        Save(data);                      // abstract — must override
+    }
+
+    protected abstract IEnumerable<Record> LoadData();   // MUST override
+    protected abstract void Validate(IEnumerable<Record> data); // MUST override
+    protected abstract void Save(IEnumerable<Record> data);     // MUST override
+
+    // Optional hook — default implementation provided
+    protected virtual IEnumerable<Record> Transform(IEnumerable<Record> data)
+        => data; // default: no transformation
+}
+
+// Subclass — only override what it needs to
+public class OrderDataProcessor : DataProcessor
+{
+    protected override IEnumerable<Record> LoadData()
+        => dbContext.Orders.Select(o => new Record(o.Id, o.Total));
+
+    protected override void Validate(IEnumerable<Record> data)
+    {
+        if (data.Any(r => r.Total < 0))
+            throw new ValidationException("Negative totals detected");
+    }
+
+    protected override void Save(IEnumerable<Record> data)
+        => fileSystem.WriteAll("orders.json", data);
+
+    // Transform() not overridden — uses base class default (identity)
+}
+```
+
+---
+
+<ComparisonTable
+  title="Template Method vs Strategy"
+  headers={["Aspect", "Template Method", "Strategy"]}
+  rows={[
+    ["Structure", "Inheritance", "Composition"],
+    ["Algorithm changes", "At compile time (by subclass)", "At runtime (inject strategy)"],
+    ["Code reuse", "Shared in base class", "Context class stays lean"],
+    ["Coupling", "High — subclass depends on base", "Low — depends only on interface"],
+    ["Best for", "Stable structure, few variable steps", "Interchangeable algorithms, runtime flexibility"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/template-method/challenge-1"
+  title="When to Seal the Template Method"
+  description="In BackgroundService, StartAsync is marked 'virtual' not 'sealed'. What risk does this create?"
+  code={`// BackgroundService.StartAsync is virtual:
+public virtual Task StartAsync(CancellationToken cancellationToken)
+{
+    _stoppingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    _executingTask = ExecuteAsync(_stoppingCts.Token);
+    return _executingTask.IsCompleted ? _executingTask : Task.CompletedTask;
+}
+
+// A developer overrides it:
+public class BadService : BackgroundService
+{
+    public override Task StartAsync(CancellationToken ct)
+    {
+        return ExecuteAsync(ct); // skips _stoppingCts and _executingTask setup!
+    }
+
+    protected override Task ExecuteAsync(CancellationToken ct) => Task.CompletedTask;
+}`}
+  options={[
+    "No risk — virtual allows subclasses to improve the implementation",
+    "The developer can break the template by overriding StartAsync — StopAsync will fail because _stoppingCts and _executingTask were never set",
+    "This will cause a compile error — BackgroundService is sealed",
+    "The override is ignored — base class StartAsync always runs"
+  ]}
+  correctAnswer={1}
+  explanation="This is why Template Method base classes often seal the template method and only expose the hooks. BackgroundService.StartAsync being virtual is a design compromise for testability — but a subclass that overrides it must call base.StartAsync() to avoid breaking StopAsync. Properly applied Template Method: the template method should be sealed (or at least documented as 'must call base'); only the hooks (ExecuteAsync) should be overridable."
+/>
+
+---
+
+<Callout type="senior">
+**Template Method via Composition (Modern Alternative)**
+
+Template Method via inheritance has a major drawback: subclasses are tightly coupled to the base class. Modern C# often achieves the same result with composition + delegates:
+
+```csharp
+// Template method via constructor injection of steps
+public class ReportPipeline
+{
+    private readonly Func<IEnumerable<Order>>              _loader;
+    private readonly Func<IEnumerable<Order>, string>      _formatter;
+    private readonly Action<string, Stream>                 _writer;
+
+    public ReportPipeline(
+        Func<IEnumerable<Order>> loader,
+        Func<IEnumerable<Order>, string> formatter,
+        Action<string, Stream> writer)
+    {
+        _loader    = loader;
+        _formatter = formatter;
+        _writer    = writer;
+    }
+
+    // Fixed algorithm skeleton — same as Template Method
+    public void Run(Stream output)
+    {
+        var data      = _loader();    // variable step 1
+        var formatted = _formatter(data); // variable step 2
+        _writer(formatted, output);   // variable step 3
+    }
+}
+
+// Compose the pipeline at the call site or in DI
+var csvPipeline = new ReportPipeline(
+    loader:    () => dbContext.Orders.ToList(),
+    formatter: orders => ToCsv(orders),
+    writer:    (text, stream) => stream.Write(Encoding.UTF8.GetBytes(text)));
+
+// Advantages over inheritance:
+// - Can be created without subclassing
+// - Steps are testable independently
+// - Can mix and match steps at runtime
+```
+
+Use inheritance-based Template Method when the base class has significant shared logic beyond the algorithm steps. Use composition when the steps are the primary concern.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/template-method/quiz-1"
+  question="Which part of the Template Method pattern should typically be sealed (non-overridable)?"
+  options={[
+    "The abstract hooks — they must be sealed to force implementation",
+    "The template method itself — to preserve the algorithm structure; only the hooks should be overridable",
+    "All methods — Template Method works best with sealed classes",
+    "The virtual hooks — to prevent further overriding in grandchild classes"
+  ]}
+  correctAnswer={1}
+  explanation="The template method (the method containing the algorithm skeleton) should ideally be sealed so subclasses cannot change the overall algorithm structure — they can only customize the variable steps via the hooks. The hooks (abstract and virtual methods) are intentionally open for overriding. In practice, .NET sometimes marks templates as 'virtual' for testability, but the ideal is sealed for the template and overridable for hooks only."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "BackgroundService Class", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.hosting.backgroundservice" },
+    { label: "abstract keyword (C#)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/abstract" },
+    { label: "Hosted services in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services" },
+  ]}
+/>

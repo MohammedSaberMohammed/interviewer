@@ -1,24 +1,310 @@
 ---
-title: "Health Checks"
+title: "Health Checks: IHealthCheck, Liveness vs Readiness"
 slug: "health-checks"
 order: 17
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["health checks", "IHealthCheck", "liveness", "readiness", "Kubernetes", "monitoring", "asp.net core"]
+summary: "Health checks expose whether your app is alive and ready to serve traffic. Kubernetes and load balancers use them to route traffic and restart unhealthy pods — getting them wrong causes silent outages."
+docsLinks:
+  - label: "Health checks in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks"
+  - label: "Health checks for Kubernetes"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks#kubernetes-liveness-readiness-and-startup-probes"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Liveness vs Readiness vs Startup
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Container orchestrators (Kubernetes, Azure Container Apps) send three types of probes. Mixing them up causes incorrect restarts or traffic being sent to unhealthy instances:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+<ComparisonTable
+  headers={["Probe", "Question", "Failure Action", "Should Check"]}
+  rows={[
+    ["Liveness", "Is the app alive?", "Restart the container", "App deadlock, out of memory, fatal state"],
+    ["Readiness", "Can the app handle traffic?", "Remove from load balancer pool", "DB connectivity, dependencies, warm-up"],
+    ["Startup", "Has the app finished starting?", "Kill and restart if not done in time", "Slow initialization tasks"],
+  ]}
+/>
+
+**Key insight:** A liveness failure causes a restart. Never put slow external dependency checks (DB, Redis) in liveness — if Redis is down, restarting the container won't fix it, but it will cause a restart loop.
+
+---
+
+## Basic Health Check Setup
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddHealthChecks()
+    // Database — EF Core
+    .AddDbContextCheck<AppDbContext>("database",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["readiness"])
+
+    // SQL Server directly
+    .AddSqlServer(
+        connectionString: builder.Configuration.GetConnectionString("DefaultConnection")!,
+        name: "sql-server",
+        tags: ["readiness"])
+
+    // Redis
+    .AddRedis(
+        redisConnectionString: builder.Configuration["Redis:ConnectionString"]!,
+        name: "redis",
+        tags: ["readiness"])
+
+    // Custom health check (see below)
+    .AddCheck<DiskSpaceHealthCheck>("disk-space",
+        failureStatus: HealthStatus.Degraded,
+        tags: ["liveness"])
+
+    // Simple ping/URI check
+    .AddUrlGroup(
+        new Uri("https://api.external-service.com/health"),
+        name: "external-api",
+        tags: ["readiness"]);
+
+var app = builder.Build();
+
+// Liveness endpoint — only checks app internal health
+app.MapHealthChecks("/healthz/live", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("liveness"),
+    ResultStatusCodes =
+    {
+        [HealthStatus.Healthy] = StatusCodes.Status200OK,
+        [HealthStatus.Degraded] = StatusCodes.Status200OK,  // Degraded still alive
+        [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
+    }
+});
+
+// Readiness endpoint — checks if ready to serve traffic
+app.MapHealthChecks("/healthz/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("readiness"),
+    ResultStatusCodes =
+    {
+        [HealthStatus.Healthy] = StatusCodes.Status200OK,
+        [HealthStatus.Degraded] = StatusCodes.Status200OK,
+        [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
+    }
+});
+
+// Full health report (for internal monitoring only — secure this endpoint!)
+app.MapHealthChecks("/healthz", new HealthCheckOptions
+{
+    ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse // AspNetCore.HealthChecks.UI
+}).RequireAuthorization("InternalOnly");
+
+app.MapHealthChecks("/healthz/ping").DisableRateLimiting(); // Simple ping
+```
+
+---
+
+## Custom IHealthCheck
+
+```csharp
+public class DiskSpaceHealthCheck : IHealthCheck
+{
+    private readonly ILogger<DiskSpaceHealthCheck> _logger;
+    private readonly long _thresholdBytes;
+
+    public DiskSpaceHealthCheck(ILogger<DiskSpaceHealthCheck> logger)
+    {
+        _logger = logger;
+        _thresholdBytes = 500 * 1024 * 1024; // 500 MB minimum free
+    }
+
+    public Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var drive = DriveInfo.GetDrives()
+                .FirstOrDefault(d => d.DriveType == DriveType.Fixed && d.IsReady);
+
+            if (drive is null)
+                return Task.FromResult(HealthCheckResult.Unhealthy("No fixed drive found"));
+
+            var freeBytes = drive.AvailableFreeSpace;
+            var data = new Dictionary<string, object>
+            {
+                ["FreeMB"] = freeBytes / (1024 * 1024),
+                ["Drive"] = drive.Name
+            };
+
+            if (freeBytes < _thresholdBytes)
+            {
+                _logger.LogWarning("Low disk space: {FreeMB} MB remaining", freeBytes / (1024 * 1024));
+                return Task.FromResult(HealthCheckResult.Degraded(
+                    $"Low disk space: {freeBytes / (1024 * 1024)} MB remaining",
+                    data: data));
+            }
+
+            return Task.FromResult(HealthCheckResult.Healthy(
+                $"Disk OK: {freeBytes / (1024 * 1024)} MB available",
+                data: data));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(HealthCheckResult.Unhealthy(
+                "Failed to check disk space",
+                exception: ex));
+        }
+    }
+}
+
+// More complex: database-dependent custom check
+public class OrderProcessingHealthCheck : IHealthCheck
+{
+    private readonly AppDbContext _db;
+
+    public OrderProcessingHealthCheck(AppDbContext db) => _db = db;
+
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Check for stuck orders (business-level health)
+            var stuckOrderCount = await _db.Orders
+                .CountAsync(o =>
+                    o.Status == OrderStatus.Processing &&
+                    o.CreatedAt < DateTime.UtcNow.AddHours(-1),
+                    cancellationToken);
+
+            if (stuckOrderCount > 100)
+                return HealthCheckResult.Unhealthy(
+                    $"{stuckOrderCount} orders stuck in Processing for >1 hour",
+                    data: new Dictionary<string, object> { ["StuckOrders"] = stuckOrderCount });
+
+            if (stuckOrderCount > 10)
+                return HealthCheckResult.Degraded(
+                    $"{stuckOrderCount} orders stuck in Processing",
+                    data: new Dictionary<string, object> { ["StuckOrders"] = stuckOrderCount });
+
+            return HealthCheckResult.Healthy("Order processing is healthy");
+        }
+        catch (Exception ex)
+        {
+            return HealthCheckResult.Unhealthy("Failed to check order processing health", ex);
+        }
+    }
+}
+```
+
+---
+
+## Kubernetes Probe Configuration
+
+```yaml
+# Kubernetes deployment spec with ASP.NET Core health checks
+spec:
+  containers:
+  - name: myapp
+    image: myapp:latest
+    livenessProbe:
+      httpGet:
+        path: /healthz/live
+        port: 8080
+      initialDelaySeconds: 10    # Wait 10s after container starts
+      periodSeconds: 30          # Check every 30s
+      timeoutSeconds: 5          # Fail if no response in 5s
+      failureThreshold: 3        # Restart after 3 consecutive failures
+    readinessProbe:
+      httpGet:
+        path: /healthz/ready
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 2        # Remove from load balancer after 2 failures
+    startupProbe:
+      httpGet:
+        path: /healthz/live
+        port: 8080
+      failureThreshold: 30       # 30 x 10s = 5 minutes to start
+      periodSeconds: 10
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Health Check Publishers for Metrics Integration**
+
+ASP.NET Core supports health check publishers — background services that periodically run all health checks and publish results to monitoring systems:
+
+```csharp
+public class PrometheusHealthCheckPublisher : IHealthCheckPublisher
+{
+    private static readonly Gauge HealthGauge = Metrics.CreateGauge(
+        "aspnetcore_health_check",
+        "Health check status (1=Healthy, 0.5=Degraded, 0=Unhealthy)",
+        labelNames: new[] { "check_name" });
+
+    public Task PublishAsync(HealthReport report, CancellationToken cancellationToken)
+    {
+        foreach (var (name, entry) in report.Entries)
+        {
+            var value = entry.Status switch
+            {
+                HealthStatus.Healthy => 1.0,
+                HealthStatus.Degraded => 0.5,
+                HealthStatus.Unhealthy => 0.0,
+                _ => 0.0
+            };
+            HealthGauge.WithLabels(name).Set(value);
+        }
+        return Task.CompletedTask;
+    }
+}
+
+// Register publisher and configure polling interval
+builder.Services.AddHealthChecks();
+builder.Services.Configure<HealthCheckPublisherOptions>(options =>
+{
+    options.Delay = TimeSpan.FromSeconds(5);   // Wait 5s after startup
+    options.Period = TimeSpan.FromSeconds(30); // Publish every 30s
+    options.Timeout = TimeSpan.FromSeconds(10);
+    options.Predicate = check => !check.Tags.Contains("slow"); // Skip slow checks
+});
+builder.Services.AddSingleton<IHealthCheckPublisher, PrometheusHealthCheckPublisher>();
+```
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/health-checks/quiz-1"
+  question="Your database goes down. Your Kubernetes liveness probe checks database connectivity. What happens?"
+  options={[
+    "Kubernetes removes the pod from the load balancer but keeps it running",
+    "Kubernetes restarts the pod repeatedly — a restart loop — even though restarting cannot fix a database outage",
+    "Kubernetes scales down the deployment to zero replicas",
+    "Kubernetes waits for the database to recover before taking action"
+  ]}
+  correctAnswer={1}
+  explanation="Liveness probe failure causes Kubernetes to restart the pod. If the database is down, every restarted pod will also fail the liveness probe immediately — causing an infinite restart loop that makes the outage worse. Database connectivity belongs in the readiness probe, which removes the pod from load balancer routing without restarting it, allowing the pod to recover gracefully when the database comes back."
+/>
+
+---
+
+<MythBuster
+  myth="A single /health endpoint that checks everything is the correct approach"
+  truth="A single endpoint forces you to trade-off between liveness and readiness concerns. Kubernetes treats all probe failures the same way for a given probe type. Separating liveness (app internal state) from readiness (dependency connectivity) lets Kubernetes make the right decision: restart for app bugs, remove from LB for dependency outages. Multiple specialized endpoints is the correct production pattern."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Health checks in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks" },
+    { label: "Health checks for Kubernetes probes", url: "https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks#kubernetes-liveness-readiness-and-startup-probes" },
+    { label: "AspNetCore.Diagnostics.HealthChecks (community library)", url: "https://github.com/Xabaril/AspNetCore.Diagnostics.HealthChecks" },
+  ]}
+/>

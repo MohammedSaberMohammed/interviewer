@@ -1,24 +1,274 @@
 ---
-title: "Delegates: Func, Action, Predicate"
+title: "Delegates: Func, Action, Predicate, Multicast"
 slug: "delegates"
 order: 1
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["delegates", "Func", "Action", "Predicate", "multicast", "callbacks", "higher-order functions"]
+summary: "Delegates are type-safe function pointers — the foundation of events, LINQ, and all callback-based patterns in C#."
+docsLinks:
+  - label: "Delegates (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/delegates/"
+  - label: "Using Delegates"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/delegates/using-delegates"
+  - label: "Func<T,TResult> Delegate"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.func-2"
+  - label: "Action Delegate"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.action"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Delegate?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **delegate** is a type that holds a reference to a method (or chain of methods) with a specific signature. Think of it as a type-safe function pointer: you declare what parameter types and return type a method must have, then the delegate can point to any matching method.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Declare a custom delegate type
+delegate int Transformer(int x);
+
+// Methods that match the signature
+int Double(int x) => x * 2;
+int Square(int x) => x * x;
+
+// Assign and invoke
+Transformer t = Double;
+Console.WriteLine(t(5)); // 10
+
+t = Square;
+Console.WriteLine(t(5)); // 25
+```
+
+Every delegate in C# inherits from `System.MulticastDelegate`, which inherits from `System.Delegate`. You rarely define custom delegate types today — the BCL's built-in generic delegates cover almost every scenario.
+
+---
+
+## The Built-In Generic Delegates
+
+The .NET BCL ships three families of generic delegates that replace custom `delegate` declarations in almost all cases:
+
+```csharp
+// Func<T1, ..., TResult> — takes inputs, returns a value (up to 16 params)
+Func<int, int>          square   = x => x * x;
+Func<int, int, int>     add      = (x, y) => x + y;
+Func<string, bool>      hasData  = s => !string.IsNullOrEmpty(s);
+
+// Action<T1, ...> — takes inputs, returns void (up to 16 params)
+Action<string>          log      = msg => Console.WriteLine(msg);
+Action<int, int>        logSum   = (a, b) => Console.WriteLine(a + b);
+Action                  greet    = () => Console.WriteLine("Hello!");
+
+// Predicate<T> — takes one input, returns bool (legacy; prefer Func<T, bool>)
+Predicate<int>          isEven   = n => n % 2 == 0;
+// Equivalent modern form:
+Func<int, bool>         isEven2  = n => n % 2 == 0;
+
+// Usage
+Console.WriteLine(square(7));    // 49
+log("Started");                  // Started
+Console.WriteLine(isEven(4));    // True
+```
+
+<ComparisonTable
+  headers={["Type", "Signature", "Returns", "Typical use"]}
+  rows={[
+    ["Func\<TResult\>", "() => TResult", "Yes", "Lazy value factory, thunk"],
+    ["Func\<T, TResult\>", "(T) => TResult", "Yes", "Transformation / projection"],
+    ["Func\<T1, T2, TResult\>", "(T1, T2) => TResult", "Yes", "Combiner / reducer"],
+    ["Action", "() => void", "No", "Parameterless side-effect"],
+    ["Action\<T\>", "(T) => void", "No", "Consumer / logger"],
+    ["Predicate\<T\>", "(T) => bool", "Yes (bool)", "Legacy filter; prefer Func\<T,bool\>"],
+  ]}
+/>
+
+---
+
+## Multicast Delegates
+
+A delegate variable can hold **multiple method references** chained together. Invoking a multicast delegate calls all methods in the invocation list in order.
+
+```csharp
+Action<string> pipeline = null!;
+
+pipeline += s => Console.WriteLine($"Step 1: {s.ToUpper()}");
+pipeline += s => Console.WriteLine($"Step 2: length = {s.Length}");
+pipeline += s => Console.WriteLine("Step 3: done");
+
+pipeline("hello");
+// Step 1: HELLO
+// Step 2: length = 5
+// Step 3: done
+
+// Removing: use a named reference, not an inline lambda
+Action<string> logger = s => Console.WriteLine($"[LOG] {s}");
+pipeline += logger;
+pipeline -= logger; // Works — same delegate reference
+// Removing an anonymous lambda does NOT work — each lambda literal creates a new instance
+```
+
+### Return Values in Multicast Delegates
+
+When a multicast `Func<T>` is invoked, only the **last method's return value** is returned. All intermediate values are silently discarded.
+
+```csharp
+Func<int> chain = null!;
+chain += () => 1;
+chain += () => 2;
+chain += () => 3;
+
+int result = chain(); // 3 — only the last return value survives
+
+// To collect all return values, walk the invocation list:
+int[] allResults = chain.GetInvocationList()
+                        .Cast<Func<int>>()
+                        .Select(fn => fn())
+                        .ToArray(); // [1, 2, 3]
+```
+
+<Callout type="trap">
+**Trap: Exceptions Short-Circuit the Invocation List**
+
+If any method in a multicast delegate throws, the remaining handlers are **not called**. For robust event-bus style dispatch, iterate the invocation list and guard each call individually:
+
+```csharp
+void SafeInvokeAll(Action<string> del, string arg)
+{
+    foreach (Action<string> handler in del.GetInvocationList().Cast<Action<string>>())
+    {
+        try { handler(arg); }
+        catch (Exception ex) { Console.WriteLine($"Handler failed: {ex.Message}"); }
+    }
+}
+```
+
+This pattern matters in plugin systems, notification services, and any code where one bad subscriber must not kill the rest.
 </Callout>
+
+---
+
+## Delegates as First-Class Citizens
+
+Delegates unlock higher-order programming — passing behavior as data:
+
+```csharp
+// Strategy pattern: swap behavior without changing structure
+class Report
+{
+    private readonly Func<IEnumerable<int>, string> _formatter;
+
+    public Report(Func<IEnumerable<int>, string> formatter)
+        => _formatter = formatter;
+
+    public string Generate(IEnumerable<int> data) => _formatter(data);
+}
+
+var csv  = new Report(nums => string.Join(",", nums));
+var json = new Report(nums => $"[{string.Join(",", nums)}]");
+
+int[] data = { 1, 2, 3, 4, 5 };
+Console.WriteLine(csv.Generate(data));   // 1,2,3,4,5
+Console.WriteLine(json.Generate(data));  // [1,2,3,4,5]
+```
+
+LINQ is built entirely on delegates. Every operator — `Where`, `Select`, `OrderBy` — takes a `Func<T, ...>`:
+
+```csharp
+var words = new[] { "banana", "apple", "cherry", "date" };
+
+// Func<string, bool> — filter predicate
+var longWords = words.Where(w => w.Length > 4);
+
+// Func<string, int> — key selector
+var byLength  = words.OrderBy(w => w.Length);
+
+// Func<string, string> — projection
+var upper     = words.Select(w => w.ToUpper());
+```
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/delegates/playground-1"
+  title="Composable Transform Pipeline"
+  code={`using System;
+using System.Linq;
+
+// Compose a pipeline of string transforms
+static Func\<T, T\> Compose\<T\>(params Func\<T, T\>[] steps)
+    => input => steps.Aggregate(input, (current, fn) => fn(current));
+
+Func\<string, string\> trim    = s => s.Trim();
+Func\<string, string\> upper   = s => s.ToUpper();
+Func\<string, string\> exclaim = s => s + "!";
+
+var process = Compose(trim, upper, exclaim);
+
+Console.WriteLine(process("  hello world  ")); // HELLO WORLD!
+Console.WriteLine(process("  delegates  "));   // DELEGATES!`}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/delegates/challenge-1"
+  title="Multicast Func Return Value"
+  description="What does this code print?"
+  code={`Func<int> multi = null!;
+multi += () => 10;
+multi += () => 20;
+multi += () => 30;
+
+Console.WriteLine(multi());`}
+  options={[
+    "10",
+    "60",
+    "30",
+    "Compiler error — Func cannot be multicast"
+  ]}
+  correctAnswer={2}
+  explanation="Func delegates CAN be multicast — all three lambdas are in the invocation list and all three run. However, when you invoke a multicast Func<T>, only the return value of the LAST method in the invocation list is returned. The values 10 and 20 from the first two methods are silently discarded. This is a classic interview trap. In practice, prefer Action for multicast scenarios. Use GetInvocationList() with Cast<Func<int>>() if you genuinely need all return values."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Delegates vs Interfaces, and delegate* for Zero-Allocation Callbacks**
+
+The classic debate: should a callback be a delegate or a single-method interface?
+
+- **Use a delegate** when the behavior is a single operation passed inline — LINQ selectors, event handlers, strategy patterns. Delegates are lightweight; they don't require a class definition.
+- **Use an interface** when the abstraction has multiple related methods, needs to carry shared state in a principled way, or requires standard mock/test tooling.
+
+For high-performance scenarios (game engines, low-level interop), C# 9 introduced `delegate*` — unsafe function pointers with zero heap allocation:
+
+```csharp
+unsafe
+{
+    delegate*<int, int> fn = &Square;
+    int result = fn(5); // 25 — direct native call, no delegate object, no GC pressure
+}
+
+static int Square(int x) => x * x;
+```
+
+`delegate*` is niche — but interviewers at high-performance shops (trading firms, game studios) do ask about it. Knowing it exists demonstrates genuine depth in the runtime model.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Func and Action are special language keywords."
+  reality="Func<> and Action<> are ordinary generic delegate types defined in the System namespace. There is nothing special about them at the compiler or runtime level — you could define identical types yourself. The compiler treats them exactly like any custom delegate. This is why a lambda can be assigned to a Func<int, bool> or to a custom delegate bool MyFilter(int n) with the same signature — both are just delegate types with matching signatures."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Delegates (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/delegates/" },
+    { label: "Using Delegates", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/delegates/using-delegates" },
+    { label: "Func\<T,TResult\> Delegate", url: "https://learn.microsoft.com/en-us/dotnet/api/system.func-2" },
+    { label: "Action\<T\> Delegate", url: "https://learn.microsoft.com/en-us/dotnet/api/system.action-1" },
+  ]}
+/>

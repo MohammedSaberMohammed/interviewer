@@ -1,24 +1,292 @@
 ---
-title: "The Managed Heap: Gen 0/1/2, LOH, POH"
+title: "The Managed Heap: GC Generations Explained"
 slug: "managed-heap"
 order: 1
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["GC", "heap", "generations", "Gen0", "Gen1", "Gen2", "LOH", "POH", "memory"]
+summary: "The GC doesn't treat all objects equally — it divides the heap into generations. Understanding Gen0/Gen1/Gen2 promotion is essential for diagnosing memory pressure in production."
+docsLinks:
+  - label: "Garbage collector fundamentals"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/fundamentals"
+  - label: "Garbage collection and performance"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance"
+  - label: "Large object heap (LOH)"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/large-object-heap"
+  - label: "Pinned object heap (POH)"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Generations Exist
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A naive GC would scan every living object on every collection. For a multi-GB heap that would be catastrophic. The .NET GC exploits the **generational hypothesis**: most objects die young.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The heap is split into generations. Short-lived objects live in small, fast-collected spaces. Long-lived objects are promoted and collected rarely. This is why most Gen0 collections take under a millisecond while a full Gen2 collection may pause for tens of milliseconds.
+
+---
+
+## The Four Regions of the Managed Heap
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    MANAGED HEAP                         │
+├──────────┬──────────┬──────────────────┬────────────────┤
+│  Gen 0   │  Gen 1   │     Gen 2        │  LOH / POH     │
+│ ~256 KB  │ ~2 MB    │ Unbounded        │ ≥ 85,000 bytes │
+│ Fast GC  │ Buffer   │ Full GC          │ Never compacted│
+└──────────┴──────────┴──────────────────┴────────────────┘
+```
+
+| Region | Purpose | GC Frequency | Compacted? |
+|--------|---------|-------------|-----------|
+| Gen 0 | New small allocations | Very frequent (milliseconds) | Yes |
+| Gen 1 | Survived one Gen0 GC | Moderate | Yes |
+| Gen 2 | Long-lived objects | Infrequent | Yes |
+| LOH | Objects ≥ 85,000 bytes | With Gen2 | No (by default) |
+| POH | Pinned buffers (.NET 5+) | With Gen2 | No (by design) |
+
+---
+
+## Gen 0: The Nursery
+
+All new small object allocations land in Gen 0. The GC uses a **bump-pointer allocator** — allocation is just incrementing a pointer, which is extremely fast.
+
+```csharp
+// Each 'new' for a small object hits Gen 0
+var request = new HttpRequestMessage();     // → Gen 0
+var buffer = new byte[1024];               // → Gen 0 (< 85KB)
+var list = new List<string>();             // → Gen 0
+
+// Gen 0 is collected when it fills up (~256KB budget)
+// Most objects here are dead by then — temporary state, short-lived DTOs, etc.
+```
+
+Gen 0 collections are stop-the-world but extremely fast because the region is small and most objects are dead (nothing to copy).
+
+---
+
+## Gen 1: The Buffer
+
+Gen 1 acts as a buffer between the high-churn Gen 0 and the expensive Gen 2. Objects that survive a Gen 0 collection are **promoted** to Gen 1.
+
+```csharp
+// Objects that "accidentally survive" Gen 0:
+// - Objects referenced by long-lived objects during a Gen 0 collection
+// - Objects that were in-flight when GC ran (mid-method execution)
+// - Static field references that keep objects alive
+
+static readonly HttpClient _client = new HttpClient(); // Long-lived, survives to Gen 2
+// BUT: if HttpClient is instantiated in a tight loop, GC timing can cause
+// many instances to be promoted to Gen 1 before being collected
+```
+
+Gen 1 collections include Gen 0 + Gen 1 — still fast, but slower than Gen 0 alone.
+
+---
+
+## Gen 2: The Long-Lived Region
+
+Gen 2 holds objects that survived multiple collections. A Gen 2 collection (also called a **full GC**) collects all three generations and is the most expensive operation.
+
+```csharp
+// Typical Gen 2 residents:
+// - Static fields and singletons
+// - Caches and dictionaries that grow over time
+// - The underlying arrays of long-lived List<T>, Dictionary<T,T>
+
+public class UserCache
+{
+    // This dictionary will live in Gen 2 for the app lifetime
+    private static readonly Dictionary<int, User> _cache = new();
+
+    // Every Add() may trigger array resizing, creating Gen 0 garbage
+    public static void Add(int id, User user) => _cache[id] = user;
+}
+
+// Anti-pattern: repeatedly creating and discarding large collections
+// forces frequent Gen 2 promotions and full GC cycles
+for (int i = 0; i < 10_000; i++)
+{
+    var temp = new Dictionary<string, object>(); // starts Gen 0
+    PopulateHeavily(temp);                        // may promote to Gen 1 or Gen 2
+    ProcessAndDiscard(temp);                      // GC must now clean Gen 2
+}
+```
+
+---
+
+## Memory Visualizer: GC Generations and Promotion
+
+<MemoryVisualizer
+  stack={[
+    { name: "request (ref)", value: "→ Gen0:0x1000", isReference: true },
+    { name: "client (ref)", value: "→ Gen2:0xF000", isReference: true }
+  ]}
+  heap={[
+    {
+      id: "gen0-obj",
+      label: "Gen 0 — HttpRequestMessage @ 0x1000",
+      content: {
+        "Age": "0 (just allocated)",
+        "Size": "~120 bytes",
+        "Status": "Will be collected or promoted"
+      }
+    },
+    {
+      id: "gen2-obj",
+      label: "Gen 2 — HttpClient @ 0xF000",
+      content: {
+        "Age": "2+ GC cycles survived",
+        "Size": "~1.2 KB",
+        "Status": "Long-lived, collected rarely"
+      }
+    }
+  ]}
+  references={[
+    { from: "request (ref)", to: "gen0-obj" },
+    { from: "client (ref)", to: "gen2-obj" }
+  ]}
+/>
+
+---
+
+## The Large Object Heap (LOH)
+
+Objects that are **85,000 bytes or larger** bypass Gen 0 entirely and go directly to the LOH. The LOH is collected only during Gen 2 collections and is **not compacted by default**.
+
+```csharp
+// These go to the LOH immediately:
+byte[] bigBuffer = new byte[85_000];      // → LOH
+byte[] bigger    = new byte[1_024_000];   // → LOH
+int[]  intArray  = new int[21_500];       // 21,500 * 4 = 86,000 bytes → LOH
+
+// This does NOT go to the LOH (smaller than 85KB):
+byte[] small = new byte[84_999];          // → Gen 0 heap
+
+// LOH fragmentation problem:
+for (int i = 0; i < 1000; i++)
+{
+    var buf = new byte[100_000];   // LOH — 100KB each
+    Process(buf);
+    // buf becomes unreachable — but LOH is not compacted!
+    // 100KB "holes" accumulate in LOH → fragmentation
+}
+```
+
+To force LOH compaction (use sparingly — it causes a blocking GC):
+
+```csharp
+// .NET 4.5.1+ — force LOH compaction on next GC
+GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+GC.Collect();
+// Mode resets to Default after collection
+```
+
+---
+
+## The Pinned Object Heap (POH) — .NET 5+
+
+When you pin objects (for native interop), they block GC compaction of the region they're in. .NET 5 introduced the **Pinned Object Heap** — a dedicated non-compacting region for pinned buffers.
+
+```csharp
+// Before POH (.NET Core 3.1 and earlier):
+// GCHandle.Alloc(buffer, GCHandleType.Pinned) pins a Gen0/Gen1 object
+// → creates "holes" that prevent GC from compacting those segments
+
+// With POH (.NET 5+): use GC.AllocateArray with pinned:true
+byte[] nativeBuffer = GC.AllocateArray<byte>(4096, pinned: true);
+// OR
+byte[] nativeBuffer2 = GC.AllocateUninitializedArray<byte>(4096, pinned: true);
+
+// The pinned array goes to POH — compaction of other heaps is not affected
+// Great for P/Invoke buffers, native interop, gRPC/networking stacks
+```
+
+---
+
+## Forcing a GC (When and Why)
+
+```csharp
+// Almost never call this in production code — it's an anti-pattern
+GC.Collect();
+
+// Legitimate uses:
+// 1. After loading a large dataset that's now fully processed — flush Gen0/1 trash
+// 2. In unit tests that need deterministic memory state
+// 3. In benchmarks to establish baseline memory
+
+// Correct way to force a full blocking GC:
+GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+GC.WaitForPendingFinalizers(); // run finalizers
+GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true); // collect finalized objects
+
+// Check generation of an object (diagnostic only):
+var obj = new object();
+Console.WriteLine(GC.GetGeneration(obj)); // 0 — just allocated
+GC.Collect(0);
+Console.WriteLine(GC.GetGeneration(obj)); // 1 — survived Gen0 GC
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Gen2 Collections Are the Real Enemy**
+
+In high-throughput .NET services, the performance killer is rarely a single slow operation — it's frequent Gen 2 GC pauses. Here's how to think about this at the system level:
+
+- **Gen 0 GC**: ~0.1–1ms, happens every few MB of allocation. Essentially free.
+- **Gen 1 GC**: ~1–5ms, triggers every few Gen 0 collections.
+- **Gen 2 GC**: ~10ms to seconds depending on heap size. Stop-the-world in workstation GC. Can cause latency spikes, request timeouts, and cascading failures.
+
+The key insight is that Gen 2 collections are triggered by **Gen 1 being full** — which happens when objects survive Gen 0. So the real question is: why are short-lived objects surviving Gen 0?
+
+**Root causes:**
+1. **Mid-request caches** — data cached for the duration of a request that happens to outlive a Gen 0 collection
+2. **Large initializer chains** — constructors that allocate many sub-objects; by the time construction finishes, early objects have survived Gen 0
+3. **Async state machines** — `async/await` compiles to a struct-based state machine, but awaited operations cause the surrounding method to yield, letting GC run mid-flight
+
+**Diagnostic approach:**
+```csharp
+// Add GC event counters to your metrics (dotnet-counters compatible)
+var gen0 = GC.CollectionCount(0);
+var gen1 = GC.CollectionCount(1);
+var gen2 = GC.CollectionCount(2);
+
+// A healthy service ratio is roughly: Gen2 << Gen1 << Gen0
+// If Gen2 approaches Gen1 count, you have a promotion problem
+// Target: Gen2 count should be 100x-1000x fewer than Gen0 count
+```
+
+Use `dotnet-counters monitor --process-id <PID>` to see these live in production.
 </Callout>
+
+---
+
+## Quiz: GC Generations
+
+<Quiz
+  id="04-memory-gc/managed-heap/quiz-1"
+  question="You allocate a byte[] with 90,000 elements. Which heap region does it go to, and why?"
+  options={[
+    "Gen 0, because it's a new allocation",
+    "Gen 2, because it's large and likely long-lived",
+    "Large Object Heap, because it exceeds the 85,000-byte threshold",
+    "Gen 1, because byte[] is a reference type"
+  ]}
+  correctAnswer={2}
+  explanation="Arrays of 85,000 bytes or more go directly to the Large Object Heap (LOH), bypassing Gen 0 entirely. The threshold is based on total object size in bytes — 90,000 bytes of byte[] (each element is 1 byte) clearly exceeds 85,000. LOH objects are only collected during Gen 2 collections and the LOH is not compacted by default, which can lead to fragmentation with frequent large array allocations."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Garbage collector fundamentals", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/fundamentals" },
+    { label: "Garbage collection and performance", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/performance" },
+    { label: "Large object heap (LOH)", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/large-object-heap" },
+    { label: "GC.AllocateArray — Pinned Object Heap", url: "https://learn.microsoft.com/en-us/dotnet/api/system.gc.allocatearray" },
+  ]}
+/>

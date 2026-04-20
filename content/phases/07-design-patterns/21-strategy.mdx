@@ -1,24 +1,308 @@
 ---
-title: "Strategy"
+title: "Strategy — Pluggable Algorithms"
 slug: "strategy"
 order: 21
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["strategy", "behavioral", "algorithms", "IComparer", "sorting", "open/closed principle", "composition"]
+summary: "Strategy defines a family of algorithms, encapsulates each one, and makes them interchangeable — the pattern behind IComparer<T>, sorting, validation, and pricing rules."
+docsLinks:
+  - label: "IComparer<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1"
+  - label: "IEqualityComparer<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iequalitycomparer-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Hard-Coded Algorithms
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When you embed a sorting or calculation algorithm directly in a class, switching to a different algorithm means modifying the class — violating OCP. Strategy extracts the algorithm behind an interface so it can be swapped without touching the context.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Without Strategy — hard-coded sorting, can't change without modifying class
+public class ReportGenerator
+{
+    public List<Order> GenerateSortedReport(List<Order> orders)
+    {
+        // Hard-coded: always sort by date
+        return orders.OrderBy(o => o.Date).ToList();
+    }
+}
+```
+
+---
+
+## Strategy Pattern Structure
+
+```csharp
+// Strategy interface
+public interface ISortStrategy<T>
+{
+    IEnumerable<T> Sort(IEnumerable<T> items);
+}
+
+// Concrete strategies
+public class SortByDateAscending : ISortStrategy<Order>
+{
+    public IEnumerable<Order> Sort(IEnumerable<Order> orders)
+        => orders.OrderBy(o => o.Date);
+}
+
+public class SortByTotalDescending : ISortStrategy<Order>
+{
+    public IEnumerable<Order> Sort(IEnumerable<Order> orders)
+        => orders.OrderByDescending(o => o.Total);
+}
+
+public class SortByCustomerName : ISortStrategy<Order>
+{
+    public IEnumerable<Order> Sort(IEnumerable<Order> orders)
+        => orders.OrderBy(o => o.CustomerName, StringComparer.OrdinalIgnoreCase);
+}
+
+// Context — uses whichever strategy is injected
+public class ReportGenerator
+{
+    private ISortStrategy<Order> _sortStrategy;
+
+    public ReportGenerator(ISortStrategy<Order> sortStrategy)
+        => _sortStrategy = sortStrategy;
+
+    // Strategy can be changed at runtime
+    public void SetSortStrategy(ISortStrategy<Order> strategy)
+        => _sortStrategy = strategy;
+
+    public List<Order> GenerateSortedReport(List<Order> orders)
+        => _sortStrategy.Sort(orders).ToList();
+}
+
+// Usage — inject strategy
+var generator = new ReportGenerator(new SortByTotalDescending());
+var report = generator.GenerateSortedReport(orders);
+
+// Swap strategy at runtime
+generator.SetSortStrategy(new SortByDateAscending());
+```
+
+---
+
+## Modern C# Alternative: `Func<T, TKey>` Delegates
+
+For simple strategies, delegates eliminate the need for strategy classes entirely:
+
+```csharp
+public class ReportGenerator
+{
+    public List<Order> GenerateSortedReport(
+        IEnumerable<Order> orders,
+        Func<IEnumerable<Order>, IEnumerable<Order>> sortStrategy)
+            => sortStrategy(orders).ToList();
+}
+
+// Usage — lambdas as strategies (no classes needed)
+var generator = new ReportGenerator();
+var byTotal  = generator.GenerateSortedReport(orders, o => o.OrderByDescending(x => x.Total));
+var byDate   = generator.GenerateSortedReport(orders, o => o.OrderBy(x => x.Date));
+```
+
+---
+
+## Real .NET BCL Example: `IComparer<T>`
+
+`IComparer<T>` is the classic Strategy interface in the BCL:
+
+```csharp
+// Custom comparison strategies
+public class OrderByTotalDescending : IComparer<Order>
+{
+    public int Compare(Order? x, Order? y) =>
+        Comparer<decimal>.Default.Compare(y?.Total ?? 0, x?.Total ?? 0);
+}
+
+public class OrderByCustomer : IComparer<Order>
+{
+    public int Compare(Order? x, Order? y) =>
+        string.Compare(x?.CustomerName, y?.CustomerName, StringComparison.OrdinalIgnoreCase);
+}
+
+// The sort algorithm (Array.Sort, List.Sort) is the Context
+// The IComparer<T> implementation is the Strategy
+var orders = new List<Order> { /* ... */ };
+
+orders.Sort(new OrderByTotalDescending()); // inject strategy
+
+// Or use Comparer<T>.Create() for inline strategies (C# 7+)
+orders.Sort(Comparer<Order>.Create((x, y) =>
+    string.Compare(x.CustomerName, y.CustomerName, StringComparison.Ordinal)));
+
+// LINQ's OrderBy also accepts IComparer<T>
+var sorted = orders.OrderBy(o => o.CustomerName, StringComparer.OrdinalIgnoreCase);
+```
+
+`IEqualityComparer<T>` is the same pattern for equality checking — used by `Dictionary<TKey, TValue>`, `HashSet<T>`, LINQ's `GroupBy`/`Distinct`:
+
+```csharp
+// Custom equality strategy for case-insensitive email matching
+public class EmailEqualityComparer : IEqualityComparer<User>
+{
+    public bool Equals(User? x, User? y) =>
+        string.Equals(x?.Email, y?.Email, StringComparison.OrdinalIgnoreCase);
+
+    public int GetHashCode(User obj) =>
+        obj.Email.ToLowerInvariant().GetHashCode();
+}
+
+var uniqueUsers = users.Distinct(new EmailEqualityComparer()).ToList();
+var groupedByEmail = users.GroupBy(u => u.Email, StringComparer.OrdinalIgnoreCase);
+```
+
+---
+
+## Pricing Rules — Real-World Strategy
+
+```csharp
+public interface IDiscountStrategy
+{
+    decimal CalculateDiscount(Order order);
+}
+
+public class NoDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) => 0;
+}
+
+public class PercentageDiscount : IDiscountStrategy
+{
+    private readonly decimal _percent;
+    public PercentageDiscount(decimal percent) => _percent = percent;
+    public decimal CalculateDiscount(Order order) => order.Total * (_percent / 100);
+}
+
+public class VolumeDiscount : IDiscountStrategy
+{
+    public decimal CalculateDiscount(Order order) =>
+        order.ItemCount > 10 ? order.Total * 0.15m : 0;
+}
+
+public class LoyaltyDiscount : IDiscountStrategy
+{
+    private readonly int _loyaltyYears;
+    public LoyaltyDiscount(int years) => _loyaltyYears = years;
+    public decimal CalculateDiscount(Order order) =>
+        _loyaltyYears > 3 ? order.Total * 0.20m : order.Total * 0.05m;
+}
+
+// Register strategies in DI by key (.NET 8+)
+builder.Services.AddKeyedTransient<IDiscountStrategy, NoDiscount>("none");
+builder.Services.AddKeyedTransient<IDiscountStrategy, VolumeDiscount>("volume");
+builder.Services.AddKeyedSingleton<IDiscountStrategy>("percent10", (_, _) => new PercentageDiscount(10));
+```
+
+---
+
+<ComparisonTable
+  title="Strategy vs Template Method"
+  headers={["Aspect", "Strategy", "Template Method"]}
+  rows={[
+    ["Mechanism", "Composition — inject the algorithm", "Inheritance — override steps in subclass"],
+    ["Algorithm boundary", "Entire algorithm swappable", "Fixed skeleton, variable steps"],
+    ["Runtime change", "Yes — swap strategy object", "No — fixed at compile time by subclass"],
+    ["Coupling", "Low — Context only knows interface", "High — subclass tightly coupled to base"],
+    ["Use when", "Algorithm family, runtime selection", "Algorithm skeleton fixed, steps vary"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/strategy/challenge-1"
+  title="Strategy in LINQ"
+  description="Which LINQ method uses the Strategy pattern most directly?"
+  code={`var orders = GetOrders();
+
+// A:
+var sorted1 = orders.OrderBy(o => o.Total);
+
+// B:
+var sorted2 = orders.OrderBy(o => o.Total, Comparer\<decimal\>.Create((x, y) => y.CompareTo(x)));
+
+// C:
+var grouped = orders.GroupBy(o => o.Status);
+
+// D:
+var distinct = orders.Distinct(new OrderByIdEqualityComparer());`}
+  options={[
+    "A — OrderBy with a key selector is Strategy because the lambda is swappable",
+    "B and D — passing an IComparer<T> or IEqualityComparer<T> is the Strategy pattern; the algorithm (compare/equality logic) is injected",
+    "C — GroupBy swaps the grouping algorithm",
+    "All of the above implement Strategy"
+  ]}
+  correctAnswer={1}
+  explanation="B and D most directly implement Strategy: they pass an IComparer<T> (B) or IEqualityComparer<T> (D) — the comparison/equality ALGORITHM is externalized behind an interface and injected into the LINQ operator (the Context). A is borderline — the lambda is a lightweight strategy, but it's only a key selector (tells LINQ how to extract the key, not how to compare). The IComparer and IEqualityComparer interfaces are explicitly the Strategy pattern for sorting and equality in .NET."
+/>
+
+---
+
+<Callout type="senior">
+**Strategy + DI = Extensible Business Rules**
+
+Combining Strategy with DI makes business rules plug-in-able without modifying the core system:
+
+```csharp
+// Multiple validators as strategies
+public interface IOrderValidator
+{
+    ValidationResult Validate(Order order);
+}
+
+// Register all validators — they'll ALL be injected as IEnumerable<IOrderValidator>
+builder.Services.AddTransient<IOrderValidator, StockAvailabilityValidator>();
+builder.Services.AddTransient<IOrderValidator, CustomerCreditValidator>();
+builder.Services.AddTransient<IOrderValidator, FraudDetectionValidator>();
+builder.Services.AddTransient<IOrderValidator, GeographicRestrictionValidator>();
+
+// Composite strategy — runs all registered validators
+public class OrderValidationService
+{
+    private readonly IEnumerable<IOrderValidator> _validators;
+
+    public OrderValidationService(IEnumerable<IOrderValidator> validators)
+        => _validators = validators;
+
+    public IEnumerable<ValidationError> Validate(Order order) =>
+        _validators
+            .Select(v => v.Validate(order))
+            .Where(r => !r.IsValid)
+            .SelectMany(r => r.Errors);
+}
+```
+
+Adding a new validation rule is a single line in DI registration — no modification to OrderValidationService. This is Strategy + Open/Closed Principle at its most practical.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/strategy/quiz-1"
+  question="In .NET, IComparer<T> and IEqualityComparer<T> are implementations of which pattern?"
+  options={[
+    "Adapter — they adapt comparison logic to a standard interface",
+    "Strategy — they encapsulate comparison/equality algorithms that are injected into sorting and collection operations",
+    "Template Method — they define a template for comparison operations",
+    "Command — each comparison is an encapsulated action"
+  ]}
+  correctAnswer={1}
+  explanation="IComparer<T> and IEqualityComparer<T> are Strategy interfaces. The sort algorithm (Array.Sort, List.Sort, LINQ OrderBy) is the Context; the IComparer implementation is the Strategy — the pluggable comparison algorithm. You can inject any IComparer to change how sorting works without modifying the sort algorithm itself. This is exactly Strategy: a family of algorithms (comparison strategies) that are interchangeable."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IComparer<T> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.icomparer-1" },
+    { label: "IEqualityComparer<T> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.iequalitycomparer-1" },
+    { label: "Comparer<T>.Create() method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.comparer-1.create" },
+  ]}
+/>

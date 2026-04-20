@@ -3,22 +3,216 @@ title: "IEnumerable vs IQueryable"
 slug: "linq-ienumerable-iqueryable"
 order: 5
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["IEnumerable", "IQueryable", "LINQ", "Entity Framework", "expression trees", "SQL translation", "ORM"]
+summary: "IEnumerable runs queries in memory using delegates; IQueryable translates them to SQL (or another query language) using expression trees — choosing wrong means pulling millions of rows."
+docsLinks:
+  - label: "IQueryable<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.iqueryable-1"
+  - label: "IEnumerable<T> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "Expression Trees (C#)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/expression-trees/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Core Distinction
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`IEnumerable<T>` and `IQueryable<T>` both represent sequences you can LINQ over, but they differ fundamentally in **where the work happens**:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **`IEnumerable<T>`** — all LINQ operations run **in memory** using compiled C# delegates. Data must be loaded first.
+- **`IQueryable<T>`** — LINQ operations are captured as **expression trees** and translated to a query (SQL, OData, etc.) by a provider. Work happens **at the data source**.
+
+```csharp
+// IEnumerable<T> — filter runs in C# on all loaded data
+IEnumerable<User> allUsers = dbContext.Users.ToList(); // loads ALL users
+var admins = allUsers.Where(u => u.Role == "Admin");   // filters in memory
+
+// IQueryable<T> — filter is translated to SQL
+IQueryable<User> query = dbContext.Users;              // no data loaded yet
+var admins = query.Where(u => u.Role == "Admin");      // adds WHERE to SQL
+var result = admins.ToList();                          // executes: SELECT ... WHERE Role = 'Admin'
+```
+
+The performance difference can be enormous: with 10 million users and 5 admins, `IEnumerable` loads 10 million rows, `IQueryable` loads 5.
+
+---
+
+## How IQueryable Works: Expression Trees
+
+`IQueryable<T>` carries the query as an **expression tree** — a data structure representing the query as code, not executed code. The LINQ provider (e.g., EF Core) walks this tree and generates SQL:
+
+```csharp
+// When you write this:
+IQueryable<User> q = dbContext.Users.Where(u => u.Age > 25);
+
+// The lambda u => u.Age > 25 is NOT compiled to a delegate.
+// It's compiled to an Expression<Func<User, bool>> — a tree object:
+//
+// Expression: BinaryExpression (>)
+//   Left:  MemberExpression (u.Age)
+//   Right: ConstantExpression (25)
+//
+// EF Core reads this tree and generates:
+// WHERE "Age" > 25
+
+// You can see the SQL EF Core generates:
+var sql = dbContext.Users.Where(u => u.Age > 25).ToQueryString();
+// SELECT u."Id", u."Name", u."Age", u."Role"
+// FROM "Users" AS u
+// WHERE u."Age" > 25
+```
+
+This is why `IQueryable` lambda parameters must use **supported expressions** — not arbitrary C# code. The provider must understand how to translate every expression in the tree.
+
+---
+
+## The AsEnumerable() Escape Hatch
+
+Once you call `.AsEnumerable()` on an `IQueryable<T>`, all subsequent operators switch to **in-memory LINQ**:
+
+```csharp
+// Scenario: you need a C# method the DB can't translate
+var result = dbContext.Products
+    .Where(p => p.IsActive)          // translated to SQL — filter at DB
+    .AsEnumerable()                  // ← switch to in-memory LINQ from here
+    .Where(p => MyComplexFilter(p))  // C# method — runs in memory
+    .OrderBy(p => p.Name)
+    .ToList();
+
+// SQL generated: SELECT ... FROM Products WHERE IsActive = 1
+// Then C# filters and sorts the returned rows in memory
+```
+
+The key insight: move as much filtering as possible **before** `AsEnumerable()` to minimize the rows transferred from the database.
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/linq-ienumerable-iqueryable/challenge-1"
+  title="Where Does the Filter Run?"
+  description="A DbSet<Order> is IQueryable. What SQL does this code produce and how many rows are loaded into memory?"
+  code={`IEnumerable<Order> orders = dbContext.Orders; // note: cast to IEnumerable
+
+var recent = orders
+    .Where(o => o.Date > DateTime.UtcNow.AddDays(-7))
+    .OrderByDescending(o => o.Date)
+    .Take(10)
+    .ToList();`}
+  options={[
+    "SELECT TOP 10 ... WHERE Date > @cutoff ORDER BY Date DESC — only 10 rows loaded",
+    "SELECT * FROM Orders — all orders loaded, then filtered in C#",
+    "Compiler error — IQueryable cannot be cast to IEnumerable",
+    "SELECT * FROM Orders WHERE Date > @cutoff — filter at DB but no LIMIT applied"
+  ]}
+  correctAnswer={1}
+  explanation="The critical detail is `IEnumerable<Order> orders = dbContext.Orders`. Although DbSet<Order> implements IQueryable, the variable is typed as IEnumerable<T>. The compiler resolves Where/OrderByDescending/Take to the IEnumerable<T> extension methods (which take delegates), not the IQueryable<T> ones (which take Expression trees). This means ALL rows are fetched from the database first, then filtered, sorted, and limited in C# memory. With millions of orders, this is catastrophic. Always keep your DbSet references typed as IQueryable<T>."
+/>
+
+---
+
+<ComparisonTable
+  headers={["Aspect", "IEnumerable<T>", "IQueryable<T>"]}
+  rows={[
+    ["Namespace", "System.Collections.Generic", "System.Linq"],
+    ["Where work happens", "In C# memory", "At data source (DB, API)"],
+    ["Lambda compiled to", "Func\<T, bool\> delegate", "Expression<Func\<T, bool\>> tree"],
+    ["Supports C# methods in predicates", "Yes (any C# code)", "Limited to what provider supports"],
+    ["Typical source", "In-memory collections", "DbSet, OData endpoint"],
+    ["SQL generation", "No", "Yes (via provider)"],
+    ["Deferred execution", "Yes", "Yes"],
+    ["AsQueryable()", "Wraps as queryable (still in-memory)", "Already queryable"],
+  ]}
+/>
+
+---
+
+<Callout type="trap">
+**Trap: Client-Side Evaluation Gotcha in EF Core**
+
+EF Core 3+ removed "client-side evaluation" — it throws instead of silently pulling all rows:
+
+```csharp
+// EF Core 3+ THROWS: InvalidOperationException
+// "...could not be translated. Either rewrite it in a supported form,
+// or switch to client evaluation explicitly by inserting a call to AsEnumerable()..."
+var result = dbContext.Users
+    .Where(u => MyCustomFilter(u.Name))  // custom C# method — not translatable
+    .ToList();
+
+// FIX 1: Use AsEnumerable() consciously
+var result = dbContext.Users
+    .AsEnumerable()
+    .Where(u => MyCustomFilter(u.Name))
+    .ToList();
+
+// FIX 2: Rewrite using expressions EF can translate
+var result = dbContext.Users
+    .Where(u => u.Name.StartsWith("A") && u.Name.Length > 3) // EF can translate this
+    .ToList();
+```
+
+EF Core 2 would silently load all rows when it couldn't translate — a performance landmine. The 3+ behavior (throw) is strictly better: it makes the problem explicit.
 </Callout>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Building Dynamic Queries with Expression Trees**
+
+One of the most powerful uses of `IQueryable` is composing queries dynamically at runtime — adding filters, sorting, or projections based on user input without concatenating SQL strings:
+
+```csharp
+// Dynamic filter building — type-safe, no SQL injection risk
+IQueryable<Product> query = dbContext.Products.AsQueryable();
+
+if (!string.IsNullOrEmpty(nameFilter))
+    query = query.Where(p => p.Name.Contains(nameFilter));
+
+if (minPrice.HasValue)
+    query = query.Where(p => p.Price >= minPrice.Value);
+
+if (categoryId.HasValue)
+    query = query.Where(p => p.CategoryId == categoryId.Value);
+
+// Sort dynamically
+query = sortDescending
+    ? query.OrderByDescending(p => p.Price)
+    : query.OrderBy(p => p.Price);
+
+// Paginate
+var page = await query
+    .Skip((pageNumber - 1) * pageSize)
+    .Take(pageSize)
+    .ToListAsync(); // ONE SQL query with all conditions, ORDER BY, and LIMIT
+
+// EF Core generates something like:
+// SELECT * FROM Products
+// WHERE Name LIKE '%widget%'
+//   AND Price >= 10.00
+// ORDER BY Price ASC
+// LIMIT 20 OFFSET 40
+```
+
+For highly dynamic queries (user-defined column sorting, arbitrary multi-column filters), look at libraries like **System.Linq.Dynamic.Core** which parse string expressions into expression trees, or build expression trees manually using `Expression.Lambda`, `Expression.Parameter`, etc.
+</Callout>
+
+---
+
+<MythBuster
+  myth="IQueryable is always faster than IEnumerable because it pushes work to the database."
+  reality="IQueryable pushes work to the source, which is only better when the source can handle it efficiently (e.g., SQL with indexes). For small in-memory collections, IQueryable adds overhead from expression tree construction and interpretation. Also, a poorly written IQueryable query (missing indexes, Cartesian products, N+1 issues) can be far slower than a well-optimized in-memory operation. The choice is about WHERE the data lives, not an automatic performance win."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IQueryable\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.iqueryable-1" },
+    { label: "IEnumerable\<T\> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1" },
+    { label: "Expression Trees (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/expression-trees/" },
+    { label: "EF Core — How queries work", url: "https://learn.microsoft.com/en-us/ef/core/querying/how-query-works" },
+  ]}
+/>

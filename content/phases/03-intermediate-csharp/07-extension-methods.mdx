@@ -1,24 +1,258 @@
 ---
-title: "Extension Methods: Rules & Best Practices"
+title: "Extension Methods: Design and Pitfalls"
 slug: "extension-methods"
 order: 7
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["extension methods", "static methods", "fluent API", "LINQ", "this parameter", "design patterns"]
+summary: "Extension methods add new methods to existing types without modification — they are syntactic sugar over static calls, and LINQ is built entirely on them."
+docsLinks:
+  - label: "Extension Methods (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/extension-methods"
+  - label: "How to implement and call a custom extension method"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/how-to-implement-and-call-a-custom-extension-method"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is an Extension Method?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+An **extension method** is a static method defined in a static class, whose first parameter has the `this` modifier. It lets you call the method as if it were an instance method on the extended type:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Definition: static class, static method, 'this' on first param
+public static class StringExtensions
+{
+    public static bool IsNullOrEmpty(this string? value)
+        => string.IsNullOrEmpty(value);
+
+    public static string Truncate(this string value, int maxLength)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
+    }
+
+    public static string ToPascalCase(this string value)
+        => string.IsNullOrEmpty(value) ? value
+            : char.ToUpper(value[0]) + value[1..];
+}
+
+// Usage: called as if instance methods
+string name = "hello world";
+Console.WriteLine(name.IsNullOrEmpty());    // False
+Console.WriteLine(name.Truncate(8));        // hello wo...
+Console.WriteLine(name.ToPascalCase());     // Hello world
+
+// The compiler desugars these to:
+StringExtensions.IsNullOrEmpty(name);
+StringExtensions.Truncate(name, 8);
+StringExtensions.ToPascalCase(name);
+```
+
+---
+
+## Rules for Extension Methods
+
+```csharp
+// 1. Must be in a NON-nested, NON-generic static class
+public static class MyExtensions { ... }  // OK
+// private static class X { ... }        // OK (but useless outside assembly)
+// class MyExtensions { ... }            // NOT OK — must be static
+
+// 2. Must be a static method
+public static string Reverse(this string s) => new(s.Reverse().ToArray()); // OK
+// public string Reverse(this string s) => ...                              // NOT OK
+
+// 3. 'this' param must be first
+public static int Clamp(this int value, int min, int max) // OK
+    => Math.Max(min, Math.Min(max, value));
+
+// 4. Can extend any type — value types, interfaces, generics
+public static bool IsDefault<T>(this T value) where T : struct
+    => value.Equals(default(T));
+
+public static IEnumerable<T> WhereNotNull<T>(this IEnumerable<T?> source) where T : class
+    => source.Where(x => x is not null)!;
+
+// 5. Null receiver is allowed (unlike instance methods)
+string? s = null;
+Console.WriteLine(s.IsNullOrEmpty()); // Works! No NullReferenceException
+```
+
+---
+
+## LINQ Is All Extension Methods
+
+Every LINQ operator is an extension method on `IEnumerable<T>` (or `IQueryable<T>`). This is the canonical example of the pattern at scale:
+
+```csharp
+// System.Linq.Enumerable defines all these as extension methods:
+var result = new[] { 1, 2, 3, 4, 5, 6 }
+    .Where(n => n % 2 == 0)         // Enumerable.Where(source, predicate)
+    .Select(n => n * n)             // Enumerable.Select(source, selector)
+    .OrderByDescending(n => n)      // Enumerable.OrderByDescending(source, key)
+    .Take(2)                        // Enumerable.Take(source, count)
+    .ToList();                      // Enumerable.ToList(source)
+
+// [36, 16] — fluent chain, each returning IEnumerable<T>
+```
+
+This **fluent interface** pattern — where each method returns a type that has more extension methods — is the architecture behind most modern C# DSLs (EF Core queries, FluentValidation, AutoMapper, etc.).
+
+---
+
+## Building a Fluent API with Extension Methods
+
+```csharp
+// Domain types
+public class QueryBuilder
+{
+    public string? TableName    { get; set; }
+    public string? WhereClause  { get; set; }
+    public int     Limit        { get; set; } = 100;
+}
+
+// Extension methods for fluent chaining
+public static class QueryBuilderExtensions
+{
+    public static QueryBuilder From(this QueryBuilder qb, string table)
+    {
+        qb.TableName = table;
+        return qb; // return this to enable chaining
+    }
+
+    public static QueryBuilder Where(this QueryBuilder qb, string condition)
+    {
+        qb.WhereClause = condition;
+        return qb;
+    }
+
+    public static QueryBuilder Limit(this QueryBuilder qb, int count)
+    {
+        qb.Limit = count;
+        return qb;
+    }
+
+    public static string Build(this QueryBuilder qb)
+    {
+        var sql = $"SELECT * FROM {qb.TableName}";
+        if (qb.WhereClause is not null) sql += $" WHERE {qb.WhereClause}";
+        sql += $" LIMIT {qb.Limit}";
+        return sql;
+    }
+}
+
+// Usage: reads naturally
+string query = new QueryBuilder()
+    .From("Users")
+    .Where("IsActive = 1")
+    .Limit(50)
+    .Build();
+// SELECT * FROM Users WHERE IsActive = 1 LIMIT 50
+```
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/extension-methods/challenge-1"
+  title="Extension Method Resolution Priority"
+  description="What does this code print?"
+  code={`public class Greeter
+{
+    public string Hello() => "Instance: Hello";
+}
+
+public static class GreeterExtensions
+{
+    public static string Hello(this Greeter g) => "Extension: Hello";
+}
+
+var g = new Greeter();
+Console.WriteLine(g.Hello());`}
+  options={[
+    "Instance: Hello",
+    "Extension: Hello",
+    "Ambiguous call — compile error",
+    "Extension: Hello (extensions always win)"
+  ]}
+  correctAnswer={0}
+  explanation="Instance methods ALWAYS take priority over extension methods with the same name and compatible signature. The extension method Hello(this Greeter g) is completely shadowed by the instance method Hello(). The compiler only considers extension methods when no applicable instance method exists. This means you can never use an extension method to override or intercept an existing instance method — which is by design. If you need to override, use inheritance or composition."
+/>
+
+---
+
+<Callout type="trap">
+**Trap: Extension Methods Don't Have Access to Private Members**
+
+Extension methods are syntactic sugar over static calls. They have no special access to the extended type's internals:
+
+```csharp
+public class Account
+{
+    private decimal _balance;
+
+    public Account(decimal initial) => _balance = initial;
+    public decimal Balance => _balance;
+}
+
+public static class AccountExtensions
+{
+    public static void Deposit(this Account account, decimal amount)
+    {
+        // account._balance += amount; // COMPILE ERROR — private field not accessible
+        // Extension methods are external; they only see public/internal members
+    }
+}
+
+// For access to internals: use a partial class (same assembly),
+// or expose the functionality through the type's own public API
+```
+
+If you find yourself needing private access in an extension method, reconsider: the logic probably belongs inside the class itself.
 </Callout>
+
+---
+
+<Callout type="senior">
+**Senior Insight: When Extension Methods Go Wrong**
+
+Extension methods are easy to overuse. Signs you've gone too far:
+
+1. **Extending `object`** — adding extension methods to `object` pollutes IntelliSense for every type in your codebase. Avoid unless you have a compelling cross-cutting reason.
+
+2. **Hiding complexity** — fluent chains can disguise expensive operations. `user.Save().SendEmail().Notify()` looks innocent but may commit DB transactions and call external APIs. Make costs visible.
+
+3. **Namespace collisions** — two libraries both add a `.ToDto()` extension to `Customer`. The one that's `using`'d last wins, which is fragile. Prefer explicit static method calls for cross-library utility.
+
+4. **Testing difficulties** — extension methods cannot be mocked by most mocking frameworks (they're static calls). Wrap them in an interface for testability when needed:
+
+```csharp
+// Testable: wrap the extension in an interface
+public interface IEmailValidator
+{
+    bool IsValid(string email);
+}
+
+// Real implementation uses extension method internally
+// Tests inject a mock IEmailValidator
+// Don't expose the extension method as the primary API in testable services
+```
+</Callout>
+
+---
+
+<MythBuster
+  myth="Extension methods modify the original type or add real methods to it."
+  reality="Extension methods are purely compile-time syntactic sugar. At runtime, calling `name.Truncate(8)` is identical to calling `StringExtensions.Truncate(name, 8)`. No new methods are added to the string type. No IL instruction treats extension methods differently from regular static calls. Reflection on the string type shows no new methods. The extension method lookup is entirely a compiler feature — it searches for static classes with matching extension methods in scope."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Extension Methods (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/extension-methods" },
+    { label: "How to implement and call a custom extension method", url: "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/how-to-implement-and-call-a-custom-extension-method" },
+    { label: "Enumerable class (System.Linq)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.enumerable" },
+  ]}
+/>

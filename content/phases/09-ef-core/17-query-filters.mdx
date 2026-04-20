@@ -1,24 +1,229 @@
 ---
-title: "Global Query Filters"
+title: "Global Query Filters: Soft Delete and Multi-Tenancy"
 slug: "query-filters"
 order: 17
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["global query filters", "soft delete", "multi-tenancy", "hasqueryfilter", "ignorequeryfiltres", "ef core"]
+summary: "Global query filters automatically append WHERE clauses to every query for an entity type — perfect for soft delete and tenant isolation. Know how to bypass them when needed."
+docsLinks:
+  - label: "Global Query Filters"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/filters"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Global Query Filters?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A global query filter is a LINQ predicate attached to an entity type in `OnModelCreating`. EF Core automatically appends it to every query for that entity type — you never forget it, and you cannot accidentally bypass it without intent.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Without global filter — you must remember IsDeleted check on every query
+var products = await db.Products
+    .Where(p => !p.IsDeleted)   // easy to forget!
+    .ToListAsync();
+
+// With global filter — automatically applied
+modelBuilder.Entity<Product>()
+    .HasQueryFilter(p => !p.IsDeleted);
+
+// Now this query implicitly includes the filter:
+var products = await db.Products.ToListAsync();
+// SQL: SELECT * FROM Products WHERE IsDeleted = 0
+```
+
+---
+
+## Soft Delete Pattern
+
+```csharp
+// ISoftDeletable marker interface
+public interface ISoftDeletable
+{
+    bool IsDeleted { get; set; }
+    DateTime? DeletedAt { get; set; }
+    string? DeletedBy { get; set; }
+}
+
+// Entity implementing soft delete
+public class Product : ISoftDeletable
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public decimal Price { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
+    public string? DeletedBy { get; set; }
+}
+
+// Apply filter to all ISoftDeletable entities globally
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+    {
+        if (typeof(ISoftDeletable).IsAssignableFrom(entityType.ClrType))
+        {
+            var parameter = Expression.Parameter(entityType.ClrType, "e");
+            var body = Expression.Not(
+                Expression.Property(parameter,
+                    nameof(ISoftDeletable.IsDeleted)));
+            var lambda = Expression.Lambda(body, parameter);
+
+            modelBuilder.Entity(entityType.ClrType).HasQueryFilter(lambda);
+        }
+    }
+}
+
+// Override Delete to be a soft delete
+public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+{
+    foreach (var entry in ChangeTracker.Entries<ISoftDeletable>())
+    {
+        if (entry.State == EntityState.Deleted)
+        {
+            entry.State = EntityState.Modified; // do NOT actually delete
+            entry.Entity.IsDeleted = true;
+            entry.Entity.DeletedAt = DateTime.UtcNow;
+            // entry.Entity.DeletedBy = currentUser.UserId;
+        }
+    }
+    return await base.SaveChangesAsync(cancellationToken);
+}
+```
+
+---
+
+## Multi-Tenancy with Query Filters
+
+Global filters are the safest way to enforce tenant isolation — tenants cannot see each other's data even if a developer forgets to add a WHERE clause:
+
+```csharp
+// DbContext with tenant context
+public class AppDbContext : DbContext
+{
+    private readonly ICurrentTenantService _tenantService;
+
+    public AppDbContext(DbContextOptions<AppDbContext> options,
+        ICurrentTenantService tenantService) : base(options)
+    {
+        _tenantService = tenantService;
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // All ITenantScoped entities automatically filtered by tenant
+        modelBuilder.Entity<Order>()
+            .HasQueryFilter(o => o.TenantId == _tenantService.TenantId);
+
+        modelBuilder.Entity<Customer>()
+            .HasQueryFilter(c => c.TenantId == _tenantService.TenantId);
+
+        modelBuilder.Entity<Product>()
+            .HasQueryFilter(p => p.TenantId == _tenantService.TenantId);
+    }
+}
+```
+
+The filter is evaluated at query execution time (not model build time), so `_tenantService.TenantId` reads the current value from the scoped service.
+
+---
+
+## Bypassing Global Filters
+
+Sometimes you legitimately need to see soft-deleted records (admin views, restore operations) or all tenants (cross-tenant reports):
+
+```csharp
+// IgnoreQueryFilters() bypasses ALL global filters on the query
+var allProducts = await db.Products
+    .IgnoreQueryFilters()
+    .ToListAsync(); // includes deleted products from all tenants
+
+// Bypass and re-apply manually (selective bypass)
+var deletedProducts = await db.Products
+    .IgnoreQueryFilters()
+    .Where(p => p.IsDeleted) // only the deleted ones
+    .ToListAsync();
+
+// For multi-tenant: query for a specific other tenant (admin operation)
+var otherTenantOrders = await db.Orders
+    .IgnoreQueryFilters()
+    .Where(o => o.TenantId == adminTargetTenantId)
+    .ToListAsync();
+```
+
+---
+
+## Filters and Include
+
+Global filters apply to included navigations as well:
+
+```csharp
+// If Product has a global filter (IsDeleted = false)
+// and Order includes Products, deleted products are excluded from the Include
+var orders = await db.Orders
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product) // filter applied here too
+    .ToListAsync();
+// Only non-deleted Products appear in Items[n].Product
+
+// To bypass in the Include:
+var orders = await db.Orders
+    .Include(o => o.Items)
+        .ThenInclude(i => i.Product)
+    .IgnoreQueryFilters() // affects the whole query including includes
+    .ToListAsync();
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Filter Performance and Indexing**
+
+Global query filters are transparent — they add WHERE clauses to every query. For this to be performant, the filtered columns must be indexed:
+
+```sql
+-- For soft delete filter
+CREATE INDEX IX_Products_IsDeleted ON Products (IsDeleted)
+    INCLUDE (Name, Price, CategoryId); -- covering index for common columns
+
+-- For multi-tenancy filter
+CREATE INDEX IX_Orders_TenantId ON Orders (TenantId, CreatedAt DESC);
+-- Most tenant queries are also filtered by date — compound index
+```
+
+Without the index, every query against a million-row table does a full scan filtered by `IsDeleted = 0` or `TenantId = X`. With the index, the query planner can seek directly to the matching partition.
+
+Also: for large multi-tenant systems, consider **physical table partitioning** by TenantId instead of logical filtering — but that is an infrastructure decision, not an EF concern.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Global query filters are applied at model build time, so they cannot use runtime values like the current user or tenant"
+  truth="Global query filters are evaluated at query execution time, not when the model is built. The predicate lambda is re-evaluated on each query, so it reads the current value from whatever service or field it closes over. This is why injecting ICurrentTenantService into DbContext and referencing it in HasQueryFilter() works correctly — each request gets the correct tenant's data."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/query-filters/challenge-1"
+  question="An admin endpoint needs to list ALL soft-deleted orders for audit purposes. The Order entity has a global filter of !o.IsDeleted. Which query correctly returns only the soft-deleted orders?"
+  options={[
+    "db.Orders.Where(o => o.IsDeleted).ToListAsync()",
+    "db.Orders.IgnoreQueryFilters().Where(o => o.IsDeleted).ToListAsync()",
+    "db.Orders.IgnoreQueryFilters().ToListAsync()",
+    "db.Orders.AsNoTracking().Where(o => o.IsDeleted).ToListAsync()"
+  ]}
+  correctAnswer={1}
+  explanation="IgnoreQueryFilters() must be called first to bypass the global !IsDeleted filter, then Where(o => o.IsDeleted) re-adds the condition to return only deleted records. Option A fails because the global filter adds AND IsDeleted = 0 to the WHERE clause — conflicting with Where(o.IsDeleted = true) and returning 0 rows. Option C returns everything (deleted and non-deleted). Option D still has the global filter applied (AsNoTracking does not affect query filters) — same problem as Option A."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Global Query Filters", url: "https://learn.microsoft.com/en-us/ef/core/querying/filters" },
+    { label: "IgnoreQueryFilters", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.entityframeworkqueryableextensions.ignorequeryfilters" },
+  ]}
+/>

@@ -1,24 +1,303 @@
 ---
-title: "Interpreter"
+title: "Interpreter — Expression Trees and Mini DSLs"
 slug: "interpreter"
 order: 15
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["interpreter", "behavioral", "expression trees", "DSL", "LINQ", "parser"]
+summary: "Interpreter defines a grammar for a language and provides an interpreter to deal with that grammar — powering LINQ expression trees, rule engines, and search query parsers."
+docsLinks:
+  - label: "Expression trees (C# programming guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/expression-trees/"
+  - label: "System.Linq.Expressions Namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Evaluating Structured Language
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have a search query language: `"age > 18 AND city = 'London'"`. You need to parse it and evaluate it against objects. Hard-coding logic for every possible combination doesn't scale.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Interpreter represents the grammar as a class hierarchy where each class is a grammar rule, and `Interpret()` evaluates it.
+
+---
+
+## Classic Interpreter
+
+```csharp
+// Context — holds the variables being evaluated
+public class RuleContext
+{
+    private readonly Dictionary<string, object> _variables = new();
+
+    public void Set(string name, object value) => _variables[name] = value;
+    public object Get(string name) => _variables[name];
+}
+
+// Abstract expression — all grammar rules implement this
+public interface IExpression
+{
+    bool Interpret(RuleContext ctx);
+}
+
+// Terminal expressions (leaves)
+public class GreaterThanExpression : IExpression
+{
+    private readonly string _field;
+    private readonly int    _value;
+
+    public GreaterThanExpression(string field, int value)
+    {
+        _field = field;
+        _value = value;
+    }
+
+    public bool Interpret(RuleContext ctx)
+        => Convert.ToInt32(ctx.Get(_field)) > _value;
+}
+
+public class EqualsExpression : IExpression
+{
+    private readonly string _field;
+    private readonly string _value;
+
+    public EqualsExpression(string field, string value)
+    {
+        _field = field;
+        _value = value;
+    }
+
+    public bool Interpret(RuleContext ctx)
+        => ctx.Get(_field).ToString() == _value;
+}
+
+// Non-terminal expressions (composites)
+public class AndExpression : IExpression
+{
+    private readonly IExpression _left, _right;
+
+    public AndExpression(IExpression left, IExpression right)
+    {
+        _left  = left;
+        _right = right;
+    }
+
+    public bool Interpret(RuleContext ctx) =>
+        _left.Interpret(ctx) && _right.Interpret(ctx);
+}
+
+public class OrExpression : IExpression
+{
+    private readonly IExpression _left, _right;
+    public OrExpression(IExpression left, IExpression right)
+    {
+        _left = left; _right = right;
+    }
+    public bool Interpret(RuleContext ctx) =>
+        _left.Interpret(ctx) || _right.Interpret(ctx);
+}
+
+// Build expression tree for: age > 18 AND city = 'London'
+IExpression rule = new AndExpression(
+    left:  new GreaterThanExpression("age", 18),
+    right: new EqualsExpression("city", "London"));
+
+// Evaluate against different contexts
+var ctx1 = new RuleContext();
+ctx1.Set("age", 25);
+ctx1.Set("city", "London");
+Console.WriteLine(rule.Interpret(ctx1)); // True
+
+var ctx2 = new RuleContext();
+ctx2.Set("age", 15);
+ctx2.Set("city", "London");
+Console.WriteLine(rule.Interpret(ctx2)); // False (age <= 18)
+```
+
+---
+
+## Real .NET Example: LINQ Expression Trees
+
+LINQ expression trees ARE the Interpreter pattern built into .NET. When you write a LINQ query against `IQueryable<T>`, C# builds an expression tree (not IL code):
+
+```csharp
+// This lambda is compiled to an Expression<Func<Order, bool>> — a tree, not IL
+Expression<Func<Order, bool>> predicate = o => o.Total > 100 && o.Status == "Active";
+
+// The expression tree is a data structure you can inspect
+BinaryExpression andExpr   = (BinaryExpression)predicate.Body;
+BinaryExpression leftExpr  = (BinaryExpression)andExpr.Left;   // o.Total > 100
+BinaryExpression rightExpr = (BinaryExpression)andExpr.Right;  // o.Status == "Active"
+
+Console.WriteLine(leftExpr.NodeType);  // GreaterThan
+Console.WriteLine(rightExpr.NodeType); // Equal
+
+// EF Core INTERPRETS the expression tree to generate SQL
+var orders = await dbContext.Orders
+    .Where(predicate) // EF reads the tree, produces: WHERE Total > 100 AND Status = 'Active'
+    .ToListAsync();
+
+// You can build expression trees dynamically at runtime
+ParameterExpression param       = Expression.Parameter(typeof(Order), "o");
+MemberExpression    totalProp   = Expression.Property(param, "Total");
+ConstantExpression  threshold   = Expression.Constant(100m);
+BinaryExpression    comparison  = Expression.GreaterThan(totalProp, threshold);
+
+Expression<Func<Order, bool>> dynamic =
+    Expression.Lambda<Func<Order, bool>>(comparison, param);
+
+var bigOrders = await dbContext.Orders.Where(dynamic).ToListAsync();
+```
+
+---
+
+## Mini Search DSL
+
+```csharp
+// A simple search query parser that builds an interpreter tree
+// Input: "name:Alice age:>25 active:true"
+public class SearchQueryParser
+{
+    public IExpression Parse(string query)
+    {
+        var parts = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var expressions = parts.Select(ParsePart).ToList();
+
+        // Combine all parts with AND
+        return expressions.Count == 1
+            ? expressions[0]
+            : expressions.Aggregate((acc, expr) => new AndExpression(acc, expr));
+    }
+
+    private IExpression ParsePart(string part)
+    {
+        var colonIdx = part.IndexOf(':');
+        string field = part[..colonIdx];
+        string value = part[(colonIdx + 1)..];
+
+        if (value.StartsWith(">"))
+            return new GreaterThanExpression(field, int.Parse(value[1..]));
+        return new EqualsExpression(field, value);
+    }
+}
+
+// Usage
+var parser = new SearchQueryParser();
+IExpression query = parser.Parse("city:London age:>18");
+
+var ctx = new RuleContext();
+ctx.Set("city", "London");
+ctx.Set("age", 30);
+Console.WriteLine(query.Interpret(ctx)); // True
+```
+
+---
+
+<ComparisonTable
+  title="When to Use Interpreter vs Alternatives"
+  headers={["Approach", "Flexibility", "Performance", "Use When"]}
+  rows={[
+    ["Interpreter pattern", "High — grammar as classes", "Low — per-eval allocation", "Grammar changes often, small to medium complexity"],
+    ["LINQ expression trees", "Very high — composable, translatable", "Medium — tree traversal", "Need to translate to SQL/other query languages"],
+    ["Roslyn scripting API", "Highest — full C# evaluation", "Low — compilation overhead", "Need to run arbitrary C# at runtime"],
+    ["Switch/if-else", "Low — hard-coded rules", "High — direct evaluation", "Simple, fixed rule set that won't grow"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/interpreter/challenge-1"
+  title="Expression Tree vs Compiled Lambda"
+  description="What is the key difference between Expression<Func<T, bool>> and Func<T, bool> in LINQ?"
+  code={`// A — Expression tree
+Expression<Func\<Order, bool\>> expr = o => o.Total > 100;
+var results1 = dbContext.Orders.Where(expr).ToList();
+
+// B — Compiled delegate
+Func\<Order, bool\> func = o => o.Total > 100;
+var results2 = dbContext.Orders.Where(func).ToList(); // AsQueryable falls back to IEnumerable`}
+  options={[
+    "No difference — EF Core handles both the same way",
+    "expr is a data structure that EF Core translates to SQL; func is compiled IL that runs in-memory on ALL loaded records",
+    "func is faster because it's precompiled; expr is slower due to tree traversal",
+    "Both translate to SQL — the difference is only syntax"
+  ]}
+  correctAnswer={1}
+  explanation="Expression<Func<T, bool>> is a data structure (expression tree) that EF Core can inspect and translate to SQL — only matching rows are fetched from the DB. Func<T, bool> is compiled IL — EF Core can't translate it to SQL, so it loads ALL records from the DB into memory first, then filters in C#. For large tables, using Func with IQueryable is a critical performance bug. Always use Expression<Func<T, bool>> for EF Core predicates."
+/>
+
+---
+
+<Callout type="senior">
+**Building Dynamic Query Composers with Expression Trees**
+
+A powerful real-world use: building `WHERE` clauses dynamically from filter DTOs, avoiding SQL injection and maintaining type safety:
+
+```csharp
+public static class QueryableExtensions
+{
+    // Build a predicate from a filter DTO using expression tree composition
+    public static IQueryable<Order> ApplyFilter(
+        this IQueryable<Order> query, OrderFilterDto filter)
+    {
+        if (filter.MinTotal.HasValue)
+        {
+            decimal min = filter.MinTotal.Value;
+            query = query.Where(o => o.Total >= min);
+        }
+
+        if (!string.IsNullOrEmpty(filter.Status))
+        {
+            string status = filter.Status;
+            query = query.Where(o => o.Status == status);
+        }
+
+        if (filter.CustomerId.HasValue)
+        {
+            int cid = filter.CustomerId.Value;
+            query = query.Where(o => o.CustomerId == cid);
+        }
+
+        return query; // EF combines all expressions into one SQL WHERE clause
+    }
+}
+
+// Usage
+var orders = await dbContext.Orders
+    .ApplyFilter(new OrderFilterDto { MinTotal = 100, Status = "Active" })
+    .OrderBy(o => o.CreatedAt)
+    .Take(50)
+    .ToListAsync();
+// SQL: SELECT TOP 50 ... WHERE Total >= 100 AND Status = 'Active' ORDER BY CreatedAt
+```
+
+This pattern — composing `IQueryable<T>` with expression trees — is more readable and maintainable than string-based SQL builders, and is fully type-safe.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/interpreter/quiz-1"
+  question="Why does EF Core require lambdas to be Expression<Func<T, bool>> rather than Func<T, bool> for WHERE clauses?"
+  options={[
+    "Func<T, bool> doesn't compile correctly with lambda syntax",
+    "Expression trees are data structures EF Core can inspect and translate to SQL; Func<T, bool> is compiled IL that cannot be analyzed",
+    "Expression<Func<T, bool>> is faster to evaluate than Func<T, bool>",
+    "Func<T, bool> causes boxing; Expression trees avoid it"
+  ]}
+  correctAnswer={1}
+  explanation="EF Core needs to TRANSLATE your condition to SQL — it can't send C# IL to the database. Expression<Func<T, bool>> is a data structure (expression tree) that EF Core can inspect at runtime: 'this is a GreaterThan node comparing the Total property to the constant 100.' It then generates: WHERE Total > 100. Func<T, bool> is already compiled to IL — EF Core sees it as an opaque black box and cannot translate it."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Expression trees in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/expression-trees/" },
+    { label: "System.Linq.Expressions Namespace", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions" },
+    { label: "How EF Core translates queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/how-query-works" },
+  ]}
+/>

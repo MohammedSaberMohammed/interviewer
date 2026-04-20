@@ -3,22 +3,280 @@ title: "Access Modifiers & Encapsulation"
 slug: "encapsulation-modifiers"
 order: 5
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["encapsulation", "access modifiers", "internal", "protected", "private", "public", "file-scoped", "InternalsVisibleTo"]
+summary: "Encapsulation is not about hiding data — it's about controlling which code has the right to know about which details, reducing coupling across your codebase."
+docsLinks:
+  - label: "Access Modifiers (C# Reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/access-modifiers"
+  - label: "Accessibility levels"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/accessibility-levels"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Six Access Modifiers
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+C# has six access modifiers. From most to least restrictive:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class AccessDemo
+{
+    public    int PublicField;        // Accessible everywhere
+    internal  int InternalField;      // Accessible within the same assembly
+    protected int ProtectedField;     // Accessible within the class + derived classes
+    private   int PrivateField;       // Accessible only within this class
+
+    // Combined modifiers:
+    protected internal int ProtectedInternal;  // protected OR internal (either)
+    private   protected int PrivateProtected;  // protected AND internal (both — more restrictive)
+}
+```
+
+<ComparisonTable
+  headers={["Modifier", "Same class", "Derived class (same assembly)", "Derived class (other assembly)", "Same assembly", "Other assembly"]}
+  rows={[
+    ["public", "Yes", "Yes", "Yes", "Yes", "Yes"],
+    ["protected internal", "Yes", "Yes", "Yes", "Yes", "No"],
+    ["internal", "Yes", "Yes", "No", "Yes", "No"],
+    ["protected", "Yes", "Yes", "Yes", "No", "No"],
+    ["private protected", "Yes", "Yes", "No", "No", "No"],
+    ["private", "Yes", "No", "No", "No", "No"],
+    ["file (C# 11)", "Yes (same file only)", "No", "No", "No", "No"],
+  ]}
+/>
+
+---
+
+## Default Accessibility
+
+When no modifier is specified, C# picks a sensible default:
+
+```csharp
+class Outer          // internal (top-level types default to internal)
+{
+    int field;       // private (class members default to private)
+
+    class Inner { }  // private (nested types default to private)
+}
+
+// Interfaces: members default to public
+interface IService
+{
+    void Execute();  // implicitly public
+}
+
+// Enums: members default to public
+enum Color { Red, Green, Blue } // values are implicitly public
+```
+
+<Callout type="tip">
+**Always be explicit** about access modifiers in production code. Relying on defaults makes code harder to read and review — the reader has to remember the rules instead of just reading the modifier. Most style guides (including Microsoft's) require explicit modifiers.
 </Callout>
+
+---
+
+## Encapsulation in Practice
+
+Encapsulation means exposing only what callers need, and protecting invariants:
+
+```csharp
+// BAD: Fields public — callers can set any value, breaking invariants
+public class BadOrder
+{
+    public int Quantity;        // anyone can set -999
+    public decimal UnitPrice;   // anyone can set 0 or negative
+    public List<string> Items;  // caller can clear the list, add nulls, etc.
+}
+
+// GOOD: Properties + private setters guard invariants
+public class Order
+{
+    private readonly List<string> _items = new();
+    private int _quantity;
+    private decimal _unitPrice;
+
+    public int Quantity
+    {
+        get => _quantity;
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException(nameof(value), "Quantity cannot be negative");
+            _quantity = value;
+        }
+    }
+
+    public decimal UnitPrice
+    {
+        get => _unitPrice;
+        set
+        {
+            if (value <= 0) throw new ArgumentOutOfRangeException(nameof(value), "Price must be positive");
+            _unitPrice = value;
+        }
+    }
+
+    // Expose read-only view — callers can read but not mutate the list
+    public IReadOnlyList<string> Items => _items.AsReadOnly();
+
+    public void AddItem(string item)
+    {
+        if (string.IsNullOrWhiteSpace(item)) throw new ArgumentException("Item name required", nameof(item));
+        _items.Add(item);
+    }
+
+    public decimal Total => _quantity * _unitPrice;
+}
+```
+
+---
+
+## internal vs public — The Assembly Boundary
+
+`internal` is the unsung hero of C# encapsulation. It gives you visibility across an entire assembly while hiding implementation details from consumers:
+
+```csharp
+// MyLibrary.dll
+
+// PUBLIC: this is the API consumers use
+public class UserService
+{
+    private readonly UserRepository _repo; // internal type used internally
+
+    public UserService(string connectionString)
+        => _repo = new UserRepository(connectionString);
+
+    public async Task<User?> GetUserAsync(int id)
+        => await _repo.FindAsync(id);
+}
+
+// INTERNAL: consumers of the library never see this
+internal class UserRepository
+{
+    private readonly string _connectionString;
+
+    internal UserRepository(string cs) => _connectionString = cs;
+
+    internal async Task<User?> FindAsync(int id)
+    {
+        // Implementation detail — callers don't need to know
+        return null; // simplified
+    }
+}
+```
+
+<Callout type="senior">
+**Senior Insight: InternalsVisibleTo for Testing**
+
+A common challenge: you want unit tests to test internal implementation details, but `internal` blocks access from other assemblies. The solution is `InternalsVisibleTo`:
+
+```csharp
+// In MyLibrary/AssemblyInfo.cs or any .cs file:
+[assembly: InternalsVisibleTo("MyLibrary.Tests")]
+// Now MyLibrary.Tests can access all internal members of MyLibrary
+
+// For strongly-named assemblies, you must include the public key:
+[assembly: InternalsVisibleTo("MyLibrary.Tests, PublicKey=0024000004800000...")]
+```
+
+This is a deliberate design — you're granting test projects access without opening up your API to the world. The key discipline: use `InternalsVisibleTo` only for test projects. If you find yourself wanting to use it for production code dependencies, that's a signal your assembly boundaries need redesign.
+
+In SDK-style projects, you can put this in your `.csproj`:
+```xml
+<ItemGroup>
+  <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+    <_Parameter1>MyLibrary.Tests</_Parameter1>
+  </AssemblyAttribute>
+</ItemGroup>
+```
+</Callout>
+
+---
+
+## file-Scoped Types (C# 11)
+
+C# 11 adds `file` access modifier for types that should only exist within a single source file — useful for source generators and implementation helpers:
+
+```csharp
+// Only visible within this .cs file
+file class InternalHelper
+{
+    public static string Format(string s) => s.Trim().ToLowerInvariant();
+}
+
+// Also works on:
+file interface IFileLocal { }
+file record FileLocalRecord(int X);
+file enum FileLocalState { Active, Inactive }
+```
+
+The `file` modifier is narrower than `private` (which applies to nested types within a class). A `file`-scoped class is completely invisible to other files in the same assembly. This is primarily for source generator output — avoiding name collisions in generated code.
+
+---
+
+<Quiz
+  id="02-oop/encapsulation-modifiers/quiz-1"
+  question="A method is marked 'protected internal'. Which callers can access it?"
+  options={[
+    "Only derived classes in the same assembly",
+    "Derived classes in any assembly, OR any code in the same assembly",
+    "Only derived classes, regardless of assembly",
+    "Only code in the same assembly, regardless of inheritance"
+  ]}
+  correctAnswer={1}
+  explanation="protected internal means protected OR internal — it's the union of both. Any code in the same assembly can access it (the 'internal' part), AND any derived class in any assembly can access it (the 'protected' part). This is the most permissive combined modifier. Its opposite is 'private protected', which means protected AND internal — only derived classes in the same assembly can access it. The OR vs AND distinction is critical and frequently tested."
+/>
+
+---
+
+## Private Protected — The Strict Combination
+
+`private protected` (C# 7.2+) means the member is accessible only to code that is **both** in the same assembly **and** in a derived class:
+
+```csharp
+public class Base
+{
+    private protected int Secret = 42; // protected AND internal
+}
+
+// In SAME assembly:
+public class DerivedSameAssembly : Base
+{
+    void Method() => Console.WriteLine(Secret); // OK — same assembly + derived
+}
+
+// In DIFFERENT assembly (even when derived):
+public class DerivedOtherAssembly : Base
+{
+    void Method() => Console.WriteLine(Secret); // COMPILE ERROR — different assembly
+}
+
+// In SAME assembly but NOT derived:
+public class UnrelatedSameAssembly
+{
+    void Method()
+    {
+        var b = new Base();
+        Console.WriteLine(b.Secret); // COMPILE ERROR — not derived
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="Making fields private and exposing them through properties is just boilerplate — you might as well use public fields."
+  reality="Properties are not boilerplate — they're a fundamental API contract mechanism. Public fields cannot: add validation logic later without breaking callers (binary and source compatibility), have different access levels for get vs set, be made abstract or virtual, be used with data binding frameworks, or be intercepted by AOP tools. Changing a public field to a property later is a breaking change in API surface (different IL, different metadata). Properties give you the flexibility to evolve the implementation without breaking contracts."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Access Modifiers (C# Reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/access-modifiers" },
+    { label: "Accessibility levels", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/accessibility-levels" },
+    { label: "InternalsVisibleTo attribute", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.internalsvisibletoattribute" },
+    { label: "file modifier (C# 11)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/file" },
+  ]}
+/>

@@ -3,22 +3,223 @@ title: "Captive Dependency Trap"
 slug: "captive-dependency-trap"
 order: 12
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["dependency injection", "singleton", "scoped", "captive dependency", "DI", "lifetime"]
+summary: "A singleton holding a reference to a scoped service captures it for the singleton's lifetime — breaking the scoped service's isolation guarantees."
+docsLinks:
+  - label: "Service lifetimes in ASP.NET Core DI"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection#service-lifetimes"
+  - label: "Dependency injection in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// Scoped service — expected to be fresh per HTTP request
+public class UserContext : IUserContext
+{
+    public string? CurrentUserId { get; set; }
+    // Populated from the request JWT token — should be request-specific
+}
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+// Singleton service — lives for the application lifetime
+public class CacheService : ICacheService
+{
+    private readonly IUserContext _userContext; // THE TRAP — captured scoped!
+
+    public CacheService(IUserContext userContext) // Injected at startup — ONE TIME
+    {
+        _userContext = userContext;
+        // This userContext was created when the singleton was first requested
+        // It will NEVER be replaced for the lifetime of the application
+    }
+
+    public string GetUserData()
+    {
+        // _userContext.CurrentUserId is ALWAYS the first user who triggered
+        // CacheService's construction — not the current request's user!
+        return _cache[_userContext.CurrentUserId];
+    }
+}
+
+// Registration:
+services.AddSingleton<ICacheService, CacheService>();
+services.AddScoped<IUserContext, UserContext>();
+// ASP.NET Core detects this and throws at startup in development mode:
+// InvalidOperationException: Cannot consume scoped service 'IUserContext' from singleton 'ICacheService'
+```
+
+<Callout type="trap">
+A **captive dependency** occurs when a longer-lived service holds a reference to a shorter-lived one. The short-lived service is "captured" and lives as long as its captor — violating its intended lifetime semantics. A singleton capturing a scoped service makes the scoped service effectively a singleton too, but one that was created in the wrong context.
 </Callout>
+
+---
+
+## Lifetime Hierarchy
+
+```
+Singleton   — created once, lives for application lifetime
+  ↓ can safely depend on ↓
+Transient   — created fresh every time it is requested
+  ↑ (no!) ↑
+Scoped      — created once per HTTP request (or scope)
+```
+
+The safe rules:
+- **Singleton** can consume: only other singletons
+- **Scoped** can consume: singletons + other scoped + transients
+- **Transient** can consume: singletons + scoped + other transients
+
+Any violation where a longer-lived service consumes a shorter-lived one is a captive dependency.
+
+---
+
+## Why ASP.NET Core Catches It (Sometimes)
+
+```csharp
+// In development (ValidateScopes = true by default in ASP.NET Core):
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateScopes = true;  // Default in dev — throws at startup
+    options.ValidateOnBuild = true; // Also validates graph at build time
+});
+
+// In production (ValidateScopes = false by default):
+// NO EXCEPTION — the bug silently corrupts data!
+// This is why captive dependencies are dangerous — they slip through in prod
+```
+
+---
+
+## The Fix
+
+**Option 1: Inject `IServiceScopeFactory` and resolve per-use**
+
+```csharp
+// CORRECT — singleton creates a new scope to resolve the scoped service
+public class CacheService : ICacheService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public CacheService(IServiceScopeFactory scopeFactory)
+    {
+        _scopeFactory = scopeFactory; // ScopeFactory is always singleton — safe
+    }
+
+    public string GetUserData()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var userContext = scope.ServiceProvider.GetRequiredService<IUserContext>();
+        return _cache[userContext.CurrentUserId]; // Fresh scoped instance per call
+    }
+}
+```
+
+**Option 2: Change the singleton to scoped (if appropriate)**
+
+```csharp
+// If CacheService doesn't actually need to be singleton:
+services.AddScoped<ICacheService, CacheService>(); // Scoped — safe to inject scoped deps
+services.AddScoped<IUserContext, UserContext>();
+```
+
+**Option 3: Pass the dependency as a method parameter**
+
+```csharp
+// Push the scoped concern to the caller — singleton has no dep on IUserContext
+public class CacheService : ICacheService
+{
+    public string GetUserData(string userId) // Caller supplies the user context
+    {
+        return _cache[userId];
+    }
+}
+
+// Caller (in scoped controller or service):
+public class OrderController : ControllerBase
+{
+    public IActionResult GetOrders()
+    {
+        var data = _cacheService.GetUserData(_userContext.CurrentUserId);
+        // ...
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="If the DI container doesn't throw an exception at startup, my lifetimes are correct"
+  truth="ASP.NET Core only validates scopes in development (ValidateScopes = true). In production, captive dependencies silently produce stale or cross-request data corruption. Always test DI registrations with ValidateOnBuild = true."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/captive-dependency-trap/challenge-1"
+  title="Which registration causes a captive dependency?"
+  description="Three services are registered. Which combination creates a captive dependency?"
+  code={`services.AddSingleton<IEmailSender, SmtpEmailSender>();
+services.AddScoped\<IOrderRepository, EfOrderRepository\>();
+services.AddTransient\<IOrderService, OrderService\>();
+
+// OrderService constructor:
+public OrderService(IOrderRepository repo, IEmailSender email)
+{
+    _repo  = repo;
+    _email = email;
+}`}
+  options={[
+    "No captive dependency — Transient can consume both Scoped and Singleton",
+    "Captive dependency: Singleton IEmailSender captures Scoped IOrderRepository",
+    "Captive dependency: Transient IOrderService captures Scoped IOrderRepository",
+    "Captive dependency: Transient IOrderService captures Singleton IEmailSender"
+  ]}
+  correctAnswer={0}
+  explanation="No captive dependency here. Transient (OrderService) can safely consume Scoped (IOrderRepository) and Singleton (IEmailSender). A new transient is created per injection, so it gets a fresh scoped service for that scope — correct. The captive dependency trap occurs when a LONGER-lived service (Singleton) holds a SHORTER-lived one (Scoped or Transient). Singleton → Scoped is the dangerous pattern, not Transient → Scoped."
+/>
+
+---
+
+<Callout type="senior">
+**The DbContext captive dependency — a very common mistake**
+
+`DbContext` is almost always registered as `Scoped` (one per request) because it tracks entity state per request. The classic captive dependency:
+
+```csharp
+// WRONG — singleton captures the first DbContext ever created
+public class ProductCacheService
+{
+    private readonly AppDbContext _db; // Captured at construction time!
+
+    public ProductCacheService(AppDbContext db) { _db = db; }
+
+    public List<Product> GetAll() => _db.Products.ToList();
+    // _db is the DbContext from the FIRST request, now disconnected
+    // and potentially garbage-collected years ago in theory
+}
+
+services.AddSingleton<ProductCacheService>(); // Singleton captures scoped DbContext
+services.AddDbContext<AppDbContext>(...);     // Scoped by default
+```
+
+This causes:
+- In dev: `InvalidOperationException` at startup (ValidateScopes)
+- In prod: `ObjectDisposedException` when the original scope is disposed, or stale cache that never reflects database updates
+
+Fix: inject `IDbContextFactory<AppDbContext>` (designed for non-scoped use) and create contexts on demand.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Service lifetimes in ASP.NET Core DI", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection#service-lifetimes" },
+    { label: "Dependency injection in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection" },
+    { label: "IDbContextFactory — using DbContext outside of DI scope", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-a-dbcontext-factory" },
+  ]}
+/>

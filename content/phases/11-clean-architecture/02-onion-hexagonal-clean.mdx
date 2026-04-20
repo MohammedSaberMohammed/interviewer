@@ -1,24 +1,211 @@
 ---
-title: "Onion, Hexagonal & Clean Architecture"
+title: "Onion vs Hexagonal vs Clean Architecture"
 slug: "onion-hexagonal-clean"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["clean architecture", "onion architecture", "hexagonal architecture", "ports and adapters", "architecture patterns"]
+summary: "Onion, Hexagonal, and Clean Architecture all enforce the same core constraint — dependencies point inward — but use different vocabulary and visual metaphors."
+docsLinks:
+  - label: ".NET Application Architecture Guides"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/"
+  - label: "Architect modern web applications with ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Same Idea, Three Names
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+In interviews you will hear all three names. Understanding the relationship prevents confusion:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Hexagonal Architecture** (Alistair Cockburn, 2005) — "Ports and Adapters": the application sits in the center, external actors (DB, HTTP, UI, queues) connect via ports (interfaces) and adapters (implementations).
+- **Onion Architecture** (Jeffrey Palermo, 2008) — visualizes the same idea as concentric rings (onion layers), names the rings slightly differently, and emphasizes the Domain Model at the center.
+- **Clean Architecture** (Robert C. Martin, 2012) — synthesizes both, adds explicit names for 4 layers (Entities, Use Cases, Interface Adapters, Frameworks & Drivers), and popularized the term.
+
+They all enforce one constraint: **inner layers cannot reference outer layers**.
+
+---
+
+## Visual Comparison
+
+```
+HEXAGONAL                    ONION                      CLEAN
+─────────────────────        ─────────────────────      ─────────────────────
+                             [ Infrastructure  ]        [ Frameworks/UI      ]
+[ Adapter ] ──→ [ Port ]     [ Application Svc ]        [ Interface Adapters ]
+                             [ Domain Services ]        [ Use Cases          ]
+[ Application ]              [ Domain Model   ]         [ Entities           ]
+                             (core)                     (core)
+[ Adapter ] ──→ [ Port ]
+```
+
+In Hexagonal, the "application" is a single hexagon with ports on its edges. In Onion and Clean, the layering is explicit and named. The arrows always point inward.
+
+---
+
+## Vocabulary Mapping
+
+<ComparisonTable
+  headers={["Concept", "Hexagonal", "Onion", "Clean Architecture"]}
+  rows={[
+    ["Core business logic", "Application", "Domain Model + Domain Services", "Entities"],
+    ["Use cases / orchestration", "Application", "Application Services", "Use Cases (Application)"],
+    ["Interfaces the core defines", "Ports", "Interfaces (in Application)", "Interface Adapters (partially)"],
+    ["Concrete DB/HTTP/UI code", "Adapters", "Infrastructure", "Frameworks & Drivers / Infrastructure"],
+    ["The dependency constraint", "Adapters depend on ports", "Outer rings depend on inner rings", "Dependencies point inward"],
+    ["DI / composition root", "At the adapter boundary", "Outermost layer", "Outermost layer (Startup/Program)"],
+  ]}
+/>
+
+---
+
+## Hexagonal in C#: Ports and Adapters
+
+Hexagonal thinking is particularly useful when modeling **driving adapters** (things that call your app: HTTP, gRPC, queues) vs. **driven adapters** (things your app calls: DB, email, external APIs):
+
+```csharp
+// PORT: defined by the Application, facing outward (driven)
+// Lives in Application/Interfaces/
+public interface INotificationPort
+{
+    Task SendOrderConfirmedAsync(OrderId orderId, string email, CancellationToken ct);
+}
+
+// ADAPTER: lives in Infrastructure, implements the port
+public class SendGridNotificationAdapter : INotificationPort
+{
+    private readonly SendGridClient _client;
+
+    public SendGridNotificationAdapter(SendGridClient client) => _client = client;
+
+    public async Task SendOrderConfirmedAsync(OrderId orderId, string email, CancellationToken ct)
+    {
+        var msg = MailHelper.CreateSingleEmail(
+            from: new EmailAddress("noreply@shop.com"),
+            to: new EmailAddress(email),
+            subject: "Order Confirmed",
+            plainTextContent: $"Your order {orderId} is confirmed.",
+            htmlContent: $"<p>Your order <b>{orderId}</b> is confirmed.</p>"
+        );
+        await _client.SendEmailAsync(msg, ct);
+    }
+}
+
+// DRIVING ADAPTER: HTTP controller calls the application
+[ApiController]
+[Route("api/orders")]
+public class OrdersController : ControllerBase  // This IS an adapter
+{
+    private readonly ISender _sender;
+    public OrdersController(ISender sender) => _sender = sender;
+
+    [HttpPost("{id:guid}/confirm")]
+    public async Task<IActionResult> Confirm(Guid id, CancellationToken ct)
+        => Ok(await _sender.Send(new ConfirmOrderCommand(id), ct));
+}
+```
+
+The port/adapter naming makes it obvious: the HTTP controller is a "driving adapter" that drives the application; the database is a "driven adapter" that the application drives.
+
+---
+
+## Onion Architecture in C#: Named Rings
+
+Onion architecture explicitly names the rings and often organizes projects by ring name:
+
+```csharp
+// Ring 1 (innermost): Domain Model
+// Project: MyApp.Domain
+public class Customer
+{
+    public CustomerId Id { get; private set; }
+    public Email Email { get; private set; }
+    // no EF, no frameworks
+}
+
+// Ring 2: Domain Services (still no framework dependencies)
+// Project: MyApp.Domain
+public interface ICustomerRepository { } // interface lives in Domain in Onion!
+// Note: Clean Architecture puts interfaces in Application layer
+
+// Ring 3: Application Services
+// Project: MyApp.Application
+public class CustomerService
+{
+    private readonly ICustomerRepository _repo; // uses Domain interface
+    public CustomerService(ICustomerRepository repo) => _repo = repo;
+}
+
+// Ring 4 (outermost): Infrastructure + UI
+// Project: MyApp.Infrastructure
+public class EfCustomerRepository : ICustomerRepository { }
+```
+
+Notice: **Onion places repository interfaces in the Domain layer** (they're part of the domain contract), while **Clean Architecture places them in the Application layer** (they're application-level ports). This is the most common structural difference between the two.
+
+---
+
+## The Critical Difference: Where Interfaces Live
+
+<ComparisonTable
+  headers={["Question", "Onion Architecture", "Clean Architecture"]}
+  rows={[
+    ["Where does IRepository live?", "Domain layer (domain contract)", "Application layer (application port)"],
+    ["Can Domain reference Application?", "No", "No"],
+    ["Can Application reference Domain?", "Yes", "Yes"],
+    ["Where are DTOs / ViewModels?", "Application Services layer", "Interface Adapters layer"],
+    ["Is there an explicit 'Use Cases' layer?", "No — merged into Application Services", "Yes — Use Cases is an explicit named layer"],
+  ]}
+/>
+
+In practice for .NET solutions, most teams end up with the Clean Architecture naming (Domain, Application, Infrastructure, Presentation) because that's what the popular templates (Jason Taylor's) use.
+
+---
+
+<Callout type="senior">
+**Why You Should Know All Three Names**
+
+In interviews and architecture discussions, different teams use different vocabulary. A team that reads DDD literature might say "domain model" and "application service." A team that followed Clean Architecture templates says "entities" and "use cases." A team that read Cockburn says "ports and adapters."
+
+They may all have the same codebase structure. The ability to recognize equivalences — and to explain "we're using Clean Architecture, which is essentially Onion with different naming" — signals architectural maturity.
+
+More importantly: knowing Hexagonal helps you name the **direction** of adaptation. An HTTP controller is a driving adapter; a database is a driven adapter. This language helps in discussions about event-driven architecture: a message consumer (Kafka/RabbitMQ) is also a driving adapter. A message publisher is a driven adapter. The hexagon metaphor scales.
 </Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Onion, Hexagonal, and Clean Architecture are three different architectures with different rules"
+  reality="They enforce the same fundamental constraint (inward dependency direction) and produce very similar code structures. The differences are naming conventions and where interfaces live. Understanding one well means you understand all three — you just need a vocabulary translation table."
+/>
+
+---
+
+## Quiz
+
+<Quiz
+  id="11-clean-architecture/onion-hexagonal-clean/quiz-1"
+  question="In Hexagonal Architecture, an ASP.NET Core Web API controller is best described as:"
+  options={[
+    "A port — it defines the contract for HTTP communication",
+    "A driving adapter — it translates HTTP requests into application calls",
+    "A driven adapter — the application drives it to produce responses",
+    "Part of the core application — it contains business logic"
+  ]}
+  correctAnswer={1}
+  explanation="In Hexagonal Architecture, the controller is a driving adapter — it sits outside the hexagon and drives the application by calling into it. It adapts HTTP requests (the external protocol) into application commands or queries. Driven adapters are the ones the application calls outward (database, email). The port itself is the interface (e.g., ISender or a specific application service interface)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Architect modern web applications with ASP.NET Core", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/" },
+    { label: ".NET Architecture Guides", url: "https://learn.microsoft.com/en-us/dotnet/architecture/" },
+    { label: "eShopOnWeb reference app (Clean Architecture)", url: "https://github.com/dotnet-architecture/eShopOnWeb" },
+  ]}
+/>

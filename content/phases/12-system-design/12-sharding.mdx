@@ -1,24 +1,275 @@
 ---
-title: "Sharding"
+title: "Database Sharding: Horizontal Partitioning and Consistent Hashing"
 slug: "sharding"
 order: 12
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 17
+status: "published"
+tags: ["sharding", "horizontal partitioning", "consistent hashing", "database scaling", "distributed systems", "system design"]
+summary: "Sharding is the last resort for database scalability — understand horizontal partitioning strategies and consistent hashing before you reach for it, because the operational complexity is significant."
+docsLinks:
+  - label: "Data partitioning guidance — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/data-partitioning"
+  - label: "Azure Cosmos DB — partitioning and horizontal scaling"
+    url: "https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview"
+  - label: "Azure SQL — elastic pools and sharding"
+    url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/elastic-scale-introduction"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Sharding?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+**Sharding** (horizontal partitioning) splits a large dataset across multiple database instances (shards). Each shard holds a subset of the data. The total dataset = union of all shards.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Contrast with vertical scaling (bigger hardware) and read replicas (multiple copies of the same data) — sharding is the only strategy that distributes **writes** across multiple machines.
+
+```
+Without sharding:                  With sharding (by customer region):
+┌──────────────────┐               ┌──────────┐  ┌──────────┐  ┌──────────┐
+│  Single DB       │               │  Shard 0 │  │  Shard 1 │  │  Shard 2 │
+│  (1B rows)       │               │  US-West │  │  US-East │  │  Europe  │
+│  - bottleneck    │               │  300M    │  │  400M    │  │  300M    │
+│  - single point  │               │  rows    │  │  rows    │  │  rows    │
+└──────────────────┘               └──────────┘  └──────────┘  └──────────┘
+```
+
+---
+
+## Sharding Strategies
+
+### Range-Based Sharding
+
+Distribute data by a range of the shard key (e.g., customer IDs 1–1M on shard 0, 1M–2M on shard 1).
+
+```
+Shard 0: CustomerId 1 – 1,000,000
+Shard 1: CustomerId 1,000,001 – 2,000,000
+Shard 2: CustomerId 2,000,001+
+```
+
+**Pros**: Range scans are efficient (sequential data is co-located). Simple routing logic.
+**Cons**: **Hot spots** — if new customers are added in ascending ID order, all writes go to the last shard. Time-series data by date has the same problem.
+
+```csharp
+public class RangeShardRouter
+{
+    private static readonly (long Min, long Max, string ConnectionString)[] Shards =
+    {
+        (1, 1_000_000, "Server=shard0;Database=orders"),
+        (1_000_001, 2_000_000, "Server=shard1;Database=orders"),
+        (2_000_001, long.MaxValue, "Server=shard2;Database=orders"),
+    };
+
+    public string GetConnectionString(long customerId)
+    {
+        foreach (var (min, max, conn) in Shards)
+        {
+            if (customerId >= min && customerId <= max) return conn;
+        }
+        throw new InvalidOperationException(\$"No shard for customer {customerId}");
+    }
+}
+```
+
+### Hash-Based Sharding
+
+Apply a hash function to the shard key and take modulo the number of shards.
+
+```
+shardIndex = hash(customerId) % numberOfShards
+```
+
+**Pros**: Uniform distribution — no hot spots. Simple calculation.
+**Cons**: **Resharding is painful** — adding a shard changes all shard assignments. Data must be migrated.
+
+```csharp
+public class HashShardRouter
+{
+    private readonly string[] _connectionStrings;
+
+    public string GetConnectionString(Guid customerId)
+    {
+        // Use stable hash — not GetHashCode() which varies between runs
+        var hash = MurmurHash3.Hash128(customerId.ToByteArray());
+        var shardIndex = (int)(hash % (ulong)_connectionStrings.Length);
+        return _connectionStrings[shardIndex];
+    }
+}
+```
+
+### Directory-Based Sharding
+
+A lookup service maps each shard key to its shard. More flexible — you can move data without changing the hash function.
+
+```
+Lookup table:  CustomerId → ShardId
+               cust-abc  → shard-2
+               cust-xyz  → shard-0
+```
+
+**Pros**: Flexible — move individual customers between shards for rebalancing.
+**Cons**: Lookup service is a single point of failure. Extra network hop per query.
+
+---
+
+## Consistent Hashing: Resharding Without Full Migration
+
+Consistent hashing places both shards and data on a **virtual ring** (0 to 2^32). Each item is assigned to the nearest shard clockwise on the ring.
+
+```
+Ring (0 to 2^32):
+    0
+    │
+ ───►─── Shard A (at position 25%)
+    │
+ ───►─── Key K1 → assigned to Shard A (nearest clockwise)
+    │
+ ───►─── Shard B (at position 50%)
+    │
+ ───►─── Key K2 → assigned to Shard B
+    │
+ ───►─── Shard C (at position 75%)
+   2^32
+```
+
+**Why it solves resharding**: When you add Shard D at position 37%, only keys between Shard A (25%) and Shard D (37%) need to move from Shard B to Shard D. All other keys stay put. With N shards, adding one shard moves O(K/N) keys — not all of them.
+
+```csharp
+public class ConsistentHashRouter
+{
+    // Virtual nodes (replicas) improve distribution
+    private const int VirtualNodesPerShard = 150;
+    private readonly SortedDictionary<uint, string> _ring = new();
+
+    public void AddShard(string shardId)
+    {
+        for (int i = 0; i < VirtualNodesPerShard; i++)
+        {
+            var virtualKey = \$"{shardId}-vnode-{i}";
+            var position = MurmurHash3.Hash32(Encoding.UTF8.GetBytes(virtualKey));
+            _ring[position] = shardId;
+        }
+    }
+
+    public string GetShard(string key)
+    {
+        if (_ring.Count == 0) throw new InvalidOperationException("No shards registered");
+
+        var hash = MurmurHash3.Hash32(Encoding.UTF8.GetBytes(key));
+
+        // Find the nearest shard clockwise from this hash position
+        var candidate = _ring.FirstOrDefault(kvp => kvp.Key >= hash);
+
+        // Wrap around the ring if no shard found clockwise
+        return candidate.Value ?? _ring.First().Value;
+    }
+}
+```
+
+---
+
+## Cross-Shard Queries: The Big Problem
+
+Sharding breaks queries that span multiple shards. A `SELECT * FROM orders WHERE status = 'pending'` must be sent to every shard and results merged.
+
+```csharp
+public class ShardedOrderRepository
+{
+    private readonly string[] _shardConnections;
+
+    public async Task<List<Order>> GetPendingOrdersAsync()
+    {
+        // Must fan out to all shards — expensive!
+        var tasks = _shardConnections.Select(async conn =>
+        {
+            await using var db = new AppDbContext(new DbContextOptionsBuilder()
+                .UseSqlServer(conn).Options);
+            return await db.Orders
+                .Where(o => o.Status == OrderStatus.Pending)
+                .ToListAsync();
+        });
+
+        var results = await Task.WhenAll(tasks);
+        return results.SelectMany(r => r).ToList();
+    }
+
+    // Single-shard query — efficient (route to correct shard)
+    public async Task<Order?> GetByCustomerAsync(Guid customerId)
+    {
+        var conn = _router.GetConnectionString(customerId.ToString());
+        await using var db = new AppDbContext(new DbContextOptionsBuilder()
+            .UseSqlServer(conn).Options);
+        return await db.Orders
+            .FirstOrDefaultAsync(o => o.CustomerId == customerId);
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Strategy", "Hot Spot Risk", "Range Query", "Resharding", "Best For"]}
+  rows={[
+    ["Range-based", "High (sequential inserts)", "Excellent (co-located)", "Hard — ranges must be split", "Time-series by time, geo by region"],
+    ["Hash-based", "Low (uniform)", "Poor (scattered)", "Very hard — full redistribution", "User data, uniform read/write"],
+    ["Directory-based", "Low (controllable)", "Depends on mapping", "Easy — update lookup table", "Flexible workloads, frequent rebalancing"],
+    ["Consistent hashing", "Low (with virtual nodes)", "Poor (scattered)", "Easy — only adjacent keys move", "Dynamic shard count, caching (Redis Cluster)"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Sharding Is a Last Resort — Exhaust Alternatives First**
+
+Before sharding a relational database, exhaust these options in order:
+
+1. **Query optimization**: Indexes, covering indexes, query plan analysis
+2. **Connection pooling and caching**: Reduce queries, not just make them faster
+3. **Read replicas**: Offload reads — handles most read-heavy workloads
+4. **Vertical scaling**: Modern cloud instances are large. A 96-core Azure SQL Hyperscale handles enormous workloads.
+5. **CQRS + separate read model**: Build a pre-computed read store (Elasticsearch, read replica)
+6. **Partition pruning within one database**: PostgreSQL table partitioning, SQL Server partitioned tables — same benefits, lower complexity
+
+Sharding complicates:
+- Cross-shard transactions (require Saga pattern or two-phase commit)
+- Cross-shard queries (fan-out, result merging, ordering)
+- Schema migrations (must run on all shards, possibly with downtime)
+- Joins (across shard boundaries — effectively impossible)
+
+Cosmos DB and Azure SQL Elastic Pools provide managed sharding — you get the scale-out without building the routing layer. Prefer managed solutions over rolling your own sharding.
 </Callout>
+
+---
+
+<MythBuster
+  myth="Sharding always makes databases faster."
+  reality="Sharding improves write throughput and storage capacity, but it makes many operations slower: cross-shard queries require fan-out (N network round-trips instead of 1), cross-shard transactions require distributed coordination, and joins across shard boundaries become application-level merges. If your workload is read-heavy, read replicas plus caching is almost always faster and cheaper. Sharding pays off when writes are the bottleneck and data can be cleanly partitioned by a high-cardinality key."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/sharding/challenge-1"
+  question="You shard orders by customer_id using hash % 4 shards. You need to double capacity and add 4 more shards (total 8). What is the minimum percentage of data that must be migrated?"
+  options={[
+    "0% — consistent hashing prevents any migration",
+    "25% — only one quarter of data needs to move",
+    "50% — with hash mod, roughly half of all keys map to different shards",
+    "100% — all keys must be remapped because the modulo divisor changed"
+  ]}
+  correctAnswer={2}
+  explanation="With simple hash modulo (hash % N), changing N from 4 to 8 changes the shard assignment for most keys. Statistically, about 50% of keys will hash to a different shard index when the modulo changes. In the worst case, you could need to migrate nearly all data. This is why consistent hashing is preferred for dynamic resharding — when a new node is added to the ring, only the keys between the new node and its predecessor move (roughly 1/N of total data, or about 12.5% when going from 8 to 9 nodes)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Data partitioning strategies — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/data-partitioning-strategies" },
+    { label: "Azure Cosmos DB — partitioning and scaling", url: "https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview" },
+    { label: "Azure SQL Elastic Database — sharding", url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/elastic-scale-introduction" },
+    { label: "Shard pattern — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/sharding" },
+  ]}
+/>

@@ -1,24 +1,349 @@
 ---
-title: "Escape Analysis & the JIT"
+title: "JIT Escape Analysis: When the JIT Eliminates Allocations"
 slug: "escape-analysis-jit"
 order: 15
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["escape analysis", "JIT", "stack allocation", "optimization", "allocation elision", "inlining", "performance"]
+summary: "The .NET JIT performs escape analysis to determine if heap-allocated objects can be promoted to stack allocation or eliminated entirely. Understanding this lets you write code that the JIT can optimize aggressively."
+docsLinks:
+  - label: "RyuJIT overview"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-core-3-0#ryujit"
+  - label: "Write safe and efficient C# code"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code"
+  - label: "Performance improvements in .NET 8"
+    url: "https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Escape Analysis?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Escape analysis is a compiler/JIT optimization that determines whether an object "escapes" its creation scope:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Does not escape**: the object is only accessed within the current method (or inlined callees) → can potentially be stack-allocated or scalar-replaced
+- **Escapes**: the object is returned, stored in a field, passed to a non-inlined method, or captured by a delegate → must be heap-allocated
+
+```csharp
+// Object that does NOT escape — JIT may optimize it away:
+static int SumPoint()
+{
+    var p = new Point(3, 4);  // p doesn't escape this method
+    return p.X + p.Y;         // JIT may eliminate the allocation entirely
+}
+
+// Object that ESCAPES — must be heap-allocated:
+static Point CreatePoint()
+{
+    var p = new Point(3, 4);  // p escapes via return value
+    return p;                  // must be on heap (for class types)
+}
+```
+
+---
+
+## How .NET's JIT Performs Escape Analysis
+
+RyuJIT (the .NET JIT compiler) performs escape analysis as part of its optimization pipeline. The key technique is **scalar replacement** — replacing an object allocation with its individual fields as local variables:
+
+```csharp
+// What you write:
+static double ComputeDistance(int x1, int y1, int x2, int y2)
+{
+    var delta = new Point(x2 - x1, y2 - y1); // allocated? maybe not!
+    return Math.Sqrt(delta.X * delta.X + delta.Y * delta.Y);
+}
+
+// What RyuJIT may actually generate (pseudo-JIT output):
+// int delta_X = x2 - x1;    // scalar — just a register
+// int delta_Y = y2 - y1;    // scalar — just a register
+// return Math.Sqrt(delta_X * delta_X + delta_Y * delta_Y);
+// Point was never allocated — it became CPU registers!
+```
+
+This is called **stack promotion** or **object elision**. The allocation is eliminated, not moved to the stack — the object's fields become CPU registers directly.
+
+---
+
+## Conditions for Escape Analysis to Trigger
+
+The JIT's escape analysis is precise but limited. These conditions maximize the chance of allocation elision:
+
+```csharp
+// GOOD: small struct, used locally, all methods inlined
+// JIT can scalar-replace the struct:
+static double GoodPattern()
+{
+    var r = new Rectangle(0, 0, 100, 50); // struct — may be optimized
+    return r.Width * r.Height;             // Width/Height are properties
+}
+
+// GOOD: loop over value type — no boxing, no allocation per iteration
+static int SumArray(int[] arr)
+{
+    int sum = 0;
+    // No allocation in this loop — int is a value type, no boxing
+    foreach (int x in arr) sum += x;
+    return sum;
+}
+
+// BAD: boxing forces heap allocation — defeats optimization
+static object BoxingExample(int n)
+{
+    return n; // boxing! int → object on heap — cannot be elided
+}
+
+// BAD: object passed to virtual/interface method — may escape through dispatch
+static void VirtualDispatch(ICollection<int> col, int value)
+{
+    col.Add(value); // JIT cannot inline virtual calls easily
+    // Any closure over 'value' here would escape
+}
+```
+
+---
+
+## The Role of Inlining
+
+Escape analysis and method inlining are deeply connected. The JIT can only elide allocations within the scope it can analyze — which grows with inlining:
+
+```csharp
+// Without inlining: JIT cannot see that 'p' doesn't escape UsePoint()
+static int Method()
+{
+    var p = new Point(1, 2);
+    return UsePoint(p);     // can't inline → p must be heap-allocated
+}
+
+static int UsePoint(Point p) => p.X + p.Y;
+
+// With [MethodImpl(MethodImplOptions.AggressiveInlining)]:
+// JIT inlines UsePoint into Method → can now see p doesn't escape:
+[MethodImpl(MethodImplOptions.AggressiveInlining)]
+static int UsePointInlined(Point p) => p.X + p.Y;
+
+static int MethodOptimized()
+{
+    var p = new Point(1, 2);        // JIT sees entire scope after inlining
+    return UsePointInlined(p);      // inlined → p may be scalar-replaced
+}
+```
+
+**Inlining thresholds in RyuJIT:**
+- Default IL size limit: ~64 bytes (rough estimate; complex heuristics apply)
+- Methods with loops: less likely to be inlined
+- `throw` statements: disable inlining in some cases
+- `[MethodImpl(MethodImplOptions.NoInlining)]`: explicitly prevents inlining
+
+---
+
+## Viewing JIT Output
+
+You can verify what the JIT actually generates using several tools:
+
+```bash
+# 1. BenchmarkDotNet with DisassemblyDiagnoser:
+# Shows actual x86-64 assembly for your benchmark methods
+[DisassemblyDiagnoser(printSource: true, syntax: DisassemblySyntax.Intel)]
+[MemoryDiagnoser]
+public class EscapeBenchmark
+{
+    [Benchmark]
+    public int NoEscape()
+    {
+        var p = new ValuePoint(1, 2);
+        return p.X + p.Y;
+    }
+}
+# If the assembly shows no 'call' to allocation helper → elided!
+
+# 2. dotnet/dotnet-trace with JIT events:
+# dotnet-trace collect --providers Microsoft-Windows-DotNETRuntime:0x10:5
+
+# 3. SharpLab.io (online) — paste C# code, see JIT assembly
+# Great for quick checks without local setup
+
+# 4. DOTNET_JitDisasm environment variable:
+# DOTNET_JitDisasm=Method.Name dotnet MyApp.dll
+# Dumps JIT assembly for methods matching the name pattern
+```
+
+---
+
+## Class vs Struct: The Escape Analysis Difference
+
+```csharp
+// Class (reference type): ALWAYS heap-allocated if it escapes
+// JIT can elide only if the object is proven to not escape AND JIT can scalar-replace
+public class PointClass { public int X, Y; }
+
+// Struct (value type): NEVER heap-allocated unless boxed
+// No escape analysis needed — structs are automatically stack-allocated for locals
+public struct PointStruct { public int X, Y; }
+
+// Practical comparison:
+static int ProcessClass()
+{
+    var p = new PointClass { X = 1, Y = 2 }; // maybe heap, maybe not (escape analysis)
+    return p.X + p.Y;
+}
+
+static int ProcessStruct()
+{
+    var p = new PointStruct { X = 1, Y = 2 }; // definitely stack (no escape analysis needed)
+    return p.X + p.Y;
+}
+
+// For small data types with pure data (no behavior): prefer struct
+// The struct version has guaranteed zero allocation; the class version depends on JIT
+```
+
+---
+
+## Closure Allocation: A Common Escape Analysis Failure
+
+```csharp
+// Closures that capture variables ALWAYS escape (by definition):
+int multiplier = 5;
+Func<int, int> multiply = x => x * multiplier;  // multiplier captured
+// Compiler generates a DisplayClass with multiplier as a field — heap allocation
+
+// JIT cannot elide this because the delegate object must outlive the method
+
+// To avoid: use static lambdas where possible (.NET 9 / C# 13):
+static Func<int, int, int> multiply2 = static (x, m) => x * m;
+// Static lambda: no closure, no allocation — cached as a static field
+
+// Or: avoid delegate allocation in hot paths entirely
+// Use local functions instead:
+int MultiplyLocal(int x) => x * multiplier; // might be inlined by JIT
+int result = MultiplyLocal(42);
+// Local function doesn't require a delegate object when called directly
+```
+
+---
+
+<MythBuster
+  myth="The JIT performs the same escape analysis as Java's HotSpot JVM and can eliminate most class allocations."
+  reality="RyuJIT's escape analysis is more limited than HotSpot's. HotSpot has decades of optimizing scalar replacement for class instances in tight loops. RyuJIT (as of .NET 8) performs escape analysis primarily for VALUE TYPES — reliably eliminating boxing and enabling struct stack-allocation. For reference type (class) allocation elision, RyuJIT is more conservative. The practical advice: don't rely on the JIT to eliminate class allocations. Use structs, Span<T>, stackalloc, or object pooling explicitly for zero-allocation critical paths."
+  example={`// Reliably eliminated by RyuJIT (value type, inlined, not boxed):
+static int SquaredSum(int a, int b)
+{
+    var (x, y) = (a * a, b * b); // tuple is a value type struct
+    return x + y;                 // JIT: x and y are just registers
+}
+
+// May or may not be eliminated (class, JIT-dependent):
+static int ClassSum(int a, int b)
+{
+    var p = new PointClass { X = a, Y = b }; // class — JIT may elide, may not
+    return p.X + p.Y;
+}
+
+// To guarantee: use struct
+static int StructSum(int a, int b)
+{
+    var p = new PointStruct { X = a, Y = b }; // struct — always stack
+    return p.X + p.Y;
+}`}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: .NET 8 Improvements to Escape Analysis**
+
+.NET 8 (RyuJIT) includes several improvements to escape analysis and related optimizations:
+
+1. **Object stack allocation for simple cases** — RyuJIT 8 can now stack-allocate certain class instances that don't escape, particularly in straightforward patterns like temporary result objects in methods.
+
+2. **Improved LINQ optimization** — `Array.Empty<T>()` and some simple LINQ operations (`.Count()`, `.Any()` on arrays) are now devirtualized and may produce zero-allocation code paths.
+
+3. **On-stack replacement (OSR)** — Long-running methods can now be re-JIT-compiled at a loop back-edge, applying more aggressive optimizations mid-execution. This enables better escape analysis for objects allocated before a hot loop.
+
+How to leverage these in practice:
+```csharp
+// .NET 8: this pattern is more likely to be stack-allocated:
+static int SumRecords(IEnumerable<int> source)
+{
+    // Enumerator allocation may be elided for arrays/lists:
+    int sum = 0;
+    foreach (int x in source) sum += x;
+    return sum;
+    // For array source: JIT may devirtualize and stack-allocate the enumerator
+}
+
+// Verify with BenchmarkDotNet + [MemoryDiagnoser]:
+// If Allocated = 0 B — the JIT eliminated it
+// If Allocated > 0 B — it didn't; help it with explicit struct patterns
+
+// Key principle: write clear, simple code that doesn't unnecessarily
+// capture variables or create complex object graphs in hot paths.
+// The JIT optimizes simple patterns far better than complex ones.
+```
+
+The trend is clear: each .NET version improves escape analysis coverage. But writing zero-allocation code explicitly (via structs, Span, stackalloc, pooling) is always more reliable than depending on JIT analysis.
 </Callout>
+
+---
+
+## CodeChallenge: Will the JIT Eliminate This Allocation?
+
+<CodeChallenge
+  id="04-memory-gc/escape-analysis-jit/challenge-1"
+  title="Does This Allocate on the Heap?"
+  description="Consider this code running on .NET 8. Which variable is GUARANTEED to not cause a heap allocation, regardless of JIT behavior?"
+  code={`public class Metrics
+{
+    public long Count;
+    public double Sum;
+}
+
+// Method A:
+static double AverageClass(long count, double sum)
+{
+    var m = new Metrics { Count = count, Sum = sum };
+    return m.Sum / m.Count;
+}
+
+// Method B:
+static double AverageStruct(long count, double sum)
+{
+    var m = (Count: count, Sum: sum); // ValueTuple\<long, double\>
+    return m.Sum / m.Count;
+}
+
+// Method C:
+static double AverageDirect(long count, double sum)
+{
+    return sum / count;
+}
+
+// Method D:
+static double AverageBoxed(long count, double sum)
+{
+    object m = (count, sum); // boxed ValueTuple
+    var t = (ValueTuple\<long, double\>)m;
+    return t.Item2 / t.Item1;
+}`}
+  options={[
+    "Method A — the JIT will definitely eliminate the Metrics class allocation via escape analysis",
+    "Method B — ValueTuple<long, double> is a struct; it is guaranteed to be stack-allocated as a local",
+    "Methods B and C — both avoid class allocations; structs and primitives never heap-allocate as locals",
+    "Method C only — it avoids any struct or class, using raw primitives that are always in registers"
+  ]}
+  correctAnswer={2}
+  explanation="Methods B and C are both guaranteed to not heap-allocate. Method B uses ValueTuple<long, double> which is a value type struct — structs as method locals are ALWAYS stack-allocated (or in registers), regardless of JIT escape analysis. Method C uses plain long and double locals — these are primitives, always in registers. Method A uses a class (Metrics) which MAY be elided by the JIT's escape analysis, but is not guaranteed — it's JIT-dependent. Method D explicitly boxes the ValueTuple (object m = ...) which is guaranteed to heap-allocate."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Performance improvements in .NET 8", url: "https://devblogs.microsoft.com/dotnet/performance-improvements-in-net-8/" },
+    { label: "Write safe and efficient C# code", url: "https://learn.microsoft.com/en-us/dotnet/csharp/write-safe-efficient-code" },
+    { label: "RyuJIT blog posts", url: "https://devblogs.microsoft.com/dotnet/tag/ryujit/" },
+    { label: "BenchmarkDotNet DisassemblyDiagnoser", url: "https://benchmarkdotnet.org/articles/diagnosers/disassembly.html" },
+  ]}
+/>

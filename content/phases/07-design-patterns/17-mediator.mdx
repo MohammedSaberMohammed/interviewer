@@ -1,24 +1,291 @@
 ---
-title: "Mediator"
+title: "Mediator — Decoupling Components with MediatR"
 slug: "mediator"
 order: 17
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["mediator", "behavioral", "MediatR", "CQRS", "loose coupling", "notifications"]
+summary: "Mediator reduces direct dependencies between components by routing communication through a central hub — MediatR is the definitive .NET implementation."
+docsLinks:
+  - label: "MediatR on GitHub"
+    url: "https://github.com/jbogard/MediatR"
+  - label: "CQRS pattern"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: N×N Component Dependencies
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+In a complex system, when components talk directly to each other, you get a web of N×N dependencies. Adding a new component means modifying many existing components to wire it in.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```
+OrderService → EmailService
+OrderService → InventoryService
+OrderService → PaymentService
+OrderService → AuditService
+
+// Adding NotificationService? Update OrderService + all callers
+```
+
+Mediator introduces a central hub — components talk to the mediator, not to each other. N×N becomes N×1.
+
+---
+
+## Classic Mediator
+
+```csharp
+// Mediator interface
+public interface IChatMediator
+{
+    void Register(IChatUser user);
+    void Send(string message, IChatUser sender);
+}
+
+public interface IChatUser
+{
+    string Name { get; }
+    void Receive(string message);
+}
+
+// Concrete Mediator — orchestrates communication
+public class ChatRoom : IChatMediator
+{
+    private readonly List<IChatUser> _users = new();
+
+    public void Register(IChatUser user) => _users.Add(user);
+
+    public void Send(string message, IChatUser sender)
+    {
+        // Route to all users except sender — none know about each other
+        foreach (var user in _users.Where(u => u != sender))
+            user.Receive($"[{sender.Name}]: {message}");
+    }
+}
+
+public class ChatUser : IChatUser
+{
+    private readonly IChatMediator _mediator;
+
+    public string Name { get; }
+
+    public ChatUser(string name, IChatMediator mediator)
+    {
+        Name      = name;
+        _mediator = mediator;
+    }
+
+    public void Send(string message)  => _mediator.Send(message, this);
+    public void Receive(string message) => Console.WriteLine($"{Name} received: {message}");
+}
+
+// Usage — users know nothing about each other
+var room  = new ChatRoom();
+var alice = new ChatUser("Alice", room);
+var bob   = new ChatUser("Bob", room);
+
+room.Register(alice);
+room.Register(bob);
+
+alice.Send("Hello!"); // Bob receives: [Alice]: Hello!
+```
+
+---
+
+## MediatR — The .NET Standard
+
+MediatR is the go-to Mediator implementation for .NET. It handles two patterns:
+
+### 1. Request/Response (Command and Query)
+
+```csharp
+// Request (command or query) — the message
+public record GetUserByIdQuery(int UserId) : IRequest<UserDto>;
+
+// Handler — registered with DI, discovered by MediatR
+public class GetUserByIdHandler : IRequestHandler<GetUserByIdQuery, UserDto>
+{
+    private readonly AppDbContext _db;
+
+    public GetUserByIdHandler(AppDbContext db) => _db = db;
+
+    public async Task<UserDto> Handle(GetUserByIdQuery request, CancellationToken ct)
+    {
+        var user = await _db.Users.FindAsync(new object[] { request.UserId }, ct)
+            ?? throw new NotFoundException($"User {request.UserId} not found");
+
+        return new UserDto(user.Id, user.Name, user.Email);
+    }
+}
+
+// Caller — only knows about IMediator
+[ApiController, Route("api/users")]
+public class UsersController : ControllerBase
+{
+    private readonly IMediator _mediator;
+
+    public UsersController(IMediator mediator) => _mediator = mediator;
+
+    [HttpGet("{id}")]
+    public async Task<UserDto> Get(int id)
+        => await _mediator.Send(new GetUserByIdQuery(id));
+}
+```
+
+### 2. Notifications (Publish/Subscribe)
+
+```csharp
+// Notification — broadcast to all interested handlers
+public record OrderPlacedEvent(int OrderId, int CustomerId, decimal Total) : INotification;
+
+// Handler 1 — sends confirmation email
+public class SendOrderConfirmationHandler : INotificationHandler<OrderPlacedEvent>
+{
+    private readonly IEmailService _email;
+    public SendOrderConfirmationHandler(IEmailService email) => _email = email;
+
+    public Task Handle(OrderPlacedEvent notification, CancellationToken ct)
+        => _email.SendOrderConfirmationAsync(notification.OrderId, notification.CustomerId);
+}
+
+// Handler 2 — updates inventory
+public class UpdateInventoryHandler : INotificationHandler<OrderPlacedEvent>
+{
+    private readonly IInventoryService _inventory;
+    public UpdateInventoryHandler(IInventoryService inventory) => _inventory = inventory;
+
+    public Task Handle(OrderPlacedEvent notification, CancellationToken ct)
+        => _inventory.ReserveStockAsync(notification.OrderId);
+}
+
+// Publisher — publishes the event, doesn't know who handles it
+public class OrderService
+{
+    private readonly IMediator _mediator;
+    public OrderService(IMediator mediator) => _mediator = mediator;
+
+    public async Task PlaceOrderAsync(PlaceOrderDto dto)
+    {
+        // ... create order in DB ...
+        int orderId = 42;
+
+        // Publish — both handlers run (order not guaranteed)
+        await _mediator.Publish(new OrderPlacedEvent(orderId, dto.CustomerId, dto.Total));
+    }
+}
+
+// Registration in Program.cs
+builder.Services.AddMediatR(cfg =>
+    cfg.RegisterServicesFromAssemblyContaining<Program>());
+```
+
+---
+
+<ComparisonTable
+  title="Mediator vs Observer vs Direct Dependencies"
+  headers={["Aspect", "Direct Dependencies", "Observer (events)", "Mediator (MediatR)"]}
+  rows={[
+    ["Coupling", "High — A knows B directly", "Medium — A knows event type", "Low — A only knows IMediator"],
+    ["Discoverability", "Explicit in code", "Follow event subscriptions", "Follow INotificationHandler implementations"],
+    ["Testability", "Must mock all deps", "Must mock event subscribers", "Mock IMediator or test handlers individually"],
+    ["Cross-cutting", "Manual in each method", "Can add subscriber without touching publisher", "Pipeline behaviors apply globally"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/mediator/challenge-1"
+  title="Mediator vs Service Locator"
+  description="A developer says 'IMediator is just a Service Locator — you're hiding dependencies.' How do you respond?"
+  code={`// Critique: IMediator hides dependencies
+public class OrdersController : ControllerBase
+{
+    // Is this worse than explicit dependencies?
+    private readonly IMediator _mediator; // one dependency that routes to many
+
+    // vs explicit:
+    // private readonly IOrderService _orders;
+    // private readonly IEmailService _email;
+    // private readonly IInventoryService _inventory;
+}`}
+  options={[
+    "The critique is valid — always use explicit dependencies instead of IMediator",
+    "IMediator is different: handlers are discovered by type (not resolved by string/type key), handlers are independently testable, and pipeline behaviors provide consistent cross-cutting concerns",
+    "Both are equivalent — it's just a style preference",
+    "IMediator is better because it reduces the number of constructor parameters"
+  ]}
+  correctAnswer={1}
+  explanation="IMediator is NOT a Service Locator because: (1) it dispatches to handlers by message type — no magic strings or runtime type resolution guessing; (2) handlers are independently testable with their own dependencies injected via DI; (3) the controller's coupling is genuinely reduced — it doesn't need to know about EmailService or InventoryService. The real tradeoff: you lose explicit visibility of what a controller depends on. For controllers that send many different commands, MediatR's tradeoff is usually worth it. For simple cases, explicit deps are clearer."
+/>
+
+---
+
+<Callout type="senior">
+**MediatR Pipeline Behaviors — The Real Power**
+
+MediatR's pipeline behaviors let you apply cross-cutting concerns (logging, validation, caching, transactions) to ALL commands/queries without touching handler code:
+
+```csharp
+// Applies to ALL IRequest<T> — logging runs before and after every handler
+public class LoggingBehavior<TRequest, TResponse>
+    : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IRequest<TResponse>
+{
+    private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
+
+    public LoggingBehavior(ILogger<LoggingBehavior<TRequest, TResponse>> logger)
+        => _logger = logger;
+
+    public async Task<TResponse> Handle(
+        TRequest request,
+        RequestHandlerDelegate<TResponse> next,
+        CancellationToken ct)
+    {
+        string requestName = typeof(TRequest).Name;
+        _logger.LogInformation("Handling {Request}: {@RequestData}", requestName, request);
+
+        var stopwatch = Stopwatch.StartNew();
+        TResponse response = await next();
+        stopwatch.Stop();
+
+        _logger.LogInformation("{Request} handled in {Ms}ms", requestName, stopwatch.ElapsedMilliseconds);
+        return response;
+    }
+}
+
+// Register globally — applies to ALL requests
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+
+// The pipeline for any Send() call:
+// LoggingBehavior → ValidationBehavior → TransactionBehavior → YourHandler
+```
+
+This eliminates "cross-cutting concern pollution" from handlers — each handler stays focused on its single responsibility.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/mediator/quiz-1"
+  question="What is the difference between IMediator.Send() and IMediator.Publish() in MediatR?"
+  options={[
+    "Send() is synchronous; Publish() is asynchronous",
+    "Send() routes to exactly one handler and returns a response; Publish() broadcasts to all subscribed handlers and returns void",
+    "Send() is for commands; Publish() is for events, and they use different registration APIs",
+    "Both B and C are correct"
+  ]}
+  correctAnswer={3}
+  explanation="Both B and C are correct. Send() (IRequest<T>) routes to ONE handler and returns the handler's response — there must be exactly one handler, or MediatR throws. Publish() (INotification) broadcasts to ALL registered INotificationHandler<T> implementations — zero handlers is valid. Send() uses IRequest<T>/IRequestHandler<T>; Publish() uses INotification/INotificationHandler<T>. Handlers for Send() are commands or queries; handlers for Publish() are event handlers (domain events, integration events)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "MediatR on GitHub", url: "https://github.com/jbogard/MediatR" },
+    { label: "CQRS pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" },
+    { label: "Implementing CQRS with MediatR", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-application-layer-implementation-web-api" },
+  ]}
+/>

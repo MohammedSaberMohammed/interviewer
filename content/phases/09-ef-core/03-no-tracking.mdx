@@ -1,24 +1,219 @@
 ---
-title: "No-Tracking Queries"
+title: "AsNoTracking and AsNoTrackingWithIdentityResolution"
 slug: "no-tracking"
 order: 3
-difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["asnotracking", "performance", "change tracker", "read-only queries", "identity resolution", "ef core"]
+summary: "AsNoTracking skips the change tracker for read-only queries — it's one of the highest-impact single-line performance wins in EF Core. Know when to use it and what you trade away."
+docsLinks:
+  - label: "No-Tracking Queries"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/no-tracking"
+  - label: "Identity Resolution in EF Core"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/identity-resolution"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Cost of Tracking
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Every time EF Core materializes an entity from a query result, tracking mode incurs overhead:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. **Snapshot capture** — EF copies all property values into an "original values" snapshot
+2. **Identity map lookup** — checks if the primary key is already tracked (dictionary lookup)
+3. **Memory retention** — the entity and its snapshot stay in memory until the DbContext is disposed
+
+For a read-only API endpoint returning a list of products, none of this is useful. You will never call `SaveChanges()` on these objects.
+
+---
+
+## AsNoTracking: The One-Liner Win
+
+```csharp
+// Default: tracked — snapshot created, entities held in change tracker
+var products = await db.Products
+    .Where(p => p.IsActive)
+    .ToListAsync();
+
+// No-tracking: no snapshot, no identity map, entities are plain POCOs
+var products = await db.Products
+    .AsNoTracking()
+    .Where(p => p.IsActive)
+    .ToListAsync();
+```
+
+**Performance impact**: benchmarks consistently show 20–40% faster query materialization and significantly lower memory usage for medium-to-large result sets. The exact gain depends on entity complexity — more properties means more snapshot overhead.
+
+```csharp
+// Typical read-only API endpoint pattern
+[HttpGet]
+public async Task<IEnumerable<ProductDto>> GetProducts()
+{
+    return await db.Products
+        .AsNoTracking()
+        .Where(p => p.IsActive)
+        .OrderBy(p => p.Name)
+        .Select(p => new ProductDto(p.Id, p.Name, p.Price)) // projection is even better
+        .ToListAsync();
+}
+```
+
+---
+
+## Global No-Tracking with QueryTrackingBehavior
+
+If 90% of your DbContext queries are read-only (e.g., in a reporting service), configure no-tracking globally:
+
+```csharp
+// Option 1: At DbContext registration
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(connectionString)
+           .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking));
+
+// Option 2: In OnConfiguring
+protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+{
+    optionsBuilder.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
+}
+
+// Option 3: Per-context at runtime (e.g., in a repository base class)
+db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+```
+
+When using a globally no-tracking context, opt back in for write operations:
+
+```csharp
+// Opt back in for entities you intend to modify
+var order = await db.Orders
+    .AsTracking()   // explicit opt-in when global default is NoTracking
+    .FirstOrDefaultAsync(o => o.Id == id);
+
+order.Status = OrderStatus.Shipped;
+await db.SaveChangesAsync(); // works because entity is now tracked
+```
+
+---
+
+## The Identity Resolution Problem
+
+Here is the hidden trap with `AsNoTracking` and related entities:
+
+```csharp
+// With tracking — one Customer object shared by all related orders
+var orders = await db.Orders
+    .Include(o => o.Customer)
+    .ToListAsync();
+
+bool sameRef = object.ReferenceEquals(orders[0].Customer, orders[1].Customer);
+// True (same reference, identity resolved by the change tracker)
+
+// With AsNoTracking — each order gets its OWN Customer object!
+var orders = await db.Orders
+    .AsNoTracking()
+    .Include(o => o.Customer)
+    .ToListAsync();
+
+bool sameRef = object.ReferenceEquals(orders[0].Customer, orders[1].Customer);
+// False — different instances, even if they have the same CustomerId
+```
+
+This matters when you are working with an object graph and need referential equality — for example, building a tree structure or deduplicating results in memory.
+
+---
+
+## AsNoTrackingWithIdentityResolution
+
+EF Core 5+ offers a middle ground: skip snapshots and change tracking, but still resolve identity so that the same primary key yields the same object reference:
+
+```csharp
+var orders = await db.Orders
+    .AsNoTrackingWithIdentityResolution()
+    .Include(o => o.Customer)
+    .ToListAsync();
+
+// Customer objects are deduplicated by PK (same reference for same customer)
+// But no change tracking overhead (no snapshots, SaveChanges cannot see these entities)
+bool sameRef = object.ReferenceEquals(orders[0].Customer, orders[1].Customer);
+// True (if same customer ID)
+```
+
+**Cost/benefit:**
+- Slightly slower than `AsNoTracking` (still maintains an identity dictionary)
+- Still faster than full tracking (no snapshots)
+- No `SaveChanges` capability
+
+---
+
+<ComparisonTable
+  title="Tracking Mode Comparison"
+  headers={["Mode", "Snapshots", "Identity Map", "SaveChanges", "Memory", "Speed"]}
+  rows={[
+    ["Default (Tracked)", "Yes", "Yes", "Yes", "Highest", "Baseline"],
+    ["AsNoTracking", "No", "No", "No", "Lowest", "Fastest"],
+    ["AsNoTrackingWithIdentityResolution", "No", "Yes (read-only)", "No", "Medium", "Fast"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Project Instead of No-Track**
+
+`AsNoTracking` is a great optimization, but **projecting to a DTO** via `Select()` is better still: it reduces the columns fetched, avoids materializing the full entity, and naturally eliminates tracking (projections are never tracked):
+
+```csharp
+// Good: no tracking, full entity fetched (all columns)
+var products = await db.Products
+    .AsNoTracking()
+    .Where(p => p.IsActive)
+    .ToListAsync();
+
+// Better: only fetch what you need — less I/O, less memory, no tracking
+var productDtos = await db.Products
+    .Where(p => p.IsActive)
+    .Select(p => new ProductListDto
+    {
+        Id = p.Id,
+        Name = p.Name,
+        Price = p.Price
+        // CategoryId, Description, CreatedAt, UpdatedAt, etc. not fetched at all
+    })
+    .ToListAsync();
+// SQL: SELECT Id, Name, Price FROM Products WHERE IsActive = 1
+```
+
+The `Select()` projection eliminates unused column I/O entirely. In high-volume read APIs, combining projections with `AsNoTracking` (when you need the full entity shape but not write access) can reduce memory by 60–80% compared to default tracked entity queries.
 </Callout>
+
+---
+
+<MythBuster
+  myth="AsNoTracking means you cannot use Include() to load related entities"
+  truth="Include() works perfectly with AsNoTracking. The difference is only whether entities are registered in the change tracker after materialization. You can eagerly load any navigation properties you need — they just will not be tracked. The only behavioral difference is the identity resolution issue described above, which AsNoTrackingWithIdentityResolution resolves if you need graph consistency."
+/>
+
+---
+
+<Quiz
+  id="09-ef-core/no-tracking/challenge-1"
+  question="You are building a dashboard API that returns a list of orders with their associated customers. No updates are needed. Which query approach gives the best performance?"
+  options={[
+    "Default tracking with Include(o => o.Customer)",
+    "AsNoTracking with Include(o => o.Customer)",
+    "AsNoTrackingWithIdentityResolution with Include(o => o.Customer)",
+    "Select() projection to a DTO with only the fields needed for the dashboard"
+  ]}
+  correctAnswer={3}
+  explanation="For a read-only dashboard, Select() projection is the best option. It fetches only the columns needed, avoids materializing full entity objects, generates minimal SQL, and automatically bypasses the change tracker (projections are never tracked). AsNoTracking is good but still fetches all columns. AsNoTrackingWithIdentityResolution adds identity map overhead with no benefit here. The projection approach reduces both database I/O and memory to the absolute minimum required."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "No-Tracking Queries", url: "https://learn.microsoft.com/en-us/ef/core/querying/no-tracking" },
+    { label: "Identity Resolution in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/identity-resolution" },
+    { label: "QueryTrackingBehavior Enum", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.entityframeworkcore.querytrackingbehavior" },
+  ]}
+/>

@@ -1,24 +1,297 @@
 ---
-title: "Allocation Profiling Tools"
+title: "Profiling Allocations: dotnet-trace and BenchmarkDotNet"
 slug: "allocation-profiling"
 order: 12
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["profiling", "dotnet-trace", "BenchmarkDotNet", "MemoryDiagnoser", "allocation", "performance", "PerfView"]
+summary: "Guessing at allocation hot spots is engineering malpractice. Learn the standard toolchain for measuring heap allocations in .NET: BenchmarkDotNet for microbenchmarks and dotnet-trace for production diagnosis."
+docsLinks:
+  - label: "dotnet-trace performance analysis utility"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace"
+  - label: "dotnet-counters performance monitoring tool"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-counters"
+  - label: "BenchmarkDotNet documentation"
+    url: "https://benchmarkdotnet.org/articles/overview.html"
+  - label: "Collect a performance trace on Linux"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/trace-perfcollect-lttng"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Measurement-First Principle
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Before touching any allocation optimization, you need a baseline measurement. Without it:
+- You may optimize a path that contributes 1% of allocations
+- You'll have no way to verify your fix worked
+- You may introduce bugs optimizing already-fast code
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The .NET ecosystem has excellent free tooling for this.
+
+---
+
+## BenchmarkDotNet with MemoryDiagnoser
+
+BenchmarkDotNet's `[MemoryDiagnoser]` attribute adds allocation tracking to your benchmarks — showing bytes allocated per operation and GC collection counts:
+
+```csharp
+// Add NuGet: BenchmarkDotNet
+using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Running;
+
+[MemoryDiagnoser]           // shows Allocated column in results
+[ShortRunJob]               // faster for development iteration
+public class AllocationBenchmark
+{
+    private const int Size = 1000;
+
+    [Benchmark(Baseline = true)]
+    public byte[] NewArray() => new byte[Size]; // baseline
+
+    [Benchmark]
+    public byte[] PooledArray()
+    {
+        var buf = ArrayPool<byte>.Shared.Rent(Size);
+        ArrayPool<byte>.Shared.Return(buf);
+        return buf;
+    }
+
+    [Benchmark]
+    public string StringConcat()
+    {
+        string result = "";
+        for (int i = 0; i < 10; i++)
+            result += i.ToString(); // each += allocates a new string
+        return result;
+    }
+
+    [Benchmark]
+    public string StringBuilderConcat()
+    {
+        var sb = new StringBuilder();
+        for (int i = 0; i < 10; i++)
+            sb.Append(i);
+        return sb.ToString();
+    }
+}
+
+// Run:
+BenchmarkRunner.Run<AllocationBenchmark>();
+```
+
+**Sample output:**
+```
+| Method             | Mean    | Allocated |
+|------------------- |---------|-----------|
+| NewArray           | 45 ns   | 1.04 KB   |
+| PooledArray        | 32 ns   | 0 B       |  ← zero allocation
+| StringConcat       | 312 ns  | 1.20 KB   |
+| StringBuilderConcat| 180 ns  | 480 B     |
+```
+
+---
+
+## Reading MemoryDiagnoser Output
+
+```csharp
+// Columns in MemoryDiagnoser output:
+// Gen0: number of Gen0 GCs triggered during the benchmark
+// Gen1: number of Gen1 GCs triggered
+// Gen2: number of Gen2 GCs triggered
+// Allocated: total bytes allocated per operation (not live heap size!)
+
+// Example output breakdown:
+// | Method   | Gen0 | Gen1 | Gen2 | Allocated |
+// | BadCode  | 1.23 | 0.01 | -    | 8,472 B   |
+// | GoodCode | -    | -    | -    | 0 B       |
+
+// Gen0 = 1.23 means: on average, 1.23 Gen0 GCs happen per 1000 iterations
+// (BenchmarkDotNet runs many iterations and normalizes)
+
+// Zero in Gen0 AND Allocated = 0 B → your method has zero managed allocation
+// This is the gold standard for hot-path optimization
+```
+
+---
+
+## dotnet-counters: Live Production Monitoring
+
+`dotnet-counters` is a lightweight live monitoring tool you can attach to a running process with no restart:
+
+```bash
+# Install:
+dotnet tool install --global dotnet-counters
+
+# Monitor a running process (replace PID):
+dotnet-counters monitor --process-id 12345 \
+  --counters System.Runtime
+
+# Key metrics to watch:
+# gc-heap-size          — total managed heap size (MB)
+# gen-0-gc-count        — Gen0 GC frequency (per minute)
+# gen-1-gc-count        — Gen1 GC frequency
+# gen-2-gc-count        — Gen2 GC frequency (should be rare)
+# loh-size              — Large Object Heap size (MB)
+# alloc-rate            — bytes/sec being allocated
+# % time in gc          — fraction of CPU spent in GC (alarm if > 5%)
+# finalization-pending  — objects waiting for finalizer (should be ~0)
+```
+
+```bash
+# Example output (unhealthy service):
+# [System.Runtime]
+#   GC Heap Size (MB)           1,842         ← 1.8GB heap!
+#   Gen 0 GC Count              245           ← 245/min Gen0
+#   Gen 1 GC Count              12
+#   Gen 2 GC Count              3             ← 3 full GCs/min — bad
+#   LOH Size (MB)               423           ← 423MB LOH — fragmented
+#   Allocation Rate (B/sec)     45,231,042    ← 45MB/sec allocation rate
+
+# Healthy service targets:
+# Gen2 count < 1/min
+# LOH size < 100MB (or stable, not growing)
+# % time in GC < 1%
+# Alloc rate < 10MB/sec (workload dependent)
+```
+
+---
+
+## dotnet-trace: Detailed Allocation Tracing
+
+For allocation call-stack attribution, use `dotnet-trace` with the allocation sampling provider:
+
+```bash
+# Install:
+dotnet tool install --global dotnet-trace
+
+# Collect allocation trace (attaches to running process):
+dotnet-trace collect --process-id 12345 \
+  --providers Microsoft-DotNETCore-SampleProfiler:0x0000F00000000000:5 \
+  --duration 00:00:30
+
+# OR collect from app startup:
+dotnet-trace collect --output trace.nettrace -- dotnet MyApp.dll
+
+# View in:
+# - PerfView (Windows): open .nettrace file, Heap Snapshots tab
+# - speedscope.app: convert with 'dotnet-trace convert trace.nettrace --format Speedscope'
+# - Visual Studio: open .nettrace directly in VS 2022+
+```
+
+```bash
+# For allocation-specific profiling use the GCHeapAllocTrigger provider:
+dotnet-trace collect --process-id 12345 \
+  --providers Microsoft-Windows-DotNETRuntime:0x1:5
+
+# Then open in PerfView:
+# GC > GC Heap Alloc Stacks → shows allocation hot spots with call stacks
+```
+
+---
+
+## dotnet-dump: Memory Snapshot Analysis
+
+When you have a suspected memory leak or want to inspect live heap contents:
+
+```bash
+# Install:
+dotnet tool install --global dotnet-dump
+
+# Collect a dump (process continues running):
+dotnet-dump collect --process-id 12345
+
+# Analyze the dump:
+dotnet-dump analyze core_20240420_143022
+
+# Useful commands inside dotnet-dump:
+# > dumpheap -stat          — show all types by total size
+# > dumpheap -type String   — show all String objects
+# > dumpheap -min 85000     — show all LOH objects (≥ 85KB)
+# > gcroot <address>        — show what's keeping an object alive
+# > finalizequeue           — show pending finalizers
+```
+
+---
+
+<ComparisonTable
+  headers={["Tool", "Use Case", "Overhead", "Works in Production?"]}
+  rows={[
+    ["BenchmarkDotNet", "Microbenchmark allocation measurement", "High (warmup + many iterations)", "No — dev/perf environment only"],
+    ["dotnet-counters", "Live GC health monitoring", "Very low (~0.1%)", "Yes — safe for production"],
+    ["dotnet-trace", "Allocation hot spot attribution", "Medium (2-5%)", "With caution — short sessions"],
+    ["dotnet-dump", "Memory leak investigation, heap snapshot", "None while running; dump I/O", "Yes — dump then analyze offline"],
+    ["PerfView", "Deep ETW-based GC event analysis", "Low in collection, offline analysis", "Yes — minimal overhead"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Building Allocation Regression Tests**
+
+Once you've identified and fixed an allocation hot spot, you want to prevent regression. BenchmarkDotNet supports this with allocation assertions:
+
+```csharp
+// Method 1: BenchmarkDotNet custom validator (advanced)
+// Method 2: Simpler — use EventListener to measure allocations in unit tests
+
+public static class AllocTest
+{
+    public static long MeasureAllocations(Action action)
+    {
+        long before = GC.GetTotalAllocatedBytes(precise: false);
+        action();
+        long after = GC.GetTotalAllocatedBytes(precise: false);
+        return after - before;
+    }
+}
+
+[Fact]
+public void CacheHit_ShouldNotAllocate()
+{
+    var service = new CachedProductService();
+    service.Warm(productId: 42); // ensure cached
+
+    // Allow a small threshold for test framework overhead:
+    long allocated = AllocTest.MeasureAllocations(
+        () => service.GetProductAsync(42).GetAwaiter().GetResult()
+    );
+
+    // Should allocate 0 bytes (ValueTask<T> returned synchronously)
+    Assert.True(allocated < 200, \$"Expected <200 bytes, got {allocated}");
+}
+```
+
+`GC.GetTotalAllocatedBytes(precise: false)` is the key API — it returns the total bytes allocated by the current thread since process start, allowing before/after comparison. It's available in .NET Core 3.0+ and is cheap to call (no GC trigger).
+
+This pattern catches allocation regressions in CI before they reach production. Put these tests in a dedicated `Benchmarks.Tests` project and run them as part of your PR gate.
 </Callout>
+
+---
+
+## Quiz: Profiling Tool Selection
+
+<Quiz
+  id="04-memory-gc/allocation-profiling/quiz-1"
+  question="Your production API is experiencing latency spikes that correlate with high GC activity. You need to identify WHICH types are being allocated most frequently without significantly impacting production traffic. Which tool is most appropriate?"
+  options={[
+    "BenchmarkDotNet with [MemoryDiagnoser] — most accurate allocation measurement",
+    "dotnet-counters to monitor alloc-rate and GC counts live, then dotnet-trace for a short session to get call-stack attribution",
+    "dotnet-dump to take a heap snapshot and analyze type counts",
+    "Add Console.WriteLine statements logging GC.GetTotalAllocatedBytes() on each request"
+  ]}
+  correctAnswer={1}
+  explanation="dotnet-counters first confirms the scope of the problem with near-zero overhead — you can see alloc-rate, GC counts, and LOH size live in production. Once you confirm the problem is real, a short dotnet-trace session (30-60 seconds) with allocation providers gives you call-stack attribution with acceptable overhead (2-5%). BenchmarkDotNet is for controlled microbenchmarks in dev environments, not production. dotnet-dump captures a memory snapshot (point-in-time heap contents) but doesn't show allocation rates or call stacks."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "dotnet-trace performance analysis utility", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace" },
+    { label: "dotnet-counters performance monitoring tool", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-counters" },
+    { label: "dotnet-dump diagnostic tool", url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-dump" },
+    { label: "BenchmarkDotNet documentation", url: "https://benchmarkdotnet.org/articles/overview.html" },
+  ]}
+/>

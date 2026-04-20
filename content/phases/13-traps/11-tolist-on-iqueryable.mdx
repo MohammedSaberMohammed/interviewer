@@ -1,24 +1,208 @@
 ---
-title: "ToList() on IQueryable Trap"
+title: "ToList() on IQueryable — Loading Everything"
 slug: "tolist-on-iqueryable"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["IQueryable", "EF Core", "ToList", "performance", "paging", "N+1", "database"]
+summary: "Calling ToList() too early on an IQueryable collapses the query to SQL and loads all rows into memory — pagination, filtering, and projection must happen before ToList()."
+docsLinks:
+  - label: "IQueryable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.iqueryable-1"
+  - label: "Querying data with EF Core"
+    url: "https://learn.microsoft.com/en-us/ef/core/querying/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE BUG — ToList() called before filtering and paging
+public async Task<List<ProductDto>> GetPagedProductsAsync(int page, int pageSize, string category)
+{
+    var products = await _context.Products
+        .ToListAsync(); // LOADS ALL PRODUCTS FROM DATABASE INTO MEMORY!
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    return products                          // Now filtering in C# — too late
+        .Where(p => p.Category == category) // In-memory LINQ — not SQL
+        .Skip((page - 1) * pageSize)        // In-memory paging
+        .Take(pageSize)
+        .Select(p => new ProductDto         // In-memory projection
+        {
+            Id = p.Id,
+            Name = p.Name,
+            Price = p.Price
+        })
+        .ToList();
+}
+
+// For a catalog of 100,000 products, page 1 of 20:
+// - Loads 100,000 rows from DB into memory
+// - Filters in C# — discards 99,980 rows
+// - Returns 20 DTOs
+// You just allocated memory for 100,000 entities to serve 20 results!
+```
+
+<Callout type="trap">
+`ToList()` (or `ToListAsync()`) is a **terminal operator** — it executes the SQL query and materializes results into memory. Any LINQ operators applied AFTER `ToList()` run in C# on the in-memory collection, not translated to SQL. Filtering, projection, and paging must be applied to the `IQueryable` BEFORE the terminal call.
 </Callout>
+
+---
+
+## Why It Happens
+
+The key distinction: `IQueryable<T>` vs `IEnumerable<T>`:
+
+```csharp
+// IQueryable<T> — query is built but NOT executed
+IQueryable<Product> query = _context.Products.Where(p => p.IsActive);
+// No SQL yet. The Where is stored as an expression tree.
+
+// Adding more operators to IQueryable — still no SQL:
+query = query.Where(p => p.Price < 100);
+query = query.OrderBy(p => p.Name);
+
+// Terminal operator → SQL is generated and executed NOW:
+List<Product> results = await query.ToListAsync();
+// SQL: SELECT * FROM Products WHERE IsActive = 1 AND Price < 100 ORDER BY Name
+
+// ---
+
+// After ToList() — you have IEnumerable<Product> in memory:
+IEnumerable<Product> inMemory = await query.ToListAsync();
+
+// These operators now run in C#, NOT translated to SQL:
+var filtered = inMemory.Where(p => p.Price < 50); // C# LINQ — no SQL
+var count    = inMemory.Count(p => p.Price < 50); // C# LINQ — no SQL
+```
+
+---
+
+## The Fix
+
+**Apply all filters, projections, and pagination BEFORE the terminal call:**
+
+```csharp
+// CORRECT — IQueryable built up entirely before execution
+public async Task<List<ProductDto>> GetPagedProductsAsync(
+    int page, int pageSize, string? category)
+{
+    IQueryable<Product> query = _context.Products.AsQueryable();
+
+    // All filtering happens at IQueryable level → translated to SQL WHERE clauses
+    if (!string.IsNullOrEmpty(category))
+        query = query.Where(p => p.Category == category);
+
+    query = query.OrderBy(p => p.Name); // SQL ORDER BY
+
+    // Project to DTO BEFORE execution — SQL SELECT only needed columns
+    var dtoQuery = query.Select(p => new ProductDto
+    {
+        Id    = p.Id,
+        Name  = p.Name,
+        Price = p.Price
+        // Unmapped columns (e.g., Description, Images) are NOT loaded
+    });
+
+    // Paging at IQueryable level → SQL OFFSET/FETCH (or LIMIT)
+    return await dtoQuery
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .ToListAsync(); // ONE SQL query: filtered, projected, paged
+}
+```
+
+**SQL generated (EF Core):**
+```sql
+SELECT p.Id, p.Name, p.Price
+FROM Products AS p
+WHERE p.Category = @category
+ORDER BY p.Name
+OFFSET 0 ROWS FETCH NEXT 20 ROWS ONLY
+```
+
+---
+
+<MythBuster
+  myth="Once I have a List<T>, I can apply LINQ filters efficiently"
+  truth="Filtering on an in-memory List<T> is always O(n) on ALL rows. Filtering on IQueryable before execution is O(n_result) with database indexes — potentially orders of magnitude faster for large tables."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/tolist-on-iqueryable/challenge-1"
+  title="Which code issues one efficient SQL query?"
+  description="Only one of these options generates a single, filtered, paged SQL query. Which?"
+  code={`// Option A
+var results = _context.Orders
+    .ToList()
+    .Where(o => o.Status == "Pending")
+    .Take(10)
+    .ToList();
+
+// Option B
+var results = _context.Orders
+    .Where(o => o.Status == "Pending")
+    .Take(10)
+    .ToList();
+
+// Option C
+var all = _context.Orders.ToList();
+var results = all.Where(o => o.Status == "Pending").Take(10).ToList();
+
+// Option D
+IEnumerable\<Order\> query = _context.Orders;
+var results = query.Where(o => o.Status == "Pending").Take(10).ToList();`}
+  options={[
+    "Option A — two ToList() calls optimize into one query",
+    "Option B — all operators are on IQueryable before the single ToList()",
+    "Option C — loading into a variable first enables optimization",
+    "Option D — assigning to IEnumerable<Order> preserves IQueryable behavior"
+  ]}
+  correctAnswer={1}
+  explanation="Only Option B is correct. It applies Where and Take on IQueryable before calling ToList() — generating: SELECT TOP 10 * FROM Orders WHERE Status = 'Pending'. Option A calls ToList() first, loading ALL orders, then filters in memory. Option C does the same. Option D is subtly wrong: assigning IQueryable to IEnumerable<Order> loses the IQueryable type, so Where and Take become LINQ-to-Objects operators running in memory after all orders are loaded."
+/>
+
+---
+
+## The Select Projection Trap
+
+```csharp
+// Without projection — loads ALL columns including large ones:
+var products = await _context.Products.Take(100).ToListAsync();
+// SQL: SELECT Id, Name, Price, Description, ImageData, CreatedAt, ... FROM Products
+
+// With projection — only needed columns:
+var dtos = await _context.Products
+    .Take(100)
+    .Select(p => new { p.Id, p.Name, p.Price }) // Only 3 columns
+    .ToListAsync();
+// SQL: SELECT p.Id, p.Name, p.Price FROM Products
+// Much less data transferred, especially if Description or ImageData is large
+```
+
+---
+
+<Callout type="senior">
+**The "works fine in dev, crashes in prod" pattern**
+
+Development databases have hundreds of rows. Production has millions. A query that completes in 50ms with a `ToList()` before filters on 500 dev rows will timeout (or cause memory pressure) when it tries to load 2 million production rows.
+
+This is one of the most common "works on my machine" bugs in EF Core applications. Every `ToList()` call in a repository or service method deserves the question: "What is the maximum number of rows this could load?" If the answer is unbounded, filters and pagination must come before the `ToList()`.
+
+Code review heuristic: any `ToList()` that is not at the very end of an IQueryable chain is suspicious. Any `.ToList().Where(...)` pattern should be refactored immediately.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IQueryable\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.iqueryable-1" },
+    { label: "Querying in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/querying/" },
+    { label: "EF Core — efficient querying", url: "https://learn.microsoft.com/en-us/ef/core/performance/efficient-querying" },
+    { label: "Pagination in EF Core", url: "https://learn.microsoft.com/en-us/ef/core/querying/pagination" },
+  ]}
+/>

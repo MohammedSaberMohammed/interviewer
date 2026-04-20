@@ -1,24 +1,293 @@
 ---
-title: "Rate Limiting Algorithms"
+title: "Rate Limiting Algorithms: Token Bucket, Sliding Window, Leaky Bucket"
 slug: "rate-limiting-algorithms"
 order: 8
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 17
+status: "published"
+tags: ["rate limiting", "token bucket", "sliding window", "leaky bucket", "fixed window", "ASP.NET Core", "system design"]
+summary: "Every public API needs rate limiting — knowing the trade-offs between token bucket, sliding window, and leaky bucket algorithms determines whether you protect your service or annoy your best users."
+docsLinks:
+  - label: "Rate limiting middleware in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit"
+  - label: "Azure API Management — rate limiting policies"
+    url: "https://learn.microsoft.com/en-us/azure/api-management/rate-limit-policy"
+  - label: "Azure Application Gateway — WAF rate limiting"
+    url: "https://learn.microsoft.com/en-us/azure/web-application-firewall/ag/rate-limiting-overview"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Why Rate Limiting Matters
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Rate limiting protects your service from:
+- **Abuse**: Scrapers, bots, credential stuffing attacks
+- **Runaway clients**: A bug in a client that loops infinitely
+- **Resource exhaustion**: One tenant consuming all database connections
+- **Cost control**: Pay-per-request cloud services (OpenAI, Azure Cognitive Services)
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The algorithm you choose determines the smoothness of traffic, the fairness between clients, and the complexity of implementation.
+
+---
+
+## Algorithm 1: Fixed Window Counter
+
+The simplest algorithm. Divide time into fixed windows (e.g., 1-minute buckets). Count requests per client per window. Reject when count exceeds limit.
+
+```
+Window: [0:00–1:00]   [1:00–2:00]
+Client A: 99 requests   1 request
+At 0:59: 99 requests → allowed
+At 1:00: window resets → 100 more requests allowed immediately
+
+Total burst at window boundary: 199 requests in 2 seconds!
+```
+
+**Problem**: Clients can burst 2× the limit at window boundaries — the "boundary burst" problem.
+
+```csharp
+// ASP.NET Core 7+ built-in Fixed Window
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("fixed", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 100;
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 0; // reject immediately when over limit
+    });
+});
+
+app.UseRateLimiter();
+
+// Apply to endpoint
+app.MapGet("/api/products", GetProducts)
+   .RequireRateLimiting("fixed");
+```
+
+---
+
+## Algorithm 2: Sliding Window
+
+Instead of hard window boundaries, the sliding window counts requests within a rolling time frame preceding each request. No boundary burst.
+
+**Two variants**:
+- **Sliding Window Log**: Store timestamps of all requests. Count those within [now - window]. Accurate but memory-intensive.
+- **Sliding Window Counter**: Approximate using two adjacent fixed windows with weighted interpolation. Memory-efficient.
+
+```csharp
+// ASP.NET Core built-in Sliding Window (approximation using segments)
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddSlidingWindowLimiter("sliding", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.SegmentsPerWindow = 6;       // 10-second segments — more accurate than fixed
+        opt.PermitLimit = 100;
+        opt.QueueLimit = 0;
+    });
+});
+```
+
+**Sliding window with Redis** (for distributed systems):
+
+```csharp
+// Exact sliding window log using Redis sorted set
+public class SlidingWindowRateLimiter
+{
+    private readonly IDatabase _redis;
+
+    public async Task<bool> IsAllowedAsync(string clientId, int limit, TimeSpan window)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var windowStart = now - (long)window.TotalMilliseconds;
+        var key = \$"ratelimit:sliding:{clientId}";
+
+        // Lua script — atomic: remove expired entries, count, conditionally add
+        var script = @"
+            local key = KEYS[1]
+            local now = tonumber(ARGV[1])
+            local window_start = tonumber(ARGV[2])
+            local limit = tonumber(ARGV[3])
+            local ttl = tonumber(ARGV[4])
+
+            redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+            local count = redis.call('ZCARD', key)
+
+            if count < limit then
+                redis.call('ZADD', key, now, now)
+                redis.call('EXPIRE', key, ttl)
+                return 1
+            end
+            return 0
+        ";
+
+        var result = await _redis.ScriptEvaluateAsync(
+            script,
+            keys: new RedisKey[] { key },
+            values: new RedisValue[] { now, windowStart, limit, (long)window.TotalSeconds + 1 }
+        );
+
+        return (long)result == 1;
+    }
+}
+```
+
+---
+
+## Algorithm 3: Token Bucket
+
+A bucket holds up to `capacity` tokens. Tokens are added at a fixed `refill rate`. Each request consumes one token. If the bucket is empty, the request is rejected.
+
+```
+Capacity: 10 tokens
+Refill: 2 tokens/second
+
+t=0:  bucket=10,  request → bucket=9  ✓
+t=0:  9 burst requests → bucket=0    ✓ (burst allowed)
+t=0:  next request → bucket=0        ✗ (rejected)
+t=1:  2 tokens refilled → bucket=2
+t=1:  2 requests → bucket=0          ✓
+```
+
+**Key property**: Allows short bursts up to the bucket capacity while enforcing a sustained rate equal to the refill rate.
+
+```csharp
+// ASP.NET Core Token Bucket
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddTokenBucketLimiter("token-bucket", opt =>
+    {
+        opt.TokenLimit = 10;                          // burst capacity
+        opt.ReplenishmentPeriod = TimeSpan.FromSeconds(1);
+        opt.TokensPerPeriod = 2;                      // sustained rate: 2/sec
+        opt.AutoReplenishment = true;
+        opt.QueueLimit = 0;
+    });
+});
+```
+
+---
+
+## Algorithm 4: Leaky Bucket
+
+Requests enter a queue (the "bucket") and are processed at a fixed rate (the "leak"). If the queue is full, excess requests are dropped.
+
+```
+Incoming: ||||||||||||   (bursty)
+Queue:    [req][req][req]  (max 3)
+Output:   | | | | | |     (smooth: 1 per unit time)
+```
+
+**Key property**: Smooths bursty traffic into a constant output rate. Requests are never processed faster than the leak rate.
+
+```csharp
+// ASP.NET Core Concurrency Limiter (models leaky bucket behavior)
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddConcurrencyLimiter("concurrency", opt =>
+    {
+        opt.PermitLimit = 10;    // max concurrent requests (queue depth)
+        opt.QueueLimit = 50;     // how many can wait
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+});
+```
+
+---
+
+<ComparisonTable
+  headers={["Algorithm", "Burst Handling", "Memory Usage", "Fairness", "Best For"]}
+  rows={[
+    ["Fixed Window", "Allows 2× burst at boundaries", "O(1) per client", "Medium", "Simple APIs, low accuracy acceptable"],
+    ["Sliding Window Log", "No burst — accurate", "O(requests in window)", "High", "Accurate per-user limits, low traffic"],
+    ["Sliding Window Counter", "Minimal burst — approximate", "O(1) per client", "High", "Distributed APIs, good accuracy"],
+    ["Token Bucket", "Allows burst up to capacity", "O(1) per client", "Medium", "APIs that allow occasional bursts"],
+    ["Leaky Bucket", "Smooths bursts — queue absorbs", "O(queue depth)", "High", "Downstream protection, smooth output"],
+  ]}
+/>
+
+---
+
+## Per-Client Rate Limiting in ASP.NET Core
+
+The real power of ASP.NET Core's rate limiter is **keyed policies** — different limits per user, API key, or IP.
+
+```csharp
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("per-user-api", httpContext =>
+    {
+        // Rate limit key: the authenticated user ID (or API key or IP)
+        var userId = httpContext.User?.FindFirst("sub")?.Value
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+
+        return RateLimitPartition.GetSlidingWindowLimiter(userId, key => new SlidingWindowRateLimiterOptions
+        {
+            Window = TimeSpan.FromMinutes(1),
+            SegmentsPerWindow = 6,
+            PermitLimit = 60,  // 60 requests per minute per user
+            QueueLimit = 0
+        });
+    });
+
+    // Return 429 with Retry-After header
+    options.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.Headers.RetryAfter = "60";
+        await context.HttpContext.Response.WriteAsync("Rate limit exceeded. Retry after 60 seconds.", ct);
+    };
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Distributed Rate Limiting Requires External State**
+
+ASP.NET Core's built-in rate limiters are **in-process**. With multiple instances (e.g., 3 pods in Kubernetes), each instance tracks its own counters — a client can send 3× the limit by spreading requests across pods.
+
+For distributed rate limiting you need shared state:
+
+1. **Redis** with atomic Lua scripts (see lesson 04 for the pattern)
+2. **Azure API Management** — policy-based rate limiting at the gateway level
+3. **Azure Application Gateway** with WAF rate limiting rules
+
+The cleanest architecture: put rate limiting at the **gateway** (APIM, NGINX, YARP) rather than in each microservice. Each service then trusts that the gateway enforced the limit, keeping service code simple.
+
+```csharp
+// In YARP reverse proxy — add rate limiting middleware
+app.UseRateLimiter(); // applies rate limits before proxying to upstream services
+app.MapReverseProxy();
+```
+
+Also think about **different limits for different tiers**: free tier = 10 req/min, Pro = 100 req/min, Enterprise = unlimited. Store tier in the JWT claim and use it as the partition key.
 </Callout>
+
+---
+
+<Quiz
+  id="12-system-design/rate-limiting-algorithms/challenge-1"
+  question="A client is allowed 100 requests per minute with a fixed window counter. At 0:58 they send 100 requests (all allowed). At 1:00 the window resets and they immediately send 100 more. How many total requests did they make in 4 seconds?"
+  options={[
+    "100 — the second window's requests replace the first",
+    "200 — 100 in the final 2 seconds of window 1, 100 in the first 2 seconds of window 2",
+    "50 — the rate limiter detects the boundary burst and throttles",
+    "100 — the fixed window prevents this by tracking fractional windows"
+  ]}
+  correctAnswer={1}
+  explanation="This is the classic boundary burst problem with fixed window counters. At 0:58, the client sends 100 requests — all allowed because the first window had no prior usage. At 1:00, the window resets and the client immediately sends 100 more — all allowed because the new window is fresh. Result: 200 requests in 4 seconds, double the intended limit. The sliding window algorithm eliminates this by counting requests within a rolling window, not a fixed boundary."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Rate limiting middleware in ASP.NET Core 7+", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/rate-limit" },
+    { label: "Azure API Management — rate-limit-by-key policy", url: "https://learn.microsoft.com/en-us/azure/api-management/rate-limit-by-key-policy" },
+    { label: "Azure WAF — rate limiting rules", url: "https://learn.microsoft.com/en-us/azure/web-application-firewall/ag/rate-limiting-overview" },
+    { label: "Throttling pattern — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/throttling" },
+  ]}
+/>

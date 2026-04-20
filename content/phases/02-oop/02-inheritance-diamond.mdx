@@ -3,22 +3,309 @@ title: "Inheritance & the Diamond Problem"
 slug: "inheritance-diamond"
 order: 2
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["inheritance", "virtual", "override", "sealed", "diamond problem", "multiple inheritance", "base"]
+summary: "C# avoids the diamond problem by restricting class inheritance to a single parent — but interfaces with default members reintroduce it, and you need to know the resolution rules."
+docsLinks:
+  - label: "Inheritance (C# Programming Guide)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance"
+  - label: "virtual keyword"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/virtual"
+  - label: "Default interface methods"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-8.0/default-interface-methods"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Inheritance Basics
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Inheritance lets a derived class acquire members of a base class. In C#, a class can inherit from **exactly one** base class (single inheritance), but can implement **multiple interfaces**.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class Animal
+{
+    public string Name { get; init; } = "";
+
+    // virtual: derived classes CAN override
+    public virtual string Speak() => "...";
+
+    // non-virtual: derived classes get this exact implementation
+    public string Breathe() => "inhale/exhale";
+}
+
+public class Dog : Animal
+{
+    // override: replacing the base implementation
+    public override string Speak() => "Woof!";
+
+    // Adding new behavior
+    public string Fetch() => $"{Name} fetches the ball!";
+}
+
+public class GuideDog : Dog
+{
+    // Overriding again — chains through the hierarchy
+    public override string Speak() => "Quiet woof.";
+}
+
+var d = new GuideDog { Name = "Buddy" };
+Console.WriteLine(d.Speak());   // "Quiet woof."
+Console.WriteLine(d.Breathe()); // "inhale/exhale" — inherited from Animal
+Console.WriteLine(d.Fetch());   // "Buddy fetches the ball!" — inherited from Dog
+```
+
+---
+
+## virtual, override, new, and sealed
+
+These four keywords control how method dispatch works across the hierarchy:
+
+```csharp
+public class Base
+{
+    public virtual void Show()    => Console.WriteLine("Base.Show");
+    public virtual void Display() => Console.WriteLine("Base.Display");
+    public void Print()           => Console.WriteLine("Base.Print"); // non-virtual
+}
+
+public class Derived : Base
+{
+    public override void Show()    => Console.WriteLine("Derived.Show");   // participates in polymorphism
+    public new     void Display()  => Console.WriteLine("Derived.Display"); // HIDES base — does NOT override
+    public new     void Print()    => Console.WriteLine("Derived.Print");   // hides non-virtual base member
+    public sealed  override void Show() => Console.WriteLine("Derived.Show"); // Can't be overridden further
+    // Note: sealed requires 'override' — you seal something you've overridden
+}
+```
+
+<Callout type="trap">
+**The `new` keyword silently breaks polymorphism.** When you call through a base reference, the base implementation runs — not the derived one. This is the most common inheritance bug in C# interviews:
+
+```csharp
+Base b = new Derived();
+
+b.Show();    // "Derived.Show"  — virtual dispatch, calls Derived
+b.Display(); // "Base.Display"  — 'new' means NO virtual dispatch
+b.Print();   // "Base.Print"    — non-virtual, always base
+
+Derived d = new Derived();
+d.Show();    // "Derived.Show"
+d.Display(); // "Derived.Display" — called on Derived reference, Derived wins
+d.Print();   // "Derived.Print"
+```
+
+`new` should be used only when you deliberately want to hide a base member (rare). Most of the time, a compiler warning saying "use new to suppress" is a sign the design is wrong.
 </Callout>
+
+---
+
+## The Diamond Problem
+
+The **diamond problem** occurs in multiple inheritance when a class inherits from two classes that share a common ancestor:
+
+```
+      A
+     / \
+    B   C
+     \ /
+      D
+```
+
+If A defines a virtual method and both B and C override it, which version does D inherit? This ambiguity is the diamond problem. C++ requires explicit qualification. Java lacks this with classes but has it with interfaces.
+
+**C# avoids the diamond problem for classes** by disallowing multiple class inheritance. `D` cannot inherit from both `B` and `C` if they are classes.
+
+```csharp
+// This does NOT compile in C#:
+// public class D : B, C { }  // ERROR: Cannot have multiple base classes
+```
+
+---
+
+## But Interfaces Can Cause It (C# 8+)
+
+Default interface methods (C# 8) mean interfaces can now provide implementations, reintroducing the diamond problem:
+
+```csharp
+public interface ILogger
+{
+    string Format(string msg) => $"[LOG] {msg}";  // default implementation
+}
+
+public interface IAudit
+{
+    string Format(string msg) => $"[AUDIT] {msg}"; // different default
+}
+
+// This compiles — a class CAN implement multiple interfaces
+public class Service : ILogger, IAudit
+{
+    // AMBIGUITY: which Format() does 'this' have?
+    // Answer: neither automatically — you MUST explicitly implement at least one
+
+    // If you don't implement Format(), the compiler errors:
+    // "Service does not implement interface member ILogger.Format(string)"
+    // ... because both provide defaults that conflict
+
+    // Resolution: override explicitly
+    string ILogger.Format(string msg) => $"[LOG] {msg}";
+    string IAudit.Format(string msg)  => $"[AUDIT] {msg}";
+
+    // Or provide a single unambiguous implementation:
+    public string Format(string msg) => $"[SERVICE] {msg}";
+}
+```
+
+When two interfaces provide the same default and a class implements both, C# **requires you to resolve the ambiguity** — it will not silently pick one. This is the correct behavior.
+
+---
+
+## The Resolution Rules
+
+<ComparisonTable
+  headers={["Scenario", "Which method runs?"]}
+  rows={[
+    ["Class overrides virtual method", "Always the most-derived override (runtime dispatch)"],
+    ["Method hidden with 'new'", "Depends on compile-time reference type, not runtime type"],
+    ["Two interfaces with same default", "Compiler error — must explicitly implement at least one"],
+    ["One interface extends another, both have defaults", "More derived interface wins (most specific)"],
+    ["Sealed method called on derived reference", "Sealed implementation — no further overrides allowed"],
+    ["base.Method() in derived class", "Calls the immediate parent's implementation"],
+  ]}
+/>
+
+---
+
+```csharp
+// Interface inheritance resolution — the 'most specific' rule
+public interface IBase
+{
+    string Name() => "IBase";
+}
+
+public interface IDerived : IBase
+{
+    // IDerived is more specific than IBase, so its default wins
+    string Name() => "IDerived";
+}
+
+public class MyClass : IDerived // also implicitly : IBase
+{
+    // MyClass.Name() is not defined — IDerived.Name() wins (most specific)
+}
+
+var obj = new MyClass();
+Console.WriteLine(((IBase)obj).Name());    // "IDerived" — IDerived is more specific!
+Console.WriteLine(((IDerived)obj).Name()); // "IDerived"
+```
+
+---
+
+<Quiz
+  id="02-oop/inheritance-diamond/quiz-1"
+  question="Given: Base has virtual void Greet(). Mid overrides it with 'public override void Greet() => ...' and marks it sealed. Bottom inherits Mid. What happens if Bottom tries to override Greet()?"
+  options={[
+    "Bottom can override Greet() because it's still virtual in the hierarchy",
+    "Bottom gets a compile-time error: cannot override sealed member Mid.Greet()",
+    "Bottom can use 'new' to shadow it, which counts as overriding",
+    "Bottom silently inherits Mid's version with no option to change it"
+  ]}
+  correctAnswer={1}
+  explanation="sealed override means 'this is the last override in the hierarchy.' Any class inheriting from Mid cannot override Greet() — attempting to do so is a compile-time error. The 'new' keyword is still available to hide the member, but hiding is not overriding — it breaks virtual dispatch as described in the trap callout. sealed is useful when a framework class needs to guarantee specific behavior that subclasses must not change (e.g., security checks, lifecycle hooks)."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Prefer sealed by Default**
+
+The Open/Closed Principle says classes should be open for extension but closed for modification. But in practice, unsealed virtual methods are an implicit contract: every `override` must honor the Liskov Substitution Principle or risk breaking callers who use the base type polymorphically.
+
+Microsoft's own design guidelines (since .NET 1.0) recommend: **seal classes by default unless you've explicitly designed them for inheritance**. An unsealed class with virtual members is a promise to maintain behavioral compatibility across all possible subclasses — that's a high bar.
+
+In .NET 8+, the runtime team increasingly marks framework types `sealed` to enable JIT devirtualization (the JIT can inline sealed method calls). A sealed virtual call is ~zero overhead compared to a full virtual dispatch.
+
+```csharp
+// Pattern: base class designed for inheritance — document the contract
+public abstract class Validator<T>
+{
+    // Template Method pattern — controls the algorithm skeleton
+    public bool Validate(T value)
+    {
+        if (!IsNotNull(value)) return false;
+        return IsValid(value); // hook for subclasses
+    }
+
+    protected virtual bool IsNotNull(T value) => value is not null;
+
+    // Subclasses MUST implement this
+    protected abstract bool IsValid(T value);
+}
+
+// Sealed — no further extension intended
+public sealed class AgeValidator : Validator<int>
+{
+    protected override bool IsValid(int age) => age is >= 0 and <= 150;
+}
+```
+</Callout>
+
+---
+
+## Constructor Execution Order in Inheritance
+
+Understanding constructor chaining in inheritance prevents subtle initialization bugs:
+
+```csharp
+public class Base
+{
+    public Base()
+    {
+        Console.WriteLine("Base constructor");
+        // WARNING: calling a virtual method here is dangerous!
+        // The derived class may not be initialized yet
+        Initialize(); // BAD if Initialize() is virtual
+    }
+
+    protected virtual void Initialize() => Console.WriteLine("Base.Initialize");
+}
+
+public class Derived : Base
+{
+    private int _value = 42;
+
+    public Derived() : base() // base() called implicitly if omitted
+    {
+        Console.WriteLine("Derived constructor");
+    }
+
+    protected override void Initialize()
+    {
+        // _value is 0 here! Derived's field initializer hasn't run yet.
+        // Field initializers run AFTER base constructor, BEFORE derived constructor body.
+        Console.WriteLine($"Derived.Initialize: _value = {_value}"); // Prints 0!
+    }
+}
+
+// Order of execution:
+// 1. Derived field initializers run (but base constructor called first — see below)
+// Actually: 1. Base field initializers, 2. Base constructor body,
+//           3. Derived field initializers, 4. Derived constructor body
+```
+
+<Callout type="warning">
+**Never call virtual methods from constructors.** At the time the base constructor runs, the derived class fields are not yet initialized. Any virtual method override in the derived class that touches derived fields will see default values (0, null, false), not the intended initial values. This is one of the most common causes of cryptic NullReferenceExceptions during object creation.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Inheritance (C# Programming Guide)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/inheritance" },
+    { label: "virtual keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/virtual" },
+    { label: "override keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/override" },
+    { label: "sealed keyword", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/sealed" },
+    { label: "Default interface methods", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/proposals/csharp-8.0/default-interface-methods" },
+  ]}
+/>

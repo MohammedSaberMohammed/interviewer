@@ -1,24 +1,282 @@
 ---
-title: "ValueTask vs Task"
+title: "ValueTask vs Task: Allocation Costs in Async Code"
 slug: "valuetask-vs-task"
 order: 11
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["ValueTask", "Task", "async", "allocation", "performance", "IValueTaskSource", "hot path"]
+summary: "Every async method returns either Task or ValueTask — and the choice matters for allocation. ValueTask avoids a heap allocation when the result is synchronously available, which is critical for cache-hot code paths."
+docsLinks:
+  - label: "ValueTask<TResult> struct"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.valuetask-1"
+  - label: "Understanding the Whys, Whats, and Whens of ValueTask"
+    url: "https://devblogs.microsoft.com/dotnet/understanding-the-whys-whats-and-whens-of-valuetask/"
+  - label: "Task class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Allocation Problem with Task
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`Task<T>` is a class — it's a heap-allocated object. Every async method that returns `Task<T>` allocates at least one `Task<T>` object on the heap, even if the method completes synchronously:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Every call to this method allocates a Task<int> object on the heap
+public async Task<int> GetFromCacheAsync(string key)
+{
+    if (_cache.TryGetValue(key, out int value))
+        return value; // Synchronous path: still allocates a Task<int>!
+
+    // Async path: allocates Task<int> + state machine box
+    return await _database.GetAsync(key);
+}
+
+// At 100,000 cache hits/sec: 100,000 Task<int> objects/sec of garbage
+// Each Task<int> is ~56 bytes on 64-bit → ~5.6MB/sec of Task garbage alone
+```
+
+---
+
+## ValueTask: The Zero-Allocation Synchronous Path
+
+`ValueTask<T>` is a **struct** that wraps either a completed result OR a `Task<T>`. When the result is synchronously available, it holds the value directly — no heap allocation:
+
+```csharp
+// ValueTask<int>: no allocation on the synchronous (cache hit) path
+public ValueTask<int> GetFromCacheAsync(string key)
+{
+    if (_cache.TryGetValue(key, out int value))
+        return new ValueTask<int>(value); // NO heap allocation!
+
+    // Async path: allocates Task<int> and wraps it
+    return new ValueTask<int>(GetFromDatabaseAsync(key));
+}
+
+// Compare allocations:
+// Task<int> synchronous return:  1 Task<int> object (~56 bytes) per call
+// ValueTask<int> sync return:    0 heap allocations per call
+// ValueTask<int> async return:   1 Task<int> + state machine (same as Task)
+
+// The win is ONLY on the synchronous "already have the result" path
+```
+
+---
+
+## When Does ValueTask Actually Help?
+
+```csharp
+// SCENARIO 1: Cache-fronted API — most calls hit cache
+public class ProductService
+{
+    private readonly ConcurrentDictionary<int, Product> _cache = new();
+
+    // Great use of ValueTask: cache hit is common, async is the exception
+    public ValueTask<Product> GetProductAsync(int id)
+    {
+        if (_cache.TryGetValue(id, out Product? product))
+            return ValueTask.FromResult(product); // zero allocation
+
+        return new ValueTask<Product>(FetchFromDbAsync(id)); // async path
+    }
+
+    private async Task<Product> FetchFromDbAsync(int id) { /* ... */ return new Product(); }
+}
+
+// SCENARIO 2: I/O operations — async almost always
+// Here Task is fine — the synchronous path is rare:
+public class FileReader
+{
+    // NOT a good ValueTask candidate: reads are almost always async
+    public async Task<string> ReadFileAsync(string path)
+    {
+        using var reader = new StreamReader(path);
+        return await reader.ReadToEndAsync(); // always async
+    }
+}
+```
+
+---
+
+## Awaiting ValueTask: Critical Rules
+
+```csharp
+// ValueTask has strict consumption rules — violating them causes bugs:
+
+public async Task ConsumeValueTask()
+{
+    ValueTask<int> vt = GetValueAsync();
+
+    // RULE 1: Await a ValueTask only ONCE:
+    int result = await vt;  // correct
+    // int again = await vt; // WRONG: second await may return garbage
+
+    // RULE 2: Do not call .GetAwaiter().GetResult() and also await:
+    // int sync = vt.GetAwaiter().GetResult(); // don't also await after this
+
+    // RULE 3: Do not store a ValueTask and await it much later:
+    // (The backing IValueTaskSource may have been recycled)
+
+    // If you need to await multiple times, convert to Task:
+    ValueTask<int> vt2 = GetValueAsync();
+    Task<int> task = vt2.AsTask(); // now you can await multiple times
+    int r1 = await task;
+    int r2 = await task; // fine — Task can be awaited multiple times
+}
+
+// RULE 4: Don't await a ValueTask in a loop without AsTask():
+// WRONG:
+async Task ProcessWrong(IEnumerable<int> ids)
+{
+    foreach (int id in ids)
+    {
+        ValueTask<string> vt = GetNameAsync(id);
+        results.Add(await vt); // OK only because vt is fresh each iteration
+    }
+}
+```
+
+---
+
+## IValueTaskSource: Advanced Zero-Allocation Async
+
+For truly zero-allocation async operations, implement `IValueTaskSource<T>` to provide a pooled backing object that the `ValueTask<T>` wraps:
+
+```csharp
+// This is advanced plumbing — used by .NET BCL internals
+// Example: Socket.ReceiveAsync returns ValueTask<int> backed by a pooled IValueTaskSource
+// so neither the synchronous (cached result) NOR the asynchronous (pending I/O) paths
+// allocate a Task<int>.
+
+// Socket.ReceiveAsync internally:
+// - Starts I/O, if it completes synchronously: ValueTask wraps the result directly
+// - If it pends: ValueTask wraps a POOLED SocketAsyncEventArgs (IValueTaskSource)
+//   that is RETURNED to a pool after the ValueTask is consumed
+// - Result: zero Task allocations on either path
+
+// Your code rarely needs to implement IValueTaskSource directly.
+// Use it when: you control a hot async API called millions of times/sec
+// AND profiling shows Task<T> allocation is a bottleneck.
+// The implementation complexity is significant — see ManualResetValueTaskSourceCore<T>.
+```
+
+---
+
+## ValueTask (non-generic) for Operations Without a Return Value
+
+```csharp
+// Use non-generic ValueTask for void async operations:
+public interface IWriter
+{
+    // Task version — always allocates
+    Task WriteAsync(ReadOnlyMemory<byte> data);
+
+    // ValueTask version — zero alloc when flush is synchronous (buffer not full)
+    ValueTask WriteAsync(ReadOnlyMemory<byte> data);
+}
+
+public class BufferedWriter : IWriter
+{
+    private byte[] _buffer = new byte[4096];
+    private int _offset;
+
+    public ValueTask WriteAsync(ReadOnlyMemory<byte> data)
+    {
+        // If data fits in buffer: synchronous path, zero allocation
+        if (_offset + data.Length <= _buffer.Length)
+        {
+            data.CopyTo(_buffer.AsMemory(_offset));
+            _offset += data.Length;
+            return ValueTask.CompletedTask; // static cached completed ValueTask
+        }
+
+        // Buffer full: flush async, then write
+        return FlushAndWriteAsync(data);
+    }
+
+    private async ValueTask FlushAndWriteAsync(ReadOnlyMemory<byte> data)
+    {
+        await FlushAsync();
+        data.CopyTo(_buffer.AsMemory(0));
+        _offset = data.Length;
+    }
+
+    private async Task FlushAsync() { /* write buffer to underlying store */ }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Dimension", "Task<T>", "ValueTask<T>"]}
+  rows={[
+    ["Type", "Class (reference type)", "Struct (value type)"],
+    ["Sync return allocation", "1 Task\<T\> object", "Zero (result stored inline)"],
+    ["Async return allocation", "1 Task\<T\> + state machine", "1 Task\<T\> + state machine (same)"],
+    ["Multiple awaits", "Supported", "NOT supported — await once only"],
+    ["WhenAll / WhenAny", "Yes — Task.WhenAll(...)", "Must .AsTask() first"],
+    ["Best use case", "I/O-heavy, always async", "Cache-fronted, sync path common"],
+    ["Overhead vs Task", "None", "Tiny extra check per await"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Don't Add ValueTask Everywhere**
+
+A common mistake after learning about ValueTask: converting every `Task<T>` return type to `ValueTask<T>` for "performance." This is wrong for several reasons:
+
+1. **If the method always awaits**, ValueTask provides no benefit — both paths allocate the same.
+2. **ValueTask adds consumption complexity** — callers must remember the "await once" rule. Task is simpler.
+3. **ValueTask is slightly slower to await** when the operation is actually asynchronous (due to the extra branch checking if it's completed).
+
+The correct decision process:
+```
+Is the operation frequently synchronous (cache hits, buffered reads)?
+  YES → ValueTask may help; measure with BenchmarkDotNet
+  NO  → Use Task
+
+Does profiling show Task<T> allocation is a measurable bottleneck?
+  YES → Consider ValueTask (or IValueTaskSource for near-zero alloc async)
+  NO  → Use Task
+
+Is this a public library API that downstream consumers may cache?
+  YES → Use Task (safer consumption contract)
+  NO  → Either is fine
+
+// Rule of thumb:
+// Task for everything by default.
+// ValueTask when you have evidence of a synchronous fast path AND
+// BenchmarkDotNet [MemoryDiagnoser] shows Task allocation is significant.
+```
 </Callout>
+
+---
+
+## Quiz: ValueTask vs Task
+
+<Quiz
+  id="04-memory-gc/valuetask-vs-task/quiz-1"
+  question="You're implementing a cache-backed repository where 95% of reads hit the in-memory cache. Which return type and implementation is best?"
+  options={[
+    "Task<T> with Task.FromResult(value) for cache hits — simple and correct",
+    "ValueTask<T> with new ValueTask<T>(value) for cache hits — avoids allocation on the hot path",
+    "ValueTask<T> but always wrap in ValueTask.FromResult() regardless of path",
+    "async Task<T> returning the cached value — async keyword handles optimization"
+  ]}
+  correctAnswer={1}
+  explanation="ValueTask<T> with 'new ValueTask<T>(value)' is correct for this scenario. When the cache hits (95% of calls), returning 'new ValueTask<T>(value)' stores the result directly in the struct — zero heap allocation. Compare to Task.FromResult(value) which always allocates a Task<T> object. Option 4 is the worst: 'async Task<T>' that returns a value directly still allocates a Task<T> AND creates a state machine object."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ValueTask\<TResult\> struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.valuetask-1" },
+    { label: "Understanding ValueTask — .NET Blog", url: "https://devblogs.microsoft.com/dotnet/understanding-the-whys-whats-and-whens-of-valuetask/" },
+    { label: "ManualResetValueTaskSourceCore\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.sources.manualresetvaluetasksourcecore-1" },
+    { label: "Task class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task" },
+  ]}
+/>

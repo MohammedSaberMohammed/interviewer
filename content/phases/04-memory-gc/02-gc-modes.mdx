@@ -1,24 +1,268 @@
 ---
-title: "GC Modes: Workstation vs Server, Concurrent"
+title: "GC Modes: Workstation vs Server, Concurrent vs Background"
 slug: "gc-modes"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["GC", "workstation", "server", "concurrent", "background", "latency", "throughput"]
+summary: "Choosing the wrong GC mode can tank throughput or inflate latency. Understand Workstation vs Server GC, and when background GC kicks in — critical knowledge for production .NET services."
+docsLinks:
+  - label: "Workstation and server garbage collection"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/workstation-server-gc"
+  - label: "Background garbage collection"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/background-gc"
+  - label: "Configuring the garbage collector"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Four GC Mode Combinations
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The .NET GC has two primary axes of configuration:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. **Workstation vs Server** — How many heaps and GC threads exist
+2. **Concurrent/Background vs Non-concurrent** — Whether GC can overlap with application threads
+
+These combine into distinct operating modes that have dramatically different performance profiles.
+
+---
+
+## Workstation GC
+
+Workstation GC is the **default for client applications** (desktop apps, console tools, unit test runners). It uses a single managed heap and a single GC thread.
+
+```csharp
+// Workstation GC characteristics:
+// - 1 managed heap
+// - 1 GC thread
+// - Optimized for low latency, small memory footprint
+// - Default for: WPF, WinForms, console apps, unit tests
+
+// Check current mode at runtime:
+bool isServer = GCSettings.IsServerGC;  // false = workstation
+Console.WriteLine(\$"Server GC: {isServer}");
+Console.WriteLine(\$"Latency mode: {GCSettings.LatencyMode}");
+```
+
+Workstation GC pauses all managed threads during collections, but since it has a small heap and one thread, pauses are typically short (< 10ms for Gen 0/1).
+
+---
+
+## Server GC
+
+Server GC is **automatically enabled for ASP.NET Core** and apps running on multi-core machines via the default hosting configuration. It creates one heap and one GC thread **per logical CPU core**.
+
+```csharp
+// Server GC characteristics:
+// - N heaps (one per logical core)
+// - N GC threads (parallel collection)
+// - Higher throughput, higher memory usage (~segment per core)
+// - Default for: ASP.NET Core, Worker Services, Azure Functions
+
+// Enable/disable in runtimeconfig.json or project file:
+// <GarbageCollectionAdaptationMode> or via runtimeconfig
+```
+
+In `runtimeconfig.json`:
+```json
+{
+  "configProperties": {
+    "System.GC.Server": true,
+    "System.GC.HeapHardLimit": 1073741824
+  }
+}
+```
+
+In `.csproj`:
+```xml
+<PropertyGroup>
+  <ServerGarbageCollection>true</ServerGarbageCollection>
+  <GarbageCollectionAdaptationMode>0</GarbageCollectionAdaptationMode>
+</PropertyGroup>
+```
+
+With Server GC on a 16-core machine: 16 heaps, 16 GC threads collecting in parallel. Gen 0 collections become much faster. The tradeoff: significantly higher baseline memory consumption (each heap maintains its own segments).
+
+---
+
+## Concurrent and Background GC
+
+**Concurrent GC** (now called Background GC in modern .NET) allows Gen 2 collections to run mostly concurrently with application threads, reducing stop-the-world pauses.
+
+```
+Non-concurrent GC:          Background GC:
+App:  ████░░░░░░░░████      App:  ████████████████
+GC:       ░░░░░░░░           GC:      ▒▒▒▒▒▒▒▒▒▒
+          ^^^^^^^^                    ^^^^^^^^^^
+          Full pause                  Mostly concurrent
+                                      (short STW at start/end)
+```
+
+Background GC is enabled by default in modern .NET. It still requires short stop-the-world pauses at the **beginning** and **end** of Gen 2 collection to take a consistent snapshot of roots.
+
+```csharp
+// Background GC is on by default — disable only for debugging
+// runtimeconfig.json to disable (not recommended for production):
+// "System.GC.Concurrent": false
+
+// Check if background GC is active:
+// Use PerfView or dotnet-trace to observe GC events:
+// GC/Start, GC/Stop events show duration and type
+```
+
+---
+
+## GC Mode Comparison
+
+<ComparisonTable
+  headers={["Dimension", "Workstation GC", "Server GC"]}
+  rows={[
+    ["Heap count", "1", "1 per logical CPU core"],
+    ["GC threads", "1", "1 per logical CPU core (parallel)"],
+    ["Default for", "Desktop, console, test runners", "ASP.NET Core, Worker Services"],
+    ["Memory footprint", "Low — small segments", "High — segments per core"],
+    ["Gen 0/1 throughput", "Lower", "Higher (parallel collections)"],
+    ["Gen 2 pause length", "Shorter (small single heap)", "Longer per collection, but parallel"],
+    ["Best for", "Latency-sensitive single processes", "High-throughput multi-request services"],
+    ["Background GC", "Yes (default on)", "Yes (default on)"],
+  ]}
+/>
+
+---
+
+## Latency Modes
+
+Beyond Workstation/Server, you can tune the **GC latency mode** at runtime for specific scenarios:
+
+```csharp
+// Default: GCLatencyMode.Interactive (balanced)
+// Allows Gen 0, Gen 1, background Gen 2 collections
+
+// For a latency-critical section (e.g., real-time audio processing):
+var previousMode = GCSettings.LatencyMode;
+GCSettings.LatencyMode = GCLatencyMode.LowLatency;
+try
+{
+    // In LowLatency mode:
+    // - Gen 2 collections are suppressed (only triggered if memory is critical)
+    // - Gen 0/1 still run normally
+    // - Keep this section short — Gen 2 debt will be collected afterward
+    RenderFrame();
+}
+finally
+{
+    GCSettings.LatencyMode = previousMode;
+}
+
+// SustainedLowLatency: suppresses Gen 2 for extended periods
+// Use for: game main loops, real-time trading, soft real-time systems
+GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+
+// NoGCRegion: prevents ALL GC for a short critical section
+bool success = GC.TryStartNoGCRegion(totalSize: 10 * 1024 * 1024); // 10MB budget
+try { /* absolutely no GC here */ }
+finally { GC.EndNoGCRegion(); }
+```
+
+<Callout type="warning">
+`NoGCRegion` will throw if you exceed the specified memory budget during the region. Always keep these windows extremely short and precisely sized. If the runtime can't honor the request (not enough contiguous memory), `TryStartNoGCRegion` returns false.
 </Callout>
+
+---
+
+## DATAS: Dynamic Adaptation to Application Size
+
+.NET 7 introduced **DATAS** (Dynamic Adaptation To Application Size) — the GC can shrink the heap when memory pressure is low and grow it under load.
+
+```csharp
+// Enable DATAS via environment variable or runtimeconfig.json:
+// DOTNET_GCDynamicAdaptationMode=1
+// Or: "System.GC.DynamicAdaptationMode": 1
+
+// This is especially useful for:
+// - Lambda functions and serverless (pay per MB)
+// - Multi-tenant services where idle apps shouldn't hold memory
+// - Containers with strict memory limits
+
+// DATAS can aggressively return memory to the OS during idle periods
+// which is a major improvement for cloud-native deployments
+```
+
+---
+
+## Configuring GC for Containers
+
+In containerized environments, the GC needs to be aware of container memory limits:
+
+```csharp
+// .NET 3.0+ respects container cgroup memory limits automatically
+// Set DOTNET_GCHeapHardLimit to restrict GC heap to a fraction of container memory
+
+// In Dockerfile / docker-compose:
+// DOTNET_GCHeapHardLimitPercent=75  (use 75% of container memory limit for GC heap)
+
+// Or in runtimeconfig.json:
+// "System.GC.HeapHardLimitPercent": 75
+
+// Without this, Server GC on a 64-core host would try to allocate
+// enormous segments even if your container is limited to 512MB
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Server GC Memory Surprise in Containers**
+
+One of the most common production surprises for .NET teams moving to Kubernetes: **Server GC dramatically inflates memory usage in containerized environments**.
+
+Here's why: Server GC creates one heap per logical CPU. On a 64-core node, that's 64 heaps. Each heap allocates multiple segments. Even with a 512MB container memory limit, the GC may attempt to use far more memory based on what the host exposes.
+
+The fix is layered:
+```csharp
+// 1. Constrain heap to a percentage of container memory:
+//    DOTNET_GCHeapHardLimitPercent=75
+
+// 2. Or limit visible CPU count to match your container CPU quota:
+//    DOTNET_PROCESSOR_COUNT=4  (simulates 4-core machine → 4 heaps)
+
+// 3. Enable DATAS to return unused memory:
+//    DOTNET_GCDynamicAdaptationMode=1
+
+// 4. For very small containers (<256MB), consider Workstation GC:
+//    System.GC.Server=false in runtimeconfig.json
+```
+
+A production ASP.NET Core app in a 512MB container with 32 visible CPUs can easily have Server GC claim 400MB+ at baseline before serving a single request. Setting `DOTNET_GCHeapHardLimitPercent=75` and `DOTNET_PROCESSOR_COUNT=4` can cut baseline from 400MB to 80MB.
+
+Monitor `dotnet-counters monitor` metrics: `gc-heap-size`, `gen-0-gc-count`, `gen-2-gc-count`, and `% time in gc` are your canary in the coal mine.
+</Callout>
+
+---
+
+## Quiz: GC Mode Selection
+
+<Quiz
+  id="04-memory-gc/gc-modes/quiz-1"
+  question="Your ASP.NET Core API handles 5,000 requests/sec on a 16-core server. You notice frequent Gen 2 GC pauses of 50–200ms causing latency spikes. Which configuration change is most likely to help?"
+  options={[
+    "Switch from Server GC to Workstation GC to reduce heap size",
+    "Enable GCLatencyMode.NoGCRegion for all request handling",
+    "Ensure Server GC and Background GC are both enabled (the default), then investigate why objects are being promoted to Gen 2",
+    "Set GCLatencyMode.LowLatency globally to suppress Gen 2 collections"
+  ]}
+  correctAnswer={2}
+  explanation="Server GC with Background GC (both default for ASP.NET Core) is the right foundation. Long Gen 2 pauses are a symptom of excess Gen 2 live data or too many long-lived objects — not a GC mode problem. Switching to Workstation GC would make it worse (single-threaded collection on a 16-core server). Setting LowLatency globally defers Gen 2 debt until a critical threshold, causing even longer pauses later. The real fix is finding what's being promoted to Gen 2 and eliminating those allocations or making them shorter-lived."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Workstation and server garbage collection", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/workstation-server-gc" },
+    { label: "Background garbage collection", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/background-gc" },
+    { label: "GC latency modes", url: "https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/latency" },
+    { label: "Runtime configuration for GC", url: "https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector" },
+  ]}
+/>

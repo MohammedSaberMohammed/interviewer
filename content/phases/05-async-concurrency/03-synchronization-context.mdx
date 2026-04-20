@@ -1,24 +1,253 @@
 ---
-title: "SynchronizationContext Deep Dive"
+title: "SynchronizationContext: The Hidden Async Scheduler"
 slug: "synchronization-context"
 order: 3
-difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+difficulty: "advanced"
+readingTime: 15
+status: "published"
+tags: ["SynchronizationContext", "async", "await", "ASP.NET", "WinForms", "WPF", "context capture", "deadlock"]
+summary: "SynchronizationContext is the mechanism that makes UI updates safe after await — and the root cause of the classic ASP.NET deadlock."
+docsLinks:
+  - label: "SynchronizationContext class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.synchronizationcontext"
+  - label: "ConfigureAwait FAQ"
+    url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/"
+  - label: "AsyncLocal<T>"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.asynclocal-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is SynchronizationContext?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`SynchronizationContext` is an abstraction that represents **where** code should run after an async operation completes. It answers the question: "When `await` resumes, which thread or scheduler should it resume on?"
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Every thread has an optional current context accessible via `SynchronizationContext.Current`. The key methods are `Post()` (asynchronous dispatch) and `Send()` (synchronous dispatch):
+
+```csharp
+// Conceptual view of the API
+public abstract class SynchronizationContext
+{
+    public virtual void Post(SendOrPostCallback d, object? state); // fire-and-forget dispatch
+    public virtual void Send(SendOrPostCallback d, object? state); // blocking dispatch
+
+    public static SynchronizationContext? Current { get; }
+    public static void SetSynchronizationContext(SynchronizationContext? sc);
+}
+```
+
+---
+
+## Context Capture at await Points
+
+When you `await` a task, the state machine captures `SynchronizationContext.Current` **before** suspending. After the task completes, the continuation is `Post()`-ed back to that captured context:
+
+```csharp
+// In a WinForms button click handler:
+private async void btnLoad_Click(object sender, EventArgs e)
+{
+    // Thread: UI thread
+    // SynchronizationContext.Current = WindowsFormsSynchronizationContext
+    var ctx = SynchronizationContext.Current; // Captured automatically by the state machine
+
+    string data = await FetchDataAsync(); // Suspends — UI thread is free to process events
+
+    // RESUMED on the UI thread — WindowsFormsSynchronizationContext.Post() was called
+    // This is safe — we're back on the UI thread
+    labelResult.Text = data; // No CrossThreadException
+}
+```
+
+Without this, every UI update after an `await` would require a manual `Invoke()` call.
+
+---
+
+## The Three Environments That Matter
+
+<ComparisonTable
+  headers={["Environment", "SynchronizationContext type", "Resume behavior"]}
+  rows={[
+    ["WinForms", "WindowsFormsSynchronizationContext", "Continuations Post() to the UI message loop — resumes on UI thread"],
+    ["WPF", "DispatcherSynchronizationContext", "Continuations dispatched via Dispatcher to the UI thread"],
+    ["ASP.NET Framework (classic)", "AspNetSynchronizationContext", "Continuations run on the request thread pool with HttpContext attached"],
+    ["ASP.NET Core / Console / ThreadPool", "null", "No context — continuations run on any available ThreadPool thread"],
+  ]}
+/>
+
+The most important distinction: **ASP.NET Core has no SynchronizationContext**. This is intentional and eliminates an entire class of bugs.
+
+---
+
+## The Classic ASP.NET Framework Deadlock
+
+This deadlock only occurs with a SynchronizationContext that serializes access (like `AspNetSynchronizationContext` in legacy ASP.NET, or UI contexts):
+
+```csharp
+// DEADLOCK in ASP.NET Framework — do not do this
+public class HomeController : Controller
+{
+    public ActionResult Index()
+    {
+        // Step 1: Running on request thread
+        // AspNetSynchronizationContext only allows ONE thread in the request context
+        string result = GetDataAsync().Result; // BLOCKS this thread — waiting for task
+        return Content(result);
+    }
+
+    private async Task<string> GetDataAsync()
+    {
+        // Step 2: Captures AspNetSynchronizationContext before awaiting
+        await Task.Delay(100); // Suspends
+
+        // Step 3: Task.Delay completes — state machine tries to resume
+        // It Post()s the continuation to AspNetSynchronizationContext
+        // But that context needs the request thread, which is BLOCKED in Step 1
+        // Thread waiting for context. Context waiting for thread. DEADLOCK.
+        return "data";
+    }
+}
+```
+
+**The fix**: async all the way up, no `.Result` or `.Wait()`.
+
+```csharp
+// CORRECT
+public async Task<ActionResult> Index()
+{
+    string result = await GetDataAsync(); // Yields — no thread blocked
+    return Content(result);
+}
+```
+
+---
+
+## ExecutionContext vs SynchronizationContext
+
+These are frequently confused but serve different purposes:
+
+```csharp
+// SynchronizationContext  → WHERE code runs (which thread/scheduler for resumption)
+// ExecutionContext         → WHAT context code runs in (AsyncLocal, security principal)
+
+// ExecutionContext ALWAYS flows through await — you cannot suppress it
+// SynchronizationContext flows by default but can be suppressed with ConfigureAwait(false)
+
+// AsyncLocal<T> uses ExecutionContext to propagate values through async chains:
+private static readonly AsyncLocal<string> _correlationId = new();
+
+public async Task HandleRequestAsync(string id)
+{
+    _correlationId.Value = id; // Writes to the ExecutionContext for this async "thread"
+
+    await DoWorkAsync(); // ExecutionContext (with _correlationId) flows into DoWorkAsync
+
+    Console.WriteLine(_correlationId.Value); // Still "id" — preserved across await
+}
+
+private async Task DoWorkAsync()
+{
+    // Different thread? Doesn't matter — ExecutionContext is copied
+    Console.WriteLine(_correlationId.Value); // Prints "id"
+    await Task.Delay(50);
+    Console.WriteLine(_correlationId.Value); // Still "id"
+}
+```
+
+Modifications to `AsyncLocal<T>` inside `DoWorkAsync` do NOT propagate back to the parent — changes flow downward only (parent to child), never upward.
+
+---
+
+<Callout type="senior">
+**Senior Insight: ASP.NET Core's no-context design**
+
+ASP.NET Core deliberately sets `SynchronizationContext.Current = null` for all request threads. This was a key architectural decision that delivers:
+
+1. **No deadlocks** from mistaken `.Result` usage (though still bad practice for other reasons)
+2. **Better throughput**: continuations run on any free ThreadPool thread — no contention on a single thread
+3. **No marshaling overhead**: each context switch to a specific thread is expensive under load
+4. **Library code is simpler**: `ConfigureAwait(false)` matters less in ASP.NET Core
+
+Instead of thread affinity, ASP.NET Core propagates per-request data through `AsyncLocal<T>` via `IHttpContextAccessor`. The `HttpContext` is injected, not thread-local. This is a more correct model: async code shouldn't depend on running on a specific thread anyway.
+
+If you write a library that inspects `SynchronizationContext.Current` to adapt its behavior, always handle the `null` case — that's the ASP.NET Core and thread pool case.
 </Callout>
+
+---
+
+## Checking Context Programmatically
+
+```csharp
+// Inspect the current context
+var ctx = SynchronizationContext.Current;
+string contextName = ctx?.GetType().Name ?? "null (ThreadPool / ASP.NET Core)";
+Console.WriteLine(contextName);
+
+// Force execution onto the ThreadPool (escape any context)
+await Task.Run(() =>
+{
+    // SynchronizationContext.Current is null here — pure ThreadPool thread
+    // Safe for CPU-bound work; won't tie up a UI thread
+});
+
+// In unit tests — most test runners have no context
+// xUnit, NUnit, MSTest all run async tests with no SynchronizationContext by default
+// This means deadlocks from .Result won't manifest in tests but will in production!
+```
+
+<Callout type="trap">
+**The test false-negative trap**: Async deadlocks caused by `.Result` in a SynchronizationContext often do NOT reproduce in unit tests, because test runners have no context. Tests pass, production deadlocks. Always test async code in an environment that matches production's context behavior, and avoid `.Result` entirely.
+</Callout>
+
+---
+
+<MythBuster
+  myth="SynchronizationContext.Current is always set in .NET applications"
+  reality="ASP.NET Core, console applications, and thread pool threads all have SynchronizationContext.Current == null. The context is only present in environments with a specific dispatcher: WinForms, WPF, and legacy ASP.NET Framework. Writing library code that assumes a non-null context is a portability bug."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/synchronization-context/challenge-1"
+  title="Will the UI Update Work?"
+  description="In a WinForms app, does this code safely update the label after await?"
+  code={`private async void btnLoad_Click(object sender, EventArgs e)
+{
+    string result = await GetDataAsync().ConfigureAwait(false);
+    labelResult.Text = result;
+}`}
+  options={[
+    "Yes — ConfigureAwait(false) has no effect on UI event handlers",
+    "No — ConfigureAwait(false) causes resumption on a ThreadPool thread, and labelResult.Text = result will throw an InvalidOperationException",
+    "Yes — WinForms automatically marshals property sets to the UI thread",
+    "No — ConfigureAwait(false) causes an immediate deadlock"
+  ]}
+  correctAnswer={1}
+  explanation="ConfigureAwait(false) suppresses the SynchronizationContext capture. After GetDataAsync() completes, the code resumes on a ThreadPool thread rather than the UI thread. In WinForms, setting a control property from a non-UI thread throws InvalidOperationException: 'Cross-thread operation not valid'. ConfigureAwait(false) is appropriate in library code (lesson 04), but UI event handlers must omit it if they touch UI elements after the await."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/synchronization-context/quiz-1"
+  question="What does SynchronizationContext.Current return in an ASP.NET Core controller action?"
+  options={[
+    "An AspNetCoreSynchronizationContext instance",
+    "null — ASP.NET Core installs no SynchronizationContext",
+    "A ThreadPoolSynchronizationContext",
+    "It depends on whether the action method is async"
+  ]}
+  correctAnswer={1}
+  explanation="ASP.NET Core deliberately sets no SynchronizationContext. SynchronizationContext.Current is null for all request-handling code. This eliminates the deadlock pattern from classic ASP.NET and improves scalability. Per-request context (like HttpContext) is propagated through IHttpContextAccessor backed by AsyncLocal<T>, not through thread affinity or SynchronizationContext."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "SynchronizationContext class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.synchronizationcontext" },
+    { label: "ConfigureAwait FAQ (Stephen Toub)", url: "https://devblogs.microsoft.com/dotnet/configureawait-faq/" },
+    { label: "AsyncLocal\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.asynclocal-1" },
+    { label: "ExecutionContext class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.executioncontext" },
+  ]}
+/>

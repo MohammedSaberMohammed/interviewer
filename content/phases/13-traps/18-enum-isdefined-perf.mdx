@@ -1,24 +1,239 @@
 ---
-title: "Enum.IsDefined Performance"
+title: "Enum.IsDefined Performance and HasFlag Trap"
 slug: "enum-isdefined-perf"
 order: 18
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 9
+status: "published"
+tags: ["enum", "Enum.IsDefined", "HasFlag", "reflection", "performance", "flags", "boxing"]
+summary: "Enum.IsDefined uses reflection and boxing on every call — it's dramatically slower than a switch or cast check. HasFlag also boxes the argument in older .NET versions."
+docsLinks:
+  - label: "Enum.IsDefined method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum.isdefined"
+  - label: "Enum.HasFlag method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum.hasflag"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks, ComparisonTable } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE TRAP — Enum.IsDefined in a hot path
+public class OrderProcessor
+{
+    public void ProcessOrders(IEnumerable<Order> orders)
+    {
+        foreach (var order in orders)
+        {
+            // Called once per order — potentially millions of times:
+            if (!Enum.IsDefined(typeof(OrderStatus), order.Status))
+            {
+                throw new ArgumentException($"Invalid status: {order.Status}");
+            }
+            // Process...
+        }
+    }
+}
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+// Enum.IsDefined internally:
+// 1. Boxes the value (heap allocation)
+// 2. Uses reflection to get all enum values
+// 3. Iterates and compares
+// Result: ~100x slower than a simple cast comparison
+```
+
+**The HasFlag boxing trap (pre-.NET 5):**
+
+```csharp
+[Flags]
+public enum Permission { None = 0, Read = 1, Write = 2, Admin = 4 }
+
+var perm = Permission.Read | Permission.Write;
+
+// pre-.NET 5: HasFlag boxes the argument:
+if (perm.HasFlag(Permission.Read)) // Boxes Permission.Read to object!
+{
+    // Each HasFlag call: 1 heap allocation
+}
+
+// In .NET 5+, HasFlag is intrinsified by the JIT — no boxing
+// But the explicit check is always safe and clear:
+if ((perm & Permission.Read) == Permission.Read) // No boxing, always fast
+{
+    // Safe in all .NET versions
+}
+```
+
+<Callout type="trap">
+`Enum.IsDefined` uses reflection on every call — it is not cached. In hot loops (request validation, deserialization, batch processing), this creates measurable overhead. A benchmark comparing `Enum.IsDefined` vs a cast-then-check shows 50–100x speed difference.
 </Callout>
+
+---
+
+## Why Enum.IsDefined Is Slow
+
+```csharp
+// Simplified internal implementation of Enum.IsDefined:
+public static bool IsDefined(Type enumType, object value)
+{
+    // 1. Validates enumType (reflection)
+    // 2. Gets all values via reflection:
+    ulong[] values = GetValues(enumType); // Reflection call — not cached efficiently
+    // 3. Boxes and compares each value
+    return Array.IndexOf(values, value) >= 0;
+}
+
+// Every call: reflection + boxing + linear search
+// For an enum with 10 values, called 1 million times:
+// = ~10 million comparisons + 1 million boxing allocations + 1 million reflection lookups
+```
+
+---
+
+## The Fix
+
+**Option 1: Cast and catch (fast, idiomatic for small value ranges)**
+
+```csharp
+// Fast validation without reflection:
+public static bool IsValidStatus(int value)
+{
+    return value switch
+    {
+        0 or 1 or 2 or 3 => true, // Explicit valid values
+        _ => false
+    };
+}
+
+// Or: cast and check against known range:
+public static bool IsValidOrderStatus(int value)
+{
+    var status = (OrderStatus)value;
+    return status >= OrderStatus.Pending && status <= OrderStatus.Cancelled;
+    // Only works if enum values are contiguous!
+}
+```
+
+**Option 2: Use a HashSet for O(1) validation**
+
+```csharp
+// Pre-compute valid values once — O(1) lookup per check
+public static class EnumValidator<T> where T : struct, Enum
+{
+    private static readonly HashSet<T> ValidValues
+        = new(Enum.GetValues<T>()); // Enum.GetValues<T> — no boxing in .NET 5+
+
+    public static bool IsValid(T value) => ValidValues.Contains(value);
+}
+
+// Usage — fast after initialization:
+if (!EnumValidator<OrderStatus>.IsValid(order.Status))
+    throw new ArgumentException("Invalid status");
+```
+
+**Option 3: .NET 8+ Enum.GetValues\<T\> — no boxing**
+
+```csharp
+// .NET 5+ generic Enum methods avoid boxing:
+T[] values = Enum.GetValues<T>(); // Returns T[] not object[], no boxing
+
+// .NET 8+: Enum.IsDefined<T>(T value) — generic overload, avoids boxing:
+if (!Enum.IsDefined(order.Status)) // Generic inference — no boxing
+{
+    throw new ArgumentException("Invalid status");
+}
+// This generic overload is JIT-intrinsified in .NET 8 — much faster
+```
+
+---
+
+<MythBuster
+  myth="Enum.IsDefined is a simple lookup — it's definitely fast enough for per-request validation"
+  truth="Enum.IsDefined uses reflection on every call and is not cached. In a high-throughput service validating enums on every request, it can consume a measurable percentage of CPU. Profile before assuming 'definitely fast enough'."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/enum-isdefined-perf/challenge-1"
+  title="Which is the fastest valid-enum check?"
+  description="Which approach validates an enum value with the least overhead?"
+  code={`[Flags] enum Role { None = 0, User = 1, Mod = 2, Admin = 4 }
+
+var r = (Role)8; // Not a defined value
+
+// Option A:
+bool a = Enum.IsDefined(typeof(Role), r);
+
+// Option B:
+bool b = Enum.IsDefined(r); // .NET 8+ generic overload
+
+// Option C:
+bool c = r == Role.None || r == Role.User || r == Role.Mod || r == Role.Admin;
+
+// Option D:
+bool d = (r & ~(Role.User | Role.Mod | Role.Admin)) == 0;`}
+  options={[
+    "Option A — traditional IsDefined is optimized by the CLR",
+    "Option B — generic IsDefined is JIT-intrinsified in .NET 8+",
+    "Option C — explicit switch/comparison is always the fastest",
+    "Option D — bitwise mask check is fastest for [Flags] enums"
+  ]}
+  correctAnswer={3}
+  explanation="Option D is the fastest for [Flags] enums. The bitmask check '(r & ~validMask) == 0' is a single bitwise AND and comparison — no method call, no reflection, no boxing. Option C is also very fast (explicit comparisons) but becomes unwieldy with many values. Option B (.NET 8+ generic) is much better than A (avoids boxing, may be intrinsified) but still involves a method call. For [Flags] enums, the mask approach is canonical and optimal."
+/>
+
+---
+
+## HasFlag: The Full Picture
+
+```csharp
+[Flags]
+public enum Permissions { Read = 1, Write = 2, Delete = 4, Admin = 8 }
+
+var perms = Permissions.Read | Permissions.Write;
+
+// pre-.NET 5 — HasFlag boxes:
+perms.HasFlag(Permissions.Read);            // Box allocation per call
+
+// .NET 5+ — JIT intrinsic, no boxing:
+perms.HasFlag(Permissions.Read);            // Compiled to: (perms & Read) != 0
+
+// Manual — always fast, explicitly clear, works in all versions:
+bool canRead   = (perms & Permissions.Read)   != 0;
+bool canWrite  = (perms & Permissions.Write)  != 0;
+bool hasAll    = (perms & (Permissions.Read | Permissions.Write)) == (Permissions.Read | Permissions.Write);
+
+// Multi-flag HasFlag trap:
+// HasFlag(A | B) returns true only if BOTH flags are set
+// This is often misread as "has A OR B"
+bool hasReadOrWrite = perms.HasFlag(Permissions.Read | Permissions.Write);
+// ^ True only if BOTH are set — not "either"!
+
+// Correct "has any of" check:
+bool hasAny = (perms & (Permissions.Read | Permissions.Write)) != 0;
+```
+
+---
+
+<Callout type="senior">
+**The validation middleware that became a bottleneck**
+
+An API gateway validated incoming enum values from JSON payloads using `Enum.IsDefined` for 12 different enum types, called on every request. Under load testing at 10,000 RPS, the profiler showed 8% of total CPU time spent in `Enum.IsDefined` reflection calls.
+
+The fix: replace all `Enum.IsDefined` calls with pre-built `HashSet<T>` validators initialized once at startup. CPU time for validation dropped from 8% to unmeasurable (< 0.1%).
+
+The key lesson: reflection-based operations in hot paths compound quickly. A single reflection call that takes 500ns looks harmless. At 10,000 RPS with 12 enum checks per request, that's 60 million reflection calls per second — 30 seconds of CPU time per second. Parallelism saves you, until it doesn't.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Enum.IsDefined method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum.isdefined" },
+    { label: "Enum.HasFlag method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum.hasflag" },
+    { label: "Enum.GetValues\<TEnum\> (.NET 5+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.enum.getvalues" },
+    { label: "FlagsAttribute", url: "https://learn.microsoft.com/en-us/dotnet/api/system.flagsattribute" },
+  ]}
+/>

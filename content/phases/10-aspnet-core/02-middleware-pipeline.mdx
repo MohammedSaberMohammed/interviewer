@@ -1,24 +1,300 @@
 ---
-title: "Middleware Pipeline"
+title: "Middleware Pipeline: Order Matters"
 slug: "middleware-pipeline"
 order: 2
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["middleware", "pipeline", "Use", "Run", "Map", "request pipeline", "asp.net core"]
+summary: "The middleware pipeline is a chain of delegates — each component decides whether to call the next. Order is everything: put it wrong and auth won't run, or exceptions won't be caught."
+docsLinks:
+  - label: "ASP.NET Core middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/"
+  - label: "Write custom middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write"
+  - label: "Middleware order"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/#middleware-order"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Middleware?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Middleware is software assembled into a pipeline to handle HTTP requests and responses. Each component:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+1. Chooses whether to pass the request to the next component
+2. Can perform work **before** and **after** the next component executes
+
+Conceptually, each middleware wraps the rest of the pipeline:
+
+```
+Request →  [MW1] → [MW2] → [MW3] → endpoint
+Response ← [MW1] ← [MW2] ← [MW3] ←
+```
+
+The pipeline is built as a chain of `RequestDelegate` functions: `Task(HttpContext)`. Each `Use` call wraps the existing pipeline in a new outer delegate.
+
+---
+
+## Use, Run, and Map
+
+These three extension methods are the building blocks of every ASP.NET Core pipeline:
+
+```csharp
+var app = builder.Build();
+
+// Use — passes to next (both before and after code possible)
+app.Use(async (context, next) =>
+{
+    Console.WriteLine("Before next");
+    await next(context);             // call the rest of the pipeline
+    Console.WriteLine("After next"); // runs on the way back out
+});
+
+// Run — terminal middleware. Never calls next. Short-circuits the pipeline.
+app.Run(async context =>
+{
+    await context.Response.WriteAsync("Hello from terminal middleware");
+    // next is NOT available — this ends the pipeline
+});
+
+// Map — branches the pipeline based on a path prefix
+app.Map("/healthz", healthApp =>
+{
+    healthApp.Run(async context =>
+        await context.Response.WriteAsync("OK"));
+});
+
+// MapWhen — branches based on any predicate
+app.MapWhen(
+    ctx => ctx.Request.Headers.ContainsKey("X-Internal"),
+    internalApp => internalApp.Run(async ctx =>
+        await ctx.Response.WriteAsync("Internal route")));
+
+app.Run();
+```
+
+<Callout type="trap">
+**Trap: Code After `next()` Still Runs After Headers Are Sent**
+
+Once the endpoint writes the response body, headers are committed. Running code after `next(context)` that tries to set response headers will throw:
+
+```csharp
+app.Use(async (context, next) =>
+{
+    await next(context); // endpoint wrote response here
+
+    // DANGER: headers already sent — this throws in some scenarios
+    context.Response.Headers["X-Timing"] = "100ms";
+});
+```
+
+Always check `context.Response.HasStarted` before modifying response state after calling next.
 </Callout>
+
+---
+
+## The Canonical Middleware Order
+
+ASP.NET Core's documentation defines a recommended middleware order. Deviating from it causes subtle bugs:
+
+```csharp
+var app = builder.Build();
+
+// 1. Exception handling — must be FIRST to catch exceptions from anything below
+app.UseExceptionHandler("/error");
+// or in development:
+// app.UseDeveloperExceptionPage();
+
+// 2. HSTS — sets Strict-Transport-Security header
+app.UseHsts();
+
+// 3. HTTPS redirection — redirects HTTP → HTTPS
+app.UseHttpsRedirection();
+
+// 4. Static files — short-circuits for .js, .css, .html (no auth check!)
+app.UseStaticFiles();
+
+// 5. Routing — matches the request to an endpoint, sets route values
+app.UseRouting();
+
+// 6. CORS — must be after routing, before auth
+app.UseCors("MyPolicy");
+
+// 7. Authentication — populates HttpContext.User (who are you?)
+app.UseAuthentication();
+
+// 8. Authorization — checks if the user can access this endpoint (can you?)
+app.UseAuthorization();
+
+// 9. Custom middleware that needs auth info
+app.UseMiddleware<TenantResolutionMiddleware>();
+
+// 10. Endpoint execution
+app.MapControllers();
+app.MapRazorPages();
+
+app.Run();
+```
+
+<Callout type="warning">
+**Critical ordering rules:**
+
+- `UseExceptionHandler` before everything — it must wrap the whole pipeline to catch any exception
+- `UseStaticFiles` before `UseRouting` — static files bypass auth; intentional
+- `UseAuthentication` before `UseAuthorization` — auth can't check permissions if identity isn't populated yet
+- `UseRouting` before `UseCors` and `UseAuthorization` — they need route endpoint metadata to make decisions
+</Callout>
+
+---
+
+## How Use() Builds the Pipeline Internally
+
+Understanding the delegate chain helps reason about ordering:
+
+```csharp
+// Simplified view of what Use() does internally:
+// Each call prepends a new outer layer to the existing pipeline
+
+// Starting pipeline (simplified):
+// RequestDelegate pipeline = terminal; // returns 404
+
+// After: app.Use(middlewareA)
+// pipeline = async ctx => { await middlewareA(ctx, pipeline); }
+
+// After: app.Use(middlewareB)
+// pipeline = async ctx => { await middlewareB(ctx, prevPipeline); }
+
+// The LAST middleware registered with Use() runs FIRST on a request
+// — because it's the outermost wrapper
+
+// Execution order for: Use(A), Use(B), Run(C):
+// Request:  A → B → C
+// Response: A ← B ← C (C runs, returns; B resumes; A resumes)
+```
+
+```csharp
+// Demonstrating order with timing middleware
+app.Use(async (ctx, next) =>
+{
+    var sw = Stopwatch.StartNew();
+    await next(ctx);
+    sw.Stop();
+    // This runs AFTER the endpoint responds
+    ctx.Response.Headers["X-Elapsed-Ms"] = sw.ElapsedMilliseconds.ToString();
+    // Note: only works if response hasn't started yet!
+});
+```
+
+---
+
+## Short-Circuiting the Pipeline
+
+Middleware can short-circuit by NOT calling next. This is how auth middleware works:
+
+```csharp
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Headers.ContainsKey("X-Api-Key"))
+    {
+        context.Response.StatusCode = 401;
+        await context.Response.WriteAsync("Missing API key");
+        return; // Short-circuit — next is never called
+    }
+
+    await next(context); // Only reached if key is present
+});
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: UseRouting + UseEndpoints Split and Endpoint Metadata**
+
+In .NET 5 and earlier, you had to split `UseRouting()` and `UseEndpoints()` explicitly. In .NET 6+ with the minimal model, `app.MapControllers()` implicitly calls both. But the split still matters conceptually:
+
+`UseRouting` **matches** an endpoint and stores it on `HttpContext.GetEndpoint()`. Middleware placed **after** UseRouting but **before** the endpoint execution can inspect this metadata:
+
+```csharp
+app.UseRouting();
+
+// This middleware runs AFTER routing has matched an endpoint
+app.Use(async (context, next) =>
+{
+    var endpoint = context.GetEndpoint();
+    var requiresAudit = endpoint?.Metadata.GetMetadata<RequiresAuditAttribute>();
+
+    if (requiresAudit != null)
+        await AuditLogAsync(context);
+
+    await next(context);
+});
+
+app.MapControllers();
+```
+
+`UseAuthorization` uses exactly this pattern — it reads `[Authorize]` attribute metadata from the matched endpoint. This is why it must come after `UseRouting`.
+
+In high-throughput APIs, understanding this split lets you skip expensive middleware for unauthenticated paths like `/healthz` by checking `GetEndpoint()` first.
+</Callout>
+
+---
+
+## Quiz
+
+<Quiz
+  id="10-aspnet-core/middleware-pipeline/quiz-1"
+  question="You add UseAuthentication() before UseRouting() in your pipeline. What is the likely consequence?"
+  options={[
+    "Authentication works correctly because it runs earlier",
+    "Authorization policies that depend on endpoint metadata (like [Authorize] attributes) may not evaluate correctly",
+    "An InvalidOperationException is thrown at startup",
+    "Static files will require authentication"
+  ]}
+  correctAnswer={1}
+  explanation="UseAuthorization (not UseAuthentication) relies on endpoint metadata set by UseRouting. UseAuthentication before UseRouting is actually fine — it populates HttpContext.User regardless of route. But UseAuthorization before UseRouting breaks policy evaluation because the endpoint hasn't been matched yet and [Authorize] metadata is unavailable."
+/>
+
+---
+
+<MythBuster
+  myth="Middleware order only matters for security — for everything else it doesn't matter"
+  truth="Order affects correctness for performance too. Static files middleware before routing means .js and .css files are served without route matching overhead. Exception handler must be outermost. Response caching must be before endpoint execution. Getting order wrong can cause silent failures, not just security bugs."
+/>
+
+---
+
+<CodeChallenge
+  id="10-aspnet-core/middleware-pipeline/challenge-1"
+  title="Spot the Pipeline Bug"
+  description="This pipeline has a bug that means unauthenticated users can access protected controllers. Which line is the problem?"
+  code={`var app = builder.Build();
+
+app.UseExceptionHandler("/error");
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseRouting();      // <-- moved here by mistake
+app.MapControllers();
+
+app.Run();`}
+  options={[
+    "UseAuthentication should come after UseAuthorization",
+    "UseRouting must come before UseAuthentication and UseAuthorization",
+    "UseStaticFiles should come after UseRouting",
+    "MapControllers should come before UseRouting"
+  ]}
+  correctAnswer={1}
+  explanation="UseRouting must come before UseAuthentication and UseAuthorization. UseAuthorization reads [Authorize] attribute metadata that UseRouting places on HttpContext.GetEndpoint(). Without routing having run first, UseAuthorization has no endpoint metadata to check, so it skips authorization entirely — leaving protected endpoints open."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ASP.NET Core middleware fundamentals", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/" },
+    { label: "Middleware order", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/#middleware-order" },
+    { label: "Write custom ASP.NET Core middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write" },
+  ]}
+/>

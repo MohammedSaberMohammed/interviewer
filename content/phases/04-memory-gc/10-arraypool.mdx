@@ -1,24 +1,290 @@
 ---
-title: "ArrayPool<T>"
+title: "ArrayPool<T>: Renting and Returning Arrays"
 slug: "arraypool"
 order: 10
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["ArrayPool", "pooling", "allocation", "GC pressure", "performance", "buffers", "System.Buffers"]
+summary: "ArrayPool<T> eliminates repeated large array allocations by renting from a shared pool. It's one of the highest-impact low-friction optimizations in modern .NET — learn how it works and where it bites."
+docsLinks:
+  - label: "ArrayPool<T> class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1"
+  - label: "System.Buffers namespace"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers"
+  - label: "ArrayPool usage guidance"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Array Allocation at Scale
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+In high-throughput services, repeated array allocation is a GC pressure source that's easy to overlook:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Every request allocates and then discards a buffer:
+public async Task<string> ReadResponseAsync(HttpResponseMessage response)
+{
+    byte[] buffer = new byte[8192]; // new allocation every request
+    int bytesRead = await response.Content.ReadAsByteArrayAsync()
+        .ContinueWith(t => { t.Result.CopyTo(buffer, 0); return t.Result.Length; });
+    return Encoding.UTF8.GetString(buffer, 0, bytesRead);
+    // buffer becomes garbage — GC must collect it
+}
+
+// At 5000 req/s: 5000 * 8KB = 40MB/s of array garbage
+// That's frequent Gen 0 collections, occasional Gen 1/2 promotions
+// and if buffer hits 85KB, LOH fragmentation
+```
+
+`ArrayPool<T>` solves this by maintaining a pool of reusable arrays, avoiding repeated allocation and GC:
+
+```csharp
+using System.Buffers;
+
+public async Task<string> ReadResponsePooled(HttpResponseMessage response)
+{
+    byte[] buffer = ArrayPool<byte>.Shared.Rent(8192); // from pool, not heap
+    try
+    {
+        int bytesRead = await response.Content.ReadAsync(buffer);
+        return Encoding.UTF8.GetString(buffer, 0, bytesRead);
+    }
+    finally
+    {
+        ArrayPool<byte>.Shared.Return(buffer); // back to pool — no GC needed
+    }
+}
+```
+
+---
+
+## How ArrayPool Works Internally
+
+`ArrayPool<T>.Shared` uses `TlsOverPerCoreLockedStacksArrayPool<T>` internally:
+
+```
+Thread-Local Storage (per thread):
+  ┌─────────────────────────────────────────┐
+  │ Thread-local slot: 1 array cached here  │
+  └─────────────────────────────────────────┘
+           ↓ overflow / miss
+Per-core Locked Stacks (per CPU core):
+  ┌──────────────────────────────────────┐
+  │ Size bucket 16B: [array, array, ...] │
+  │ Size bucket 32B: [array, array, ...] │
+  │ ...                                  │
+  │ Size bucket 1MB: [array, array, ...] │
+  └──────────────────────────────────────┘
+```
+
+Key behaviors:
+- Arrays are organized in **size buckets** (powers of 2: 16, 32, 64, 128, ..., 1,048,576)
+- `Rent(minimumLength)` returns an array of the **next power-of-2** size ≥ minimumLength
+- Each bucket holds up to **50 arrays per core** by default (configurable)
+- If no array is available, a new one is allocated from the heap
+
+```csharp
+// Rent always gives you AT LEAST minimumLength — usually more:
+byte[] buf = ArrayPool<byte>.Shared.Rent(100); // may return 128-byte array
+Console.WriteLine(buf.Length); // 128 (next power of 2 ≥ 100)
+
+// CRITICAL: always use your own length tracking, not buf.Length:
+int actualSize = 100;
+Process(buf.AsSpan(0, actualSize)); // use only the first 100 bytes
+```
+
+---
+
+## The Three Critical Rules
+
+```csharp
+// RULE 1: Always return to the pool — use try/finally:
+byte[] rented = ArrayPool<byte>.Shared.Rent(4096);
+try
+{
+    // ... use rented
+}
+finally
+{
+    ArrayPool<byte>.Shared.Return(rented); // ALWAYS return
+    // Forgetting this causes pool exhaustion: pools run dry, performance degrades
+}
+
+// RULE 2: Don't use the array after returning it:
+var buf = ArrayPool<byte>.Shared.Rent(1024);
+try { Fill(buf); }
+finally { ArrayPool<byte>.Shared.Return(buf); }
+// buf is now potentially being used by another thread
+Console.WriteLine(buf[0]); // RACE CONDITION — dangerous!
+
+// RULE 3: Treat rented arrays as uninitialized:
+byte[] rented2 = ArrayPool<byte>.Shared.Rent(512);
+// rented2 may contain data from a PREVIOUS rental by ANOTHER caller!
+// NEVER read without writing first:
+rented2[0] = 42;  // write first
+Console.WriteLine(rented2[0]); // then read
+
+// If you need clean data, either clear manually or pass clearArray: true to Return:
+ArrayPool<byte>.Shared.Return(rented2, clearArray: true);
+// clearArray: true zeros the array before returning — costs O(n) but safe
+```
+
+---
+
+## Creating a Custom ArrayPool
+
+For specialized scenarios (different retention policies, monitoring, diagnostic):
+
+```csharp
+// Custom pool with specific constraints:
+ArrayPool<byte> myPool = ArrayPool<byte>.Create(
+    maxArrayLength: 1024 * 1024,  // max 1MB arrays
+    maxArraysPerBucket: 10         // max 10 cached arrays per size bucket
+);
+
+// Custom pool doesn't share with ArrayPool<byte>.Shared
+// Useful for: isolating pools between subsystems, limiting memory usage,
+// instrumenting rental counts for metrics
+
+// Example: instrumented pool wrapper
+public class MeteredArrayPool<T>
+{
+    private readonly ArrayPool<T> _inner;
+    private long _rentCount;
+    private long _missCount;
+
+    public MeteredArrayPool() => _inner = ArrayPool<T>.Create();
+
+    public T[] Rent(int minimumLength)
+    {
+        Interlocked.Increment(ref _rentCount);
+        return _inner.Rent(minimumLength);
+    }
+
+    public void Return(T[] array, bool clearArray = false)
+    {
+        _inner.Return(array, clearArray);
+    }
+
+    public (long rents, long misses) GetStats() => (_rentCount, _missCount);
+}
+```
+
+---
+
+## ArrayPool vs stackalloc
+
+<ComparisonTable
+  headers={["Dimension", "ArrayPool<T>.Shared", "stackalloc + Span<T>"]}
+  rows={[
+    ["Memory location", "Heap (pooled, not collected frequently)", "Stack (automatically freed on return)"],
+    ["Max size", "Up to 1,048,576 elements by default", "~1MB total stack limit"],
+    ["Initialization", "Uninitialized (previous data)", "Zero-initialized (in safe context)"],
+    ["Async support", "Yes — works across await", "No — Span\<T\> cannot cross await"],
+    ["Cleanup required", "Must Return() to pool", "Automatic (method exit)"],
+    ["Best for", "Large buffers, async code, > 256 bytes", "Small buffers, sync code, < 256 bytes"],
+    ["Thread safety", "Yes — Shared pool is thread-safe", "N/A — stack is per-thread"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The async ArrayPool Pattern and IMemoryOwner**
+
+The raw Rent/Return pattern works but requires careful manual management. In async pipelines, `IMemoryOwner<T>` provides a cleaner abstraction:
+
+```csharp
+using System.Buffers;
+
+// IMemoryOwner<T>: owns a rented Memory<T>, disposes it back to pool
+public static IMemoryOwner<byte> RentMemory(int size)
+    => MemoryPool<byte>.Shared.Rent(size);
+
+// Usage: await using ensures Return even across async:
+public async Task ProcessAsync(Stream stream)
+{
+    using IMemoryOwner<byte> owner = MemoryPool<byte>.Shared.Rent(8192);
+    Memory<byte> buffer = owner.Memory;
+
+    int bytesRead = await stream.ReadAsync(buffer);
+    await ProcessDataAsync(buffer[..bytesRead]);
+} // owner.Dispose() returns memory to pool — no try/finally needed
+
+// Even better: ASP.NET Core's PipeReader handles all of this for you
+// in high-throughput scenarios. Consider System.IO.Pipelines before
+// rolling your own buffer management.
+
+// Real-world tip: measure before optimizing.
+// ArrayPool helps most when:
+// 1. Array size > 1KB (stackalloc territory ends here)
+// 2. Array lifetime > a few microseconds (short-lived arrays die in Gen 0 anyway)
+// 3. Allocation rate > ~1MB/s (lower rates have negligible GC impact)
+// Use BenchmarkDotNet with [MemoryDiagnoser] to confirm the win.
+```
 </Callout>
+
+---
+
+## CodeChallenge: Spotting the Pool Misuse
+
+<CodeChallenge
+  id="04-memory-gc/arraypool/challenge-1"
+  title="What's Wrong With This ArrayPool Usage?"
+  description="Find the bug in this ArrayPool usage that could cause subtle data corruption."
+  code={`public class RequestProcessor
+{
+    private readonly ArrayPool\<byte\> _pool = ArrayPool\<byte\>.Shared;
+
+    public async Task\<int\> ProcessAsync(Stream input)
+    {
+        byte[] buffer = _pool.Rent(4096);
+
+        try
+        {
+            int totalRead = 0;
+            int bytesRead;
+
+            while ((bytesRead = await input.ReadAsync(buffer)) > 0)
+            {
+                await SendToDownstreamAsync(buffer, bytesRead);
+                totalRead += bytesRead;
+            }
+
+            return totalRead;
+        }
+        finally
+        {
+            _pool.Return(buffer);
+        }
+    }
+
+    private async Task SendToDownstreamAsync(byte[] data, int length)
+    {
+        // Simulate async downstream processing
+        await Task.Delay(10);
+        // downstream uses data[0..length]
+    }
+}`}
+  options={[
+    "The buffer is not zero-initialized after renting, which may expose previous data to downstream",
+    "ReadAsync can be called concurrently and corrupt the buffer",
+    "SendToDownstreamAsync receives the shared buffer; if it awaits while the outer loop continues reading into the same buffer, the downstream sees overwritten data",
+    "The pool.Return() in finally may run before the last SendToDownstreamAsync completes"
+  ]}
+  correctAnswer={2}
+  explanation="The bug is that SendToDownstreamAsync receives a reference to the shared buffer and then awaits Task.Delay(10). During that 10ms delay, the outer while loop calls ReadAsync again, overwriting the buffer with NEW data. The downstream is now reading the new data instead of what was intended. The fix: either await SendToDownstreamAsync fully before the next ReadAsync (sequential), or copy the relevant bytes into a separate buffer (or Memory<byte> slice) before sending. This is a classic aliasing bug with shared mutable buffers."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ArrayPool\<T\> class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.arraypool-1" },
+    { label: "MemoryPool\<T\> class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.memorypool-1" },
+    { label: "IMemoryOwner\<T\>", url: "https://learn.microsoft.com/en-us/dotnet/api/system.buffers.imemoryowner-1" },
+    { label: "System.IO.Pipelines", url: "https://learn.microsoft.com/en-us/dotnet/standard/io/pipelines" },
+  ]}
+/>

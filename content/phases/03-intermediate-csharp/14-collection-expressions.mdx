@@ -3,22 +3,257 @@ title: "Collection Expressions (C# 12)"
 slug: "collection-expressions"
 order: 14
 difficulty: "foundation"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 11
+status: "published"
+tags: ["collection expressions", "C# 12", "spread operator", "target typing", "List", "array", "Span", "ImmutableArray"]
+summary: "Collection expressions (C# 12) unify array, list, and span creation with a single bracket syntax and a spread operator — eliminating boilerplate across all collection types."
+docsLinks:
+  - label: "Collection expressions (C# feature specification)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/collection-expressions"
+  - label: "What's new in C# 12"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-12"
+  - label: "CollectionBuilderAttribute"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.collectionbuilderattribute"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Are Collection Expressions?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+C# 12 introduces **collection expressions** — a unified `[...]` syntax for creating collections. Before C# 12, creating different collection types required different syntax:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Before C# 12 — different syntax for every type
+int[] array   = new int[] { 1, 2, 3 };
+int[] array2  = new[] { 1, 2, 3 };          // implicit type
+List<int> list = new List<int> { 1, 2, 3 };
+List<int> list2 = new() { 1, 2, 3 };         // target-typed new
+
+// C# 12 — one syntax for all
+int[]     array = [1, 2, 3];
+List<int> list  = [1, 2, 3];
+Span<int> span  = [1, 2, 3];
+ImmutableArray<int> immutable = [1, 2, 3];
+HashSet<int> set = [1, 2, 3];
+```
+
+The type is determined by the **target type** — what variable or parameter is expecting the collection. The compiler generates the most efficient code for each type.
+
+---
+
+## Basic Syntax
+
+```csharp
+// Empty collection
+int[] empty   = [];
+List<int> emptyList = [];
+
+// With elements
+string[] days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+
+// Works in method arguments (target type inferred from parameter)
+void PrintAll(IEnumerable<string> items)
+{
+    foreach (var item in items) Console.WriteLine(item);
+}
+
+PrintAll(["alpha", "beta", "gamma"]); // target type: IEnumerable<string>
+
+// Works in return statements
+IReadOnlyList<int> GetDefaults() => [0, 1, 2, 3, 4];
+
+// Works with complex element types
+List<(string Name, int Score)> leaderboard =
+[
+    ("Alice", 1500),
+    ("Bob", 1200),
+    ("Charlie", 900),
+];
+```
+
+---
+
+## The Spread Operator (`..`)
+
+The `..` spread operator (also used in list patterns and ranges) lets you inline another collection into a collection expression:
+
+```csharp
+int[] first  = [1, 2, 3];
+int[] second = [4, 5, 6];
+int[] extra  = [7, 8];
+
+// Spread — combine collections
+int[] combined = [..first, ..second];           // [1, 2, 3, 4, 5, 6]
+int[] extended = [0, ..first, ..second, ..extra]; // [0, 1, 2, 3, 4, 5, 6, 7, 8]
+
+// Spread works with any IEnumerable<T>
+IEnumerable<int> query = Enumerable.Range(10, 3); // 10, 11, 12
+int[] merged = [1, 2, ..query, 20];              // [1, 2, 10, 11, 12, 20]
+
+// Build configuration lists
+var defaultScopes = new[] { "openid", "profile" };
+string[] fullScopes = [..defaultScopes, "email", "offline_access"];
+// ["openid", "profile", "email", "offline_access"]
+
+// Useful for test data setup
+List<string> baseItems  = ["a", "b", "c"];
+List<string> testItems  = [..baseItems, "d", "e"];
+```
+
+---
+
+## Target Typing and Compiler Optimization
+
+The compiler generates different code depending on the target type:
+
+```csharp
+// Target: int[] — generates an array literal (stack-allocated if small + ReadOnlySpan)
+int[] arr = [1, 2, 3];
+
+// Target: List<T> — generates List<T> construction
+List<int> lst = [1, 2, 3];
+
+// Target: Span<T> — may use stack allocation (extremely efficient)
+Span<int> span = [1, 2, 3]; // compiler may stackalloc this
+
+// Target: ReadOnlySpan<T> — literal stored in PE image (zero allocation)
+ReadOnlySpan<byte> magic = [0x89, 0x50, 0x4E, 0x47]; // PNG header bytes
+// No heap allocation — compiler places data in static read-only memory
+
+// Target: ImmutableArray<T> — uses ImmutableCollectionsMarshal for efficiency
+ImmutableArray<string> names = ["Alice", "Bob", "Charlie"];
+```
+
+<Callout type="senior">
+**Senior Insight: ReadOnlySpan Collection Expressions Are Zero-Allocation**
+
+One of the most powerful optimizations: when you write `ReadOnlySpan<byte> bytes = [1, 2, 3]`, the compiler embeds the bytes directly into the PE file as static data. There is **no heap allocation**, no array creation — the span points directly into the program's image:
+
+```csharp
+// This is essentially free at runtime:
+ReadOnlySpan<byte> pngMagic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+static bool IsPng(ReadOnlySpan<byte> header)
+    => header.StartsWith([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+// The [0x89, ...] literal in the StartsWith call is also zero-allocation
+// This replaces the old pattern: private static readonly byte[] PngMagic = { ... }
+// which DID allocate a byte[] on the heap
+
+// Before C# 12 you'd write:
+// private static ReadOnlySpan<byte> PngMagic => new byte[] { 0x89, ... };
+// The new syntax is cleaner AND the compiler generates better code
+```
+
+This pattern matters for hot paths: protocol parsing, file format detection, binary serialization.
 </Callout>
+
+---
+
+<CodePlayground
+  id="03-intermediate-csharp/collection-expressions/playground-1"
+  title="Spread Operator in Practice"
+  code={`using System;
+using System.Collections.Generic;
+using System.Linq;
+
+// Build a complete request pipeline from composable steps
+string[] authSteps    = ["validate-token", "check-permissions"];
+string[] loggingSteps = ["log-request", "log-response"];
+string[] bizSteps     = ["validate-input", "process", "format-output"];
+
+// Compose pipeline with spread
+string[] pipeline = [..authSteps, ..bizSteps, ..loggingSteps];
+
+Console.WriteLine("Pipeline:");
+foreach (var step in pipeline)
+    Console.WriteLine(\$"  - {step}");
+
+// Conditional spread (use empty collection for no-op)
+bool enableAudit = true;
+string[] auditSteps = enableAudit ? ["audit-log"] : [];
+string[] fullPipeline = [..pipeline, ..auditSteps];
+
+Console.WriteLine(\$"\nTotal steps: {fullPipeline.Length}");`}
+/>
+
+---
+
+<ComparisonTable
+  headers={["Scenario", "Before C# 12", "C# 12+"]}
+  rows={[
+    ["Empty array", "Array.Empty\<T\>() or new T[0]", "[]"],
+    ["Array literal", "new[] { 1, 2, 3 }", "[1, 2, 3]"],
+    ["List literal", "new List\<T\> { 1, 2, 3 }", "[1, 2, 3]"],
+    ["Concat arrays", "a.Concat(b).ToArray()", "[..a, ..b]"],
+    ["Prepend element", "new[] { x }.Concat(rest).ToArray()", "[x, ..rest]"],
+    ["ReadOnlySpan static", "private static readonly byte[]", "ReadOnlySpan\<byte\> = [..]"],
+    ["ImmutableArray", "ImmutableArray.Create(1, 2, 3)", "[1, 2, 3]"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="03-intermediate-csharp/collection-expressions/challenge-1"
+  title="Target Type Determines the Collection"
+  description="What type does the compiler produce for `var x = [1, 2, 3]` (no explicit target type)?"
+  code={`// No explicit target type annotation
+var x = [1, 2, 3];
+Console.WriteLine(x.GetType().Name);`}
+  options={[
+    "Int32[] — defaults to array",
+    "List<Int32> — defaults to List<T>",
+    "Compile error — collection expressions require an explicit target type",
+    "ImmutableArray<Int32> — defaults to immutable"
+  ]}
+  correctAnswer={2}
+  explanation="Collection expressions REQUIRE a target type — they cannot be used with var because there is no single default collection type the compiler would choose. The type is determined entirely by what the expression is assigned to or passed to. This is by design: `var x = [1, 2, 3]` is a compile error in C# 12. You must write `int[] x = [1, 2, 3]` or `List<int> x = [1, 2, 3]` etc. This is different from anonymous type inference (`var x = new { ... }`) which does work without an explicit type."
+/>
+
+---
+
+## Extending Collection Expressions to Custom Types
+
+Any type can support collection expressions by applying `[CollectionBuilder]`:
+
+```csharp
+using System.Runtime.CompilerServices;
+
+// Custom immutable collection
+[CollectionBuilder(typeof(MyCollectionBuilder), nameof(MyCollectionBuilder.Create))]
+public sealed class MyCollection<T> : IEnumerable<T>
+{
+    private readonly T[] _items;
+    public MyCollection(T[] items) => _items = items;
+    public IEnumerator<T> GetEnumerator() => ((IEnumerable<T>)_items).GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+        => _items.GetEnumerator();
+}
+
+public static class MyCollectionBuilder
+{
+    public static MyCollection<T> Create<T>(ReadOnlySpan<T> items)
+        => new MyCollection<T>(items.ToArray());
+}
+
+// Now collection expression syntax works for MyCollection<T>
+MyCollection<int> col = [1, 2, 3, 4, 5];
+```
+
+---
+
+<MythBuster
+  myth="Collection expressions are just syntactic sugar for new[] { ... } and always produce arrays."
+  reality="Collection expressions are target-typed — the actual type produced depends entirely on the declared type of the variable or the parameter type being passed to. [1, 2, 3] produces an int[] when assigned to int[], a List<int> when assigned to List<int>, a Span<int> when assigned to Span<int>, and so on. The compiler generates optimal code for each target type — including zero-allocation static data for ReadOnlySpan<byte> literals. They are NOT always arrays."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Collection expressions (C# 12)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/collection-expressions" },
+    { label: "What's new in C# 12", url: "https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/csharp-12" },
+    { label: "CollectionBuilderAttribute", url: "https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.collectionbuilderattribute" },
+  ]}
+/>

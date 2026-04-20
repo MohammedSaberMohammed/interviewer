@@ -1,24 +1,267 @@
 ---
-title: "Task.Run Misuse"
+title: "Task.Run Misuse: When to Use It, When Not To"
 slug: "task-run-misuse"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["Task.Run", "async", "ThreadPool", "CPU-bound", "I/O-bound", "performance", "ASP.NET"]
+summary: "Task.Run is for CPU-bound work on the ThreadPool — wrapping async I/O methods in Task.Run is redundant overhead and a common misunderstanding."
+docsLinks:
+  - label: "Task.Run method"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.run"
+  - label: "Should I expose async wrappers for sync methods?"
+    url: "https://devblogs.microsoft.com/pfxteam/should-i-expose-asynchronous-wrappers-for-synchronous-methods/"
+  - label: "Async guidance"
+    url: "https://github.com/davidfowl/AspNetCoreDiagnosticScenarios/blob/master/AsyncGuidance.md"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Core Distinction: CPU-bound vs I/O-bound
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`Task.Run` queues work on the **ThreadPool**. Understanding when this is appropriate starts with the distinction:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **I/O-bound work** (network, disk, database): naturally async — the OS handles the wait, no thread is consumed during the I/O. Use `async`/`await` directly.
+- **CPU-bound work** (calculations, encryption, image processing): consumes CPU cycles. Needs a thread. Use `Task.Run` to offload from a UI or request thread.
+
+```csharp
+// I/O-BOUND — async natively, no Task.Run needed
+public async Task<string> FetchDataAsync(string url)
+{
+    // HttpClient.GetStringAsync uses async I/O internally — no thread consumed during wait
+    return await _httpClient.GetStringAsync(url);
+}
+
+// CPU-BOUND — use Task.Run to offload from caller's thread
+public async Task<byte[]> EncryptFileAsync(byte[] data, byte[] key)
+{
+    // AES encryption is pure CPU work — wrap it so the UI thread is free
+    return await Task.Run(() => AesEncrypt(data, key));
+}
+```
+
+---
+
+## The Most Common Misuse: Wrapping Async in Task.Run
+
+```csharp
+// WRONG: wrapping an already-async method in Task.Run
+public async Task<string> GetUserWrong(int id)
+{
+    // This is completely redundant:
+    // 1. Task.Run queues a ThreadPool thread
+    // 2. That thread calls GetUserFromDbAsync, which is already async
+    // 3. The ThreadPool thread immediately suspends at the first await inside
+    // 4. You've paid for a thread context switch and gained nothing
+    return await Task.Run(() => GetUserFromDbAsync(id));
+}
+
+// CORRECT: just await the async method directly
+public async Task<string> GetUserCorrect(int id)
+{
+    return await GetUserFromDbAsync(id);
+}
+```
+
+The wrapped version wastes a ThreadPool thread for the time it takes to reach the first `await` inside `GetUserFromDbAsync`, then that thread is released anyway. You've added latency and thread pressure for nothing.
+
+---
+
+## Task.Run in ASP.NET: Almost Always Wrong
+
+In ASP.NET (both Framework and Core), `Task.Run` is almost never the right choice:
+
+```csharp
+// WRONG: ASP.NET Core controller using Task.Run for I/O
+[HttpGet("{id}")]
+public async Task<IActionResult> GetProduct(int id)
+{
+    // Doubles thread usage: request thread + new ThreadPool thread
+    // No benefit — both threads spend time waiting on DB I/O
+    var product = await Task.Run(() => _db.Products.FindAsync(id));
+    return Ok(product);
+}
+
+// CORRECT: simply await the async EF Core method
+[HttpGet("{id}")]
+public async Task<IActionResult> GetProduct(int id)
+{
+    var product = await _db.Products.FindAsync(id);
+    return Ok(product);
+}
+```
+
+ASP.NET Core serves requests on ThreadPool threads. Using `Task.Run` inside a request doesn't help — it just borrows another thread from the same pool while the original thread awaits it, then returns it. Under load, this pattern halves your effective concurrency.
+
+---
+
+## When Task.Run IS Correct
+
+```csharp
+// 1. Offloading CPU-bound work from a UI thread (WinForms/WPF)
+private async void btnProcess_Click(object sender, EventArgs e)
+{
+    progressBar.Value = 0;
+    labelStatus.Text = "Processing...";
+
+    // CPU-bound: runs on ThreadPool, UI thread stays responsive
+    var result = await Task.Run(() => HeavyImageProcessing(_currentImage));
+
+    pictureBox.Image = result;
+    labelStatus.Text = "Done!";
+}
+
+// 2. Parallelizing truly CPU-bound independent computations
+public async Task<int[]> ProcessBatchAsync(int[] items)
+{
+    var tasks = items.Select(item =>
+        Task.Run(() => ExpensiveCompute(item))
+    ).ToArray();
+
+    return await Task.WhenAll(tasks);
+}
+
+// 3. Wrapping a synchronous legacy API you cannot change
+// (but only when CPU work justifies the thread cost)
+public Task<ParsedData> ParseLegacyFormatAsync(byte[] raw)
+{
+    // LegacyParser.Parse is synchronous, expensive, and can't be made async
+    return Task.Run(() => LegacyParser.Parse(raw));
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: The "fake async" library anti-pattern**
+
+A common mistake in library design is exposing "async" methods that are actually `Task.Run` wrappers over synchronous code — a pattern Stephen Cleary calls "fake async":
+
+```csharp
+// BAD: Library with fake async — do NOT do this
+public class BadFileParser
+{
+    // This is NOT truly async — it's synchronous work pushed to the ThreadPool
+    // Callers get a false impression of async I/O behavior
+    public Task<ParsedData> ParseAsync(string filePath)
+        => Task.Run(() => ParseSync(filePath));
+}
+```
+
+Why is this bad?
+- It misleads callers about the nature of the operation (CPU vs I/O)
+- It adds thread overhead that the caller should control
+- In ASP.NET Core, the caller could call it on 10 concurrent requests and saturate the ThreadPool
+- The caller might also wrap it in `Task.Run` themselves — double wrapping
+
+**Correct library design**: expose both sync and async versions if you have a truly synchronous implementation. Let callers decide whether to use `Task.Run`:
+
+```csharp
+// GOOD: give callers the choice
+public class GoodFileParser
+{
+    // Synchronous — callers can Task.Run if they need to
+    public ParsedData Parse(string filePath) { ... }
+
+    // Truly async — uses async I/O
+    public async Task<ParsedData> ParseAsync(string filePath)
+    {
+        await using var stream = File.OpenRead(filePath);
+        return await ParseStreamAsync(stream);
+    }
+}
+```
 </Callout>
+
+---
+
+## Task.Run and Exception Handling
+
+```csharp
+// Task.Run captures exceptions in the returned Task
+// They surface when you await
+try
+{
+    await Task.Run(() =>
+    {
+        if (someCondition)
+            throw new InvalidOperationException("Bad state");
+        return ComputeResult();
+    });
+}
+catch (InvalidOperationException ex)
+{
+    // Caught correctly — Task.Run doesn't wrap in AggregateException when awaited
+    Console.WriteLine(ex.Message);
+}
+
+// Without await, exceptions are unobserved:
+var t = Task.Run(() => throw new Exception("Swallowed?"));
+// If t is never awaited and gets GC'd, TaskScheduler.UnobservedTaskException fires
+// (or the exception is swallowed silently in .NET 4.5+)
+```
+
+---
+
+<MythBuster
+  myth="Task.Run makes async code run in parallel"
+  reality="Task.Run moves work to a ThreadPool thread. If you await the result immediately, there's no parallelism — you've just context-switched to another thread and back. True parallelism requires creating multiple tasks and awaiting them together with Task.WhenAll, without awaiting each one as it's created."
+/>
+
+---
+
+<CodeChallenge
+  id="05-async-concurrency/task-run-misuse/challenge-1"
+  title="CPU-bound or I/O-bound?"
+  description="Which of these methods genuinely benefits from Task.Run?"
+  code={`// Method A
+public async Task\<string\> MethodA()
+    => await Task.Run(() => _httpClient.GetStringAsync("https://api.example.com/data"));
+
+// Method B
+public async Task<byte[]> MethodB(byte[] imageData)
+    => await Task.Run(() => ResizeImage(imageData, 800, 600)); // ResizeImage is pure CPU
+
+// Method C
+public async Task<List\<Order\>> MethodC(int userId)
+    => await Task.Run(() => _dbContext.Orders.Where(o => o.UserId == userId).ToListAsync());
+
+// Method D
+public async Task\<string\> MethodD(string text)
+    => await Task.Run(() => ComputeSha256Hash(text)); // SHA256 is pure CPU`}
+  options={[
+    "Method A and C — HTTP and database operations benefit from Task.Run",
+    "Method B and D — pure CPU work benefits from Task.Run to free the calling thread",
+    "All four — Task.Run always improves async performance",
+    "None — Task.Run should never be used in async methods"
+  ]}
+  correctAnswer={1}
+  explanation="Method B (image resize) and Method D (SHA256 hash) are CPU-bound operations that genuinely benefit from Task.Run — it moves expensive CPU work off the calling thread (e.g., UI thread) to a ThreadPool thread. Method A wraps an already-async HttpClient call — redundant and wasteful. Method C wraps ToListAsync() (which is already async EF Core) in Task.Run — doubly wrong: it's async I/O, and wrapping it adds thread overhead."
+/>
+
+---
+
+<Quiz
+  id="05-async-concurrency/task-run-misuse/quiz-1"
+  question="Why is wrapping an async method in Task.Run redundant?"
+  options={[
+    "Because Task.Run and async methods use the same thread pool",
+    "Because the ThreadPool thread used by Task.Run will immediately suspend at the first await inside the wrapped method, providing no benefit over calling it directly",
+    "Because Task.Run only works with synchronous lambdas",
+    "Because async methods already run in parallel internally"
+  ]}
+  correctAnswer={1}
+  explanation="When Task.Run(async () => await SomeAsyncMethod()) executes, it claims a ThreadPool thread, starts SomeAsyncMethod, then immediately suspends at the first await inside it. That ThreadPool thread is released anyway — it suspends just like it would if you called SomeAsyncMethod() directly. You've paid for a ThreadPool enqueue, a thread context switch, and gained absolutely nothing. Call the async method directly with await."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Task.Run method", url: "https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.run" },
+    { label: "Should I expose async wrappers for synchronous methods?", url: "https://devblogs.microsoft.com/pfxteam/should-i-expose-asynchronous-wrappers-for-synchronous-methods/" },
+    { label: "ASP.NET Core async guidance (David Fowler)", url: "https://github.com/davidfowl/AspNetCoreDiagnosticScenarios/blob/master/AsyncGuidance.md" },
+    { label: "Parallel programming patterns", url: "https://learn.microsoft.com/en-us/dotnet/standard/parallel-programming/" },
+  ]}
+/>

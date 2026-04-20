@@ -1,24 +1,239 @@
 ---
-title: "Captive Dependency Problem"
+title: "Captive Dependency: Singleton Consuming Scoped"
 slug: "captive-dependency"
 order: 6
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["captive dependency", "DI", "Singleton", "Scoped", "dependency injection", "asp.net core", "bugs"]
+summary: "A captive dependency is when a longer-lived service holds a reference to a shorter-lived one — the scoped service gets 'captured' and behaves like a singleton, causing stale data and concurrency bugs."
+docsLinks:
+  - label: "Dependency injection guidelines — captive dependencies"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines#captive-dependency"
+  - label: "Detect transient disposables in DI"
+    url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines#disposable-transient-services-captured-by-container"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Captive Dependency?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A **captive dependency** occurs when a service with a **longer lifetime** holds a direct reference to a service with a **shorter lifetime**. The shorter-lived service gets "captured" — it lives as long as its consumer, which is longer than intended.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+The most common case: a **Singleton** service constructor-injects a **Scoped** service.
+
+```
+Lifetime hierarchy (longest to shortest):
+  Singleton > Scoped > Transient
+```
+
+Any service can safely depend on services with an **equal or longer** lifetime. Depending on a **shorter** lifetime creates a captive dependency.
+
+---
+
+## The Bug in Action
+
+```csharp
+// Scoped service — intended to live for one request only
+public class AppDbContext : DbContext
+{
+    // Tracks entities for THIS request
+    // Expects to be disposed at the end of each request
+}
+
+// Singleton service — lives for the app lifetime
+public class ProductCatalogService : IProductCatalogService
+{
+    private readonly AppDbContext _db; // CAPTIVE DEPENDENCY!
+
+    public ProductCatalogService(AppDbContext db)
+    {
+        _db = db; // This DbContext was resolved from the root scope
+                  // It will NEVER be disposed until app shutdown
+                  // All requests share the same DbContext instance
+    }
+
+    public async Task<List<Product>> GetProductsAsync()
+    {
+        // This DbContext accumulates tracked entities forever
+        // Multiple concurrent requests race on a single non-thread-safe DbContext
+        return await _db.Products.ToListAsync();
+    }
+}
+```
+
+**Registration:**
+```csharp
+builder.Services.AddScoped<AppDbContext>();           // Scoped — correct
+builder.Services.AddSingleton<IProductCatalogService, ProductCatalogService>(); // Bug!
+```
+
+**What goes wrong:**
+1. `ProductCatalogService` is singleton — created once at first resolve
+2. Its `AppDbContext` is resolved from the **root scope** (not a request scope)
+3. The `DbContext` never gets disposed — it accumulates tracked entities across all requests
+4. Multiple concurrent requests access the same `DbContext` instance — `DbContext` is not thread-safe
+5. You get stale data, `ObjectDisposedException`, or corrupted tracked entity state
+
+---
+
+## Detecting Captive Dependencies
+
+**Method 1: ValidateScopes at startup (Development)**
+
+```csharp
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    // Throws InvalidOperationException at startup if captive dependency found
+    options.ValidateScopes = true;
+    options.ValidateOnBuild = true; // Also validate all registrations are resolvable
+});
+```
+
+When `ValidateScopes` is true, the DI container throws at startup (or first resolve) when a singleton tries to consume a scoped service. This is enabled by default in the `Development` environment via `WebApplication.CreateBuilder`.
+
+**Method 2: dotnet-diag or Roslyn analyzers**
+
+```bash
+# Install the DI diagnostics analyzer
+dotnet add package Microsoft.Extensions.DependencyInjection.Analyzers
+```
+
+The analyzer reports `MSEXT001: Singleton consuming scoped service` at compile time.
+
+---
+
+## The Solutions
+
+### Solution 1: Match Lifetimes (Simplest)
+
+If the dependency doesn't need to be scoped, register it as singleton:
+
+```csharp
+// If the service is stateless and thread-safe, make it singleton
+builder.Services.AddSingleton<IProductCatalogService, ProductCatalogService>();
+builder.Services.AddSingleton<IReadOnlyProductRepository, CachedProductRepository>(); // OK
+```
+
+### Solution 2: Inject IServiceScopeFactory (Correct for Background Work)
+
+```csharp
+public class ProductCatalogService : IProductCatalogService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+
+    public ProductCatalogService(IServiceScopeFactory scopeFactory)
+        => _scopeFactory = scopeFactory; // IServiceScopeFactory is always singleton-safe
+
+    public async Task<List<Product>> GetProductsAsync()
+    {
+        // Create a fresh scope — gets a fresh DbContext for this operation
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Products.AsNoTracking().ToListAsync();
+    } // Scope disposed here — DbContext returned to pool
+}
+```
+
+### Solution 3: Inject IServiceProvider (Use with Caution)
+
+```csharp
+public class ProductCatalogService : IProductCatalogService
+{
+    private readonly IServiceProvider _serviceProvider;
+
+    public ProductCatalogService(IServiceProvider sp) => _serviceProvider = sp;
+
+    public async Task<List<Product>> GetProductsAsync()
+    {
+        // Must create scope explicitly — DO NOT call _serviceProvider.GetService() directly
+        // Resolving scoped service from root provider is still a captive dependency!
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Products.AsNoTracking().ToListAsync();
+    }
+}
+```
+
+<Callout type="trap">
+**Trap: Resolving Scoped from Root Provider**
+
+`IServiceProvider` is itself singleton — it's the root container. Calling `_serviceProvider.GetRequiredService<AppDbContext>()` directly (without creating a scope) resolves from the **root scope**, which is exactly the captive dependency problem all over again.
+
+Always use `_serviceProvider.CreateScope()` to get a child scope before resolving scoped services.
 </Callout>
+
+---
+
+## The Full Captive Dependency Matrix
+
+<ComparisonTable
+  headers={["Consumer Lifetime", "Dependency Lifetime", "Safe?", "Problem"]}
+  rows={[
+    ["Singleton", "Singleton", "Yes", "None"],
+    ["Singleton", "Scoped", "No", "Captive dependency — scoped lives as long as singleton"],
+    ["Singleton", "Transient", "Conditional", "Transient captured — lives as long as singleton; may be a bug if stateful"],
+    ["Scoped", "Singleton", "Yes", "None — shorter can consume longer"],
+    ["Scoped", "Scoped", "Yes", "None — same lifetime"],
+    ["Scoped", "Transient", "Yes", "Transient disposed with scope — usually correct"],
+    ["Transient", "Singleton", "Yes", "None"],
+    ["Transient", "Scoped", "Yes", "Transient gets the scoped instance — usually correct"],
+    ["Transient", "Transient", "Yes", "None — each gets its own"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Transient Disposables Are Also Captured**
+
+A less-discussed variant: a **Singleton** consuming a **Transient** where the transient is `IDisposable`. The DI container tracks disposable transients so it can dispose them when the scope ends. When resolved from the root scope (i.e., inside a singleton), these disposable transients are tracked by the root scope — which only ends at app shutdown.
+
+This leads to a slow memory leak: every request that resolves the singleton causes a new disposable transient to be created and retained until app shutdown.
+
+```csharp
+// IDisposable transient held by singleton scope forever
+public class ReportGenerator : IDisposable
+{
+    private readonly Stream _buffer = new MemoryStream(); // Never released!
+    public void Dispose() => _buffer.Dispose();
+}
+
+builder.Services.AddTransient<ReportGenerator>(); // Disposable transient
+builder.Services.AddSingleton<ReportOrchestrator>(); // Consumes ReportGenerator — leak!
+```
+
+Detection: `ValidateScopes = true` in development catches this. In production, look for steadily growing memory under dotnet-counters `GC Heap Size`.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/captive-dependency/quiz-1"
+  question="A Singleton service injects IServiceScopeFactory and creates a new scope on each method call. Is this safe to use with Scoped services?"
+  options={[
+    "No — IServiceScopeFactory is still a Singleton and cannot access Scoped services",
+    "Yes — CreateScope() creates a child scope that resolves Scoped services fresh each time",
+    "Only if you call scope.Dispose() manually",
+    "Only if the Scoped service is also IDisposable"
+  ]}
+  correctAnswer={1}
+  explanation="IServiceScopeFactory.CreateScope() creates a new DI scope independent of the request scope. Scoped services resolved from this child scope get a fresh instance tied to that scope's lifetime. As long as you dispose the scope (via using), this is the correct pattern for singletons that need to consume scoped services."
+/>
+
+---
+
+<MythBuster
+  myth="AddSingleton is always safe because there is only one instance and no DI conflicts"
+  truth="Singleton is only safe when all its dependencies are also singletons (or at least singleton-safe). Injecting a Scoped service into a Singleton creates a captive dependency — the scoped service gets stuck at singleton lifetime, causing stale data, thread-safety violations, and DbContext corruption in EF Core."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "DI guidelines: captive dependencies", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines#captive-dependency" },
+    { label: "Scope validation", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection#scope-validation" },
+    { label: "Disposable transient services", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines#disposable-transient-services-captured-by-container" },
+  ]}
+/>

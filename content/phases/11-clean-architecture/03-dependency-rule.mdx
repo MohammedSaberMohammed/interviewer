@@ -1,24 +1,276 @@
 ---
-title: "The Dependency Rule"
+title: "The Dependency Rule: Why Inner Layers Stay Pure"
 slug: "dependency-rule"
 order: 3
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["dependency rule", "clean architecture", "dependency inversion", "SOLID", "inversion of control", "interfaces"]
+summary: "The Dependency Rule — inner layers cannot reference outer layers — is enforced through interfaces and DI, not willpower. Learn how to implement and verify it."
+docsLinks:
+  - label: "Dependency injection in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection"
+  - label: "Dependency inversion principle (.NET Architecture)"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles#dependency-inversion"
+  - label: "Architect modern web applications with ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Rule, Stated Precisely
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+> **Source code dependencies must point inward.** An inner-layer class may not name — in any way — an outer-layer class: not via inheritance, not via a field type, not via a method parameter, not via a using directive.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+This is stricter than "we try to keep things separate." It is enforced structurally: if you set up project references correctly, the compiler enforces the rule for you. An Application project that has no reference to the Infrastructure project literally cannot import `EfOrderRepository` — the compiler will refuse.
+
+---
+
+## The Problem Without the Rule
+
+```csharp
+// BAD: Domain entity directly uses EF Core
+using Microsoft.EntityFrameworkCore; // Domain now depends on Infrastructure!
+
+public class Order
+{
+    [Key]                        // EF attribute in domain entity
+    public Guid Id { get; set; }
+
+    [Required]
+    public string Status { get; set; } = "Draft";
+
+    // Direct DB call from domain — the worst violation
+    public async Task SaveAsync(DbContext db)
+    {
+        db.Set<Order>().Update(this);
+        await db.SaveChangesAsync();
+    }
+}
+```
+
+Problems with this code:
+1. You cannot test `Order` without spinning up EF Core
+2. Swapping from EF to Dapper requires touching domain entities
+3. EF Core attributes bleed domain model knowledge into persistence concerns
+4. The domain entity knows it lives in a database — a leaked infrastructure detail
+
+---
+
+## How the Rule Is Enforced: Interfaces
+
+The mechanism is **Dependency Inversion** (the D in SOLID). Instead of the Application referencing a concrete class in Infrastructure, it defines an interface and Infrastructure implements it:
+
+```csharp
+// Application/Interfaces/IOrderRepository.cs
+// Defined in Application, owned by Application
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetByCustomerIdAsync(CustomerId customerId, CancellationToken ct = default);
+    Task AddAsync(Order order, CancellationToken ct = default);
+    void Remove(Order order);
+}
+
+// Infrastructure/Persistence/Repositories/EfOrderRepository.cs
+// Implements the Application-owned interface.
+// Infrastructure knows Application; Application does NOT know Infrastructure.
+using Microsoft.EntityFrameworkCore; // EF only in Infrastructure
+
+public class EfOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+    public EfOrderRepository(AppDbContext db) => _db = db;
+
+    public async Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default)
+        => await _db.Orders.Include(o => o.Lines).FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public async Task<IReadOnlyList<Order>> GetByCustomerIdAsync(CustomerId customerId, CancellationToken ct = default)
+        => await _db.Orders.Where(o => o.CustomerId == customerId).ToListAsync(ct);
+
+    public async Task AddAsync(Order order, CancellationToken ct = default)
+        => await _db.Orders.AddAsync(order, ct);
+
+    public void Remove(Order order)
+        => _db.Orders.Remove(order);
+}
+```
+
+The DI container wires them at runtime:
+
+```csharp
+// Program.cs / Infrastructure registration
+builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+```
+
+At compile time, Application only sees `IOrderRepository`. At runtime, it gets `EfOrderRepository`. The dependency flows: Infrastructure → Application (implements its interface), never the reverse.
+
+---
+
+## Project References That Enforce the Rule
+
+Set up `.csproj` references so the compiler enforces the dependency rule:
+
+```xml
+<!-- MyApp.Domain.csproj — no references! -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+  </PropertyGroup>
+  <!-- No ProjectReferences — Domain knows nothing -->
+</Project>
+
+<!-- MyApp.Application.csproj — references Domain only -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MediatR" Version="12.*" />
+    <PackageReference Include="FluentValidation" Version="11.*" />
+    <ProjectReference Include="..\MyApp.Domain\MyApp.Domain.csproj" />
+    <!-- NO reference to Infrastructure — enforced by compiler -->
+  </ItemGroup>
+</Project>
+
+<!-- MyApp.Infrastructure.csproj — references Application + Domain -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.*" />
+    <ProjectReference Include="..\MyApp.Application\MyApp.Application.csproj" />
+    <!-- Application includes Domain transitively -->
+  </ItemGroup>
+</Project>
+
+<!-- MyApp.WebApi.csproj — references Application + Infrastructure (for DI wiring) -->
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\MyApp.Application\MyApp.Application.csproj" />
+    <ProjectReference Include="..\MyApp.Infrastructure\MyApp.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+---
+
+## Verifying with Architecture Tests
+
+Don't rely on code review alone. Use **NetArchTest** to write automated tests that fail the build if someone violates the rule:
+
+```csharp
+// Tests/Architecture/DependencyRuleTests.cs
+using NetArchTest.Rules;
+
+public class DependencyRuleTests
+{
+    private const string DomainNs = "MyApp.Domain";
+    private const string ApplicationNs = "MyApp.Application";
+    private const string InfrastructureNs = "MyApp.Infrastructure";
+
+    [Fact]
+    public void Domain_Should_Not_Reference_Application()
+    {
+        var result = Types.InAssembly(typeof(Order).Assembly)
+            .ShouldNot()
+            .HaveDependencyOn(ApplicationNs)
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: "Domain must not reference Application layer");
+    }
+
+    [Fact]
+    public void Domain_Should_Not_Reference_Infrastructure()
+    {
+        var result = Types.InAssembly(typeof(Order).Assembly)
+            .ShouldNot()
+            .HaveDependencyOnAny(InfrastructureNs, "Microsoft.EntityFrameworkCore")
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: "Domain must have zero infrastructure dependencies");
+    }
+
+    [Fact]
+    public void Application_Should_Not_Reference_Infrastructure()
+    {
+        var result = Types.InAssembly(typeof(ConfirmOrderHandler).Assembly)
+            .ShouldNot()
+            .HaveDependencyOn(InfrastructureNs)
+            .GetResult();
+
+        result.IsSuccessful.Should().BeTrue(
+            because: "Application must not know about Infrastructure implementations");
+    }
+}
+```
+
+These tests run in CI and catch violations the moment they're introduced — not in a PR review weeks later.
+
+---
+
+<Callout type="senior">
+**The Rule Is About Coupling to Change, Not Purity for Its Own Sake**
+
+Teams sometimes ask: "why can't Application reference Infrastructure? We never swap databases anyway." The answer isn't religious purity — it's change blast radius.
+
+When EF Core releases a breaking migration API change (it has, multiple times), which layer needs to change? If Application depends on Infrastructure, Application must change too. If Application only depends on its own interfaces, only Infrastructure changes. The Application layer's tests continue to compile and pass.
+
+The same argument applies to testing. The moment Application knows about `DbContext`, you need an in-memory database or real SQL Server to test a handler. Interface-based design buys you a fast test suite that runs in milliseconds — which is the real business value.
+
+In practice, the constraint also prevents a specific class of spaghetti: developers adding `new EfOrderRepository(...)` directly inside a handler because it was faster to write. With correct project references, it simply will not compile.
 </Callout>
+
+---
+
+## CodeChallenge
+
+<CodeChallenge
+  id="11-clean-architecture/dependency-rule/challenge-1"
+  title="Spot the Dependency Rule Violation"
+  description="Which lines in this Application layer handler violate the Dependency Rule?"
+  code={`// Application/Orders/Commands/PlaceOrderHandler.cs
+using Microsoft.EntityFrameworkCore;          // line A
+using MyApp.Domain.Entities;
+using MyApp.Infrastructure.Persistence;      // line B
+using MyApp.Application.Interfaces;
+
+public class PlaceOrderHandler : IRequestHandler\<PlaceOrderCommand, Guid\>
+{
+    private readonly AppDbContext _db;         // line C
+    private readonly IOrderRepository _repo;
+
+    public PlaceOrderHandler(AppDbContext db, IOrderRepository repo)
+    {
+        _db = db;
+        _repo = repo;
+    }
+
+    public async Task\<Guid\> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        var order = Order.Create(new CustomerId(cmd.CustomerId));
+        await _repo.AddAsync(order, ct);
+        await _db.SaveChangesAsync(ct);        // line D
+        return order.Id.Value;
+    }
+}`}
+  options={[
+    "Only line A — using EF Core namespace in Application",
+    "Lines A, B, C, and D — EF Core and Infrastructure references all violate the rule",
+    "Only line D — calling SaveChangesAsync bypasses the UnitOfWork abstraction",
+    "No violations — handlers are allowed to reference the database directly"
+  ]}
+  correctAnswer={1}
+  explanation="Lines A, B, C, and D all violate the rule. Line B imports the Infrastructure namespace directly into Application. Lines A and C bring in EF Core (an infrastructure framework). Line D calls EF Core directly. The fix: remove AppDbContext from the handler entirely, inject IUnitOfWork (an Application interface), and call unitOfWork.SaveChangesAsync(). The Infrastructure implementation of IUnitOfWork wraps DbContext.SaveChangesAsync()."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Dependency injection in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/dependency-injection" },
+    { label: "Dependency inversion principle (.NET Architecture)", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/architectural-principles#dependency-inversion" },
+    { label: "NetArchTest — architecture unit testing", url: "https://github.com/BenMorris/NetArchTest" },
+    { label: "eShopOnWeb reference app", url: "https://github.com/dotnet-architecture/eShopOnWeb" },
+  ]}
+/>

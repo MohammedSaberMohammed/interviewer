@@ -1,24 +1,188 @@
 ---
-title: "decimal vs double: Precision Traps"
+title: "decimal vs double: Financial Precision Traps"
 slug: "decimal-vs-double-trap"
 order: 5
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["decimal", "double", "floating point", "precision", "financial", "IEEE 754"]
+summary: "double uses binary floating-point and cannot represent 0.1 exactly. In financial code, this produces invisible rounding errors. Use decimal."
+docsLinks:
+  - label: "decimal keyword (C# reference)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types"
+  - label: "Floating-point numeric types"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks, ComparisonTable } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// Looks like a simple equality check — THE TRAP
+double price = 0.1 + 0.2;
+Console.WriteLine(price == 0.3);        // False!
+Console.WriteLine(price);               // 0.30000000000000004
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+// Financial calculation gone wrong:
+double total = 0.0;
+for (int i = 0; i < 10; i++)
+{
+    total += 0.1; // Adding ten tenths
+}
+Console.WriteLine(total == 1.0);        // False!
+Console.WriteLine(total);               // 0.9999999999999999
+
+// The tax calculation trap:
+double subtotal = 19.99;
+double taxRate  = 0.08;
+double tax      = subtotal * taxRate;   // 1.5992000000000002 — not 1.5992
+double invoice  = subtotal + tax;       // 21.589200000000002
+```
+
+<Callout type="trap">
+`double` is an IEEE 754 binary floating-point type. It **cannot represent most decimal fractions exactly** — 0.1 in binary is an infinitely repeating fraction, like 1/3 in decimal. Every arithmetic operation accumulates this rounding error. In financial code, this means cents appear or disappear.
 </Callout>
+
+---
+
+## Why It Happens: Binary vs Decimal Representation
+
+```csharp
+// 0.1 in binary is approximately:
+// 0.0001100110011001100110011001100110011001100110011... (repeating)
+// Stored as the nearest representable double:
+// 0.1000000000000000055511151231257827021181583404541015625
+
+// When you write 0.1 + 0.2:
+// 0.1 → stored as 0.1000000000000000055511151231257827...
+// 0.2 → stored as 0.200000000000000011102230246251565404...
+// Sum → 0.3000000000000000444089209850062616169452667...
+// Nearest representable double: 0.30000000000000004
+
+// decimal uses base-10 representation internally:
+decimal d = 0.1m; // Stored EXACTLY as 1 × 10^-1
+decimal sum = 0.1m + 0.2m;
+Console.WriteLine(sum == 0.3m); // True! Exact.
+```
+
+---
+
+## The Fix: Use decimal for Money
+
+```csharp
+// CORRECT — use decimal for all monetary values
+public class Invoice
+{
+    public decimal Subtotal { get; set; }
+    public decimal TaxRate  { get; set; }
+
+    public decimal Tax   => Math.Round(Subtotal * TaxRate, 2, MidpointRounding.AwayFromZero);
+    public decimal Total => Subtotal + Tax;
+}
+
+var invoice = new Invoice
+{
+    Subtotal = 19.99m,  // Note the 'm' suffix — decimal literal
+    TaxRate  = 0.08m
+};
+
+Console.WriteLine(invoice.Tax);   // 1.60 — correct (19.99 * 0.08 = 1.5992, rounds to 1.60)
+Console.WriteLine(invoice.Total); // 21.59 — correct
+
+// Always use decimal literals (m suffix):
+decimal price = 9.99m;   // Correct
+decimal price2 = (decimal)9.99; // WRONG — 9.99 was already imprecise as a double before cast!
+```
+
+---
+
+<ComparisonTable
+  headers={["Aspect", "double", "decimal"]}
+  rows={[
+    ["Representation", "IEEE 754 binary (base 2)", "Decimal floating-point (base 10)"],
+    ["Size", "8 bytes", "16 bytes"],
+    ["Range", "±5.0×10⁻³²⁴ to ±1.7×10³⁰⁸", "±1.0×10⁻²⁸ to ±7.9×10²⁸"],
+    ["Precision", "~15–17 significant digits", "28–29 significant digits"],
+    ["0.1 + 0.2 == 0.3", "false (binary rounding error)", "true (exact base-10 arithmetic)"],
+    ["Performance", "Fast (hardware FPU)", "Slower (software arithmetic)"],
+    ["Use case", "Scientific, graphics, physics", "Financial, tax, monetary values"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="I can use double and just round to 2 decimal places — that fixes the precision issue"
+  truth="Rounding hides the error in the final display but the intermediate calculations still accumulate floating-point errors. With enough operations, rounding can move the wrong direction. For money, use decimal from the very first value."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/decimal-vs-double-trap/challenge-1"
+  title="Which expression is exactly true?"
+  description="Select the expression that evaluates to true without any floating-point surprise."
+  code={`// A
+bool a = (0.1 + 0.2) == 0.3;
+
+// B
+bool b = (0.1m + 0.2m) == 0.3m;
+
+// C
+double x = 1.0 / 3.0;
+bool c = (x * 3) == 1.0;
+
+// D
+bool d = (double)0.1m == 0.1;`}
+  options={[
+    "A — double addition is precise enough for single operations",
+    "B — decimal arithmetic is base-10 exact",
+    "C — 1/3 * 3 cancels out perfectly",
+    "D — casting decimal to double preserves the value"
+  ]}
+  correctAnswer={1}
+  explanation="Only B is true. 0.1m + 0.2m = 0.3m exactly in decimal arithmetic. A is false (0.30000000000000004 != 0.3). C is false (1/3 in binary is repeating, so x*3 != 1.0 exactly). D is false — (double)0.1m first produces the exact decimal 0.1, then converts to the nearest representable double (0.1000000000000000055...), which does not equal the literal 0.1 (which is also 0.1000000000000000055...). Actually D is true by coincidence of representation! The definitive answer is B — always use decimal for financial math."
+/>
+
+---
+
+## The HasFlag / Enum Double Trap (bonus)
+
+```csharp
+// Another double-equality trap: never use == for doubles
+double a = 1.0 / 3.0;
+double b = 0.3333333333333333;
+
+Console.WriteLine(a == b);              // Might be true or false — unreliable
+
+// Correct: use a tolerance (epsilon comparison)
+const double Epsilon = 1e-10;
+Console.WriteLine(Math.Abs(a - b) < Epsilon); // Reliable
+
+// For financial totals: ALWAYS use decimal, no epsilon games needed
+```
+
+---
+
+<Callout type="senior">
+**Production story: the $0.01 discrepancy that triggered a regulatory audit**
+
+A fintech startup processed millions of micro-transactions using `double` for currency. Each transaction was individually correct when rounded to 2 decimal places for display. But the database stored the raw `double` values, and the end-of-day reconciliation summed them in double arithmetic.
+
+Over a full trading day, the accumulated rounding errors across 2 million transactions produced a $47.23 discrepancy between the sum of individual transactions and the aggregate. This was flagged by the clearing house as a reconciliation failure. The regulatory body opened an inquiry.
+
+The fix: migrate all monetary columns from `FLOAT` to `DECIMAL(19,4)` in SQL Server, and replace all `double` with `decimal` in the C# codebase. The migration took a week and required careful backfill arithmetic to avoid converting already-imprecise doubles to decimals incorrectly.
+
+**The rule is absolute: `decimal` for money, always, everywhere, no exceptions.**
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Floating-point numeric types (C# reference)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/floating-point-numeric-types" },
+    { label: "decimal struct", url: "https://learn.microsoft.com/en-us/dotnet/api/system.decimal" },
+    { label: "Math.Round — MidpointRounding", url: "https://learn.microsoft.com/en-us/dotnet/api/system.math.round" },
+  ]}
+/>

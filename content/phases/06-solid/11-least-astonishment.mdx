@@ -3,22 +3,338 @@ title: "Principle of Least Astonishment"
 slug: "least-astonishment"
 order: 11
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["least astonishment", "API design", "naming conventions", "readability", "design principles", "C#"]
+summary: "A system should behave in a way that least surprises its users — learn how naming conventions, consistent API design, and predictable behavior make C# code a pleasure to work with rather than a minefield."
+docsLinks:
+  - label: "C# coding conventions"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/coding-style/coding-conventions"
+  - label: "Framework Design Guidelines — naming conventions"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/naming-guidelines"
+  - label: "Framework Design Guidelines — member design"
+    url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/member"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is the Principle of Least Astonishment?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+The **Principle of Least Astonishment** (POLA), also called the Principle of Least Surprise, states:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+> A component of a system should behave in a way that most users will expect it to behave. The behavior should not astonish or surprise users.
+
+It is fundamentally about **meeting expectations**. Developers bring mental models from their experience — from the BCL, from popular libraries, from common idioms. When your code violates those expectations, it creates bugs, debugging sessions, and distrust.
+
+POLA applies to:
+- Method and property naming
+- Return value conventions
+- Exception behavior
+- Side effects (or lack thereof)
+- API structure and patterns
+
+---
+
+## Surprising Names
+
+```csharp
+// BAD: Method names that lie about what they do
+
+public class UserRepository
+{
+    // Name implies "get" — but it also sends a welcome email?!
+    public User GetUser(int id)
+    {
+        var user = _db.Users.Find(id);
+        if (user != null)
+            _emailService.SendWelcomeEmail(user); // Astonishing side effect!
+        return user!;
+    }
+
+    // Name implies reading — but it deletes data?
+    public List<Order> GetExpiredOrders()
+    {
+        var orders = _db.Orders.Where(o => o.IsExpired).ToList();
+        _db.Orders.RemoveRange(orders); // Who expects this from "Get"?!
+        _db.SaveChanges();
+        return orders;
+    }
+}
+
+// GOOD: Names match behavior exactly
+
+public class UserRepository
+{
+    // "Get" only gets — no side effects
+    public User? GetById(int id) => _db.Users.Find(id);
+}
+
+public class UserRegistrationService
+{
+    // Separate method for the compound operation — name reveals the side effect
+    public User RegisterAndWelcome(int userId)
+    {
+        var user = _repo.GetById(userId) ?? throw new KeyNotFoundException();
+        _emailService.SendWelcomeEmail(user);
+        return user;
+    }
+}
+
+public class OrderService
+{
+    // Separate the read and the delete
+    public List<Order> GetExpiredOrders() =>
+        _db.Orders.Where(o => o.IsExpired).ToList();
+
+    public void DeleteExpiredOrders()
+    {
+        var expired = GetExpiredOrders();
+        _db.Orders.RemoveRange(expired);
+        _db.SaveChanges();
+    }
+}
+```
+
+---
+
+## Surprising Return Values
+
+```csharp
+// BAD: Inconsistent nullability — sometimes null, sometimes throws, hard to predict
+
+public class ProductRepository
+{
+    // Returns null for "not found" — reasonable
+    public Product? GetById(int id) => _db.Products.Find(id);
+
+    // Throws for "not found" — inconsistent with GetById
+    public Product GetBySlug(string slug)
+    {
+        return _db.Products.FirstOrDefault(p => p.Slug == slug)
+            ?? throw new Exception("Product not found"); // Surprise!
+    }
+
+    // Returns default(Product) — a blank object? Or null? Confusing
+    public Product GetByBarcode(string barcode)
+    {
+        return _db.Products.FirstOrDefault(p => p.Barcode == barcode)
+            ?? default!;
+    }
+}
+
+// GOOD: Consistent pattern — the pattern tells you what to expect from the name
+
+public class ProductRepository
+{
+    // GetById returns null for "not found" — consistent across all Get* methods
+    public Product? GetById(int id) => _db.Products.Find(id);
+    public Product? GetBySlug(string slug) =>
+        _db.Products.FirstOrDefault(p => p.Slug == slug);
+    public Product? GetByBarcode(string barcode) =>
+        _db.Products.FirstOrDefault(p => p.Barcode == barcode);
+
+    // "Find" methods return null. "Get" methods throw when not found.
+    // Pick one convention and document it — many teams use:
+    // Get* = throws KeyNotFoundException if not found
+    // Find* = returns null if not found
+    // Try* = returns bool with out parameter (TryGetValue pattern)
+
+    public bool TryGetById(int id, out Product? product)
+    {
+        product = _db.Products.Find(id);
+        return product != null;
+    }
+}
+```
+
+---
+
+## Surprising Properties and Computed State
+
+```csharp
+// BAD: Properties with hidden costs or side effects
+
+public class Report
+{
+    // "IsComplete" sounds like a simple flag read — but it hits the database!
+    public bool IsComplete => _db.ReportItems.Any(ri => ri.ReportId == Id && !ri.IsProcessed);
+
+    // "Name" looks like a property — but it formats and allocates on every access
+    public string Name
+    {
+        get
+        {
+            var customer = _db.Customers.Find(CustomerId)!;
+            return $"{customer.FirstName} {customer.LastName}'s Report for {Date:MMMM yyyy}";
+        }
+    }
+}
+
+// GOOD: Properties are fast, side-effect-free reads
+// Expensive operations are explicit methods
+
+public class Report
+{
+    public bool IsComplete { get; private set; } // Simple flag, set by domain logic
+
+    public string CustomerName { get; }          // Set once at construction
+    public string FormattedTitle =>              // Pure computation from local state
+        $"{CustomerName}'s Report for {Date:MMMM yyyy}";
+
+    // Expensive check is a method — the () signals "this does work"
+    public async Task<bool> HasPendingItemsAsync(IReportRepository repo) =>
+        await repo.HasPendingItemsAsync(Id);
+}
+```
+
+---
+
+## The .NET Naming Conventions (A Summary)
+
+```csharp
+// Follow these conventions — they are what every .NET developer expects:
+
+// PascalCase: types, methods, properties, events, public fields, namespaces
+public class OrderService { }
+public void PlaceOrder(Order order) { }
+public decimal TotalAmount { get; }
+public event EventHandler<OrderPlacedEventArgs> OrderPlaced;
+
+// camelCase: local variables, method parameters, private fields
+private readonly IOrderRepository _repository; // _prefix for private fields (common convention)
+int orderCount = 0;
+void Process(Order order, string note) { }
+
+// Async methods get Async suffix
+public Task<Order?> GetByIdAsync(int id) { return Task.FromResult<Order?>(null); }
+public async Task SaveAsync(Order order) { await Task.CompletedTask; }
+
+// Boolean properties/methods use positive, assertive names
+public bool IsActive { get; }           // NOT: IsNotInactive
+public bool HasItems => LineItems.Any(); // NOT: DoesNotLackItems
+public bool CanShip() { return true; }  // NOT: IsShippingAllowed (both work, be consistent)
+
+// Try-pattern methods return bool with out parameter
+public bool TryGetById(int id, out Order? order) { order = null; return false; }
+
+// Collections are plural nouns
+public IReadOnlyList<LineItem> LineItems { get; }
+public IEnumerable<Customer> GetActiveCustomers() { return Enumerable.Empty<Customer>(); }
+
+// Interfaces start with I
+public interface IOrderRepository { }
+public interface INotificationService { }
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: POLA and API Surface Design**
+
+POLA matters most when designing **public APIs** — libraries, SDKs, or internal frameworks used by other teams. Here, you lose the ability to quickly explain intent in a code review conversation. The code must explain itself.
+
+Four patterns that experienced .NET library authors use:
+
+**1. Mirror the BCL.** If your collection-like type has a method that finds an element, call it `FirstOrDefault` not `FindFirst`. Developers scan unfamiliar code by pattern-matching against what they already know.
+
+**2. Async all the way.** If any implementation of a method might ever be async (I/O, network, database), make it return `Task<T>` from day one with an `Async` suffix. Changing a sync method to async later is a breaking change for callers.
+
+**3. Avoid surprising overloads.** If `Calculate(Order order)` and `Calculate(Order order, bool applyDiscount)` behave significantly differently (not just "discount = 0"), the two-parameter overload should have a different name. Overloads are expected to do the same thing with different inputs — not different things.
+
+**4. Exceptions vs. null for "not found".** The BCL settled on `FirstOrDefault` (null) vs `First` (throws). Document which convention your repo/service layer follows. Many teams adopt: `Get*` throws `KeyNotFoundException`, `Find*` returns null. Both are fine — what causes astonishment is inconsistency.
 </Callout>
+
+---
+
+<MythBuster
+  myth="POLA just means follow naming conventions"
+  reality="Naming is a big part of POLA, but it goes further. A method with a sensible name that has unexpected side effects, throws unexpected exceptions, or returns surprising types violates POLA even with perfect naming. POLA is about the full behavioral contract: what the method does, what it returns, what it can throw, what state it modifies, and whether those match a reasonable developer's expectation based on the method's name and the surrounding API design."
+/>
+
+---
+
+## Code Challenge: Spot the POLA Violation
+
+<CodeChallenge
+  id="06-solid/least-astonishment/challenge-1"
+  title="Which Method Violates POLA Most Severely?"
+  description="Three method signatures with their implementations — which is the most surprising to a caller?"
+  code={`// Method A
+public Customer? FindById(int id)
+{
+    return _db.Customers.Find(id); // Returns null if not found
+}
+
+// Method B
+public Customer GetById(int id)
+{
+    var customer = _db.Customers.Find(id);
+    if (customer is null) return new Customer(); // Returns empty object?!
+    return customer;
+}
+
+// Method C
+public List\<Customer\> GetAll()
+{
+    var customers = _db.Customers.ToList();
+    foreach (var c in customers)
+        c.LastAccessedAt = DateTime.UtcNow; // Mutates all customers as a side effect!
+    _db.SaveChanges();
+    return customers;
+}
+
+// Method D
+public async Task<Customer?> FindByEmailAsync(string email)
+{
+    return await _db.Customers.FirstOrDefaultAsync(c => c.Email == email);
+}`}
+  options={[
+    "Method A — returning null from Find* is surprising",
+    "Method B — returning an empty Customer object instead of null",
+    "Method C — mutating all customers in a read method",
+    "Method D — async Find method is unusual"
+  ]}
+  correctAnswer={2}
+  explanation="Method C is the most severe POLA violation. 'GetAll' sounds like a pure read — callers would never expect it to modify every customer record and commit to the database. This could corrupt audit trails, trigger unnecessary database writes, and cause debugging nightmares when customers show unexpected LastAccessedAt timestamps. Method B is also a violation (returning an empty object instead of null from GetById), but the hidden database write in a read method is far more dangerous. Methods A and D both follow expected conventions."
+/>
+
+---
+
+<Quiz
+  id="06-solid/least-astonishment/quiz-1"
+  questions={[
+    {
+      question: "Your team is debating: should GetById throw KeyNotFoundException or return null when the record is not found? What does POLA say?",
+      options: [
+        "Always return null — exceptions should never be used for control flow",
+        "Always throw — callers should not have to check for null",
+        "Pick either convention, document it clearly, and apply it consistently across all repository methods",
+        "Use the Try-pattern: return bool with out parameter"
+      ],
+      correctAnswer: 2,
+      explanation: "POLA does not mandate null vs. throw — both are valid conventions used in professional codebases. What POLA requires is consistency and documentation. If GetById throws, then GetBySlug, GetByEmail, and all other 'Get*' methods should also throw. Mixing null returns and throws within the same class is what creates astonishment. Many teams adopt: Get* throws, Find* returns null, TryGet* uses the bool/out pattern."
+    },
+    {
+      question: "Which naming convention violation is most likely to cause a production bug?",
+      options: [
+        "Using camelCase for a public property instead of PascalCase",
+        "A method named GetCustomerData() that also deletes stale records as a side effect",
+        "Using Id instead of Identifier as a property suffix",
+        "Naming an interface CustomerRepository instead of ICustomerRepository"
+      ],
+      correctAnswer: 1,
+      explanation: "Hidden side effects in a method named after a read operation are the most dangerous POLA violation. A developer who calls GetCustomerData() for reporting or display will not expect deletions to occur — and may call it in a context (read-only transaction, background reporting job, or audit query) where deletions are actively harmful. The other options are style issues; Option B is a correctness and data integrity issue."
+    }
+  ]}
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "C# coding conventions", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/coding-style/coding-conventions" },
+    { label: "Framework Design Guidelines — naming conventions", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/naming-guidelines" },
+    { label: "Framework Design Guidelines — member design", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/member" },
+    { label: "Framework Design Guidelines — exceptions", url: "https://learn.microsoft.com/en-us/dotnet/standard/design-guidelines/exceptions" },
+  ]}
+/>

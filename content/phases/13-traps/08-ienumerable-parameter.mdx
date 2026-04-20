@@ -1,24 +1,209 @@
 ---
-title: "IEnumerable as Parameter Trap"
+title: "IEnumerable&lt;T&gt; Parameters: The Deferred Execution Trap"
 slug: "ienumerable-parameter"
 order: 8
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 8
+status: "published"
+tags: ["IEnumerable", "deferred execution", "parameters", "null", "LINQ", "API design"]
+summary: "Accepting IEnumerable<T> as a parameter means the caller's query may execute inside your method — sometimes repeatedly, sometimes throwing, sometimes empty."
+docsLinks:
+  - label: "IEnumerable<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1"
+  - label: "IReadOnlyCollection<T> interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlycollection-1"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, MythBuster, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Trap
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+```csharp
+// THE TRAP — method accepts IEnumerable<T>
+public decimal CalculateTotal(IEnumerable<OrderLine> lines)
+{
+    if (!lines.Any())  // Enumerates once!
+        return 0;
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+    decimal subtotal = lines.Sum(l => l.Price * l.Quantity); // Enumerates again!
+    decimal discount = lines.Count() > 5 ? subtotal * 0.1m : 0; // Enumerates a third time!
+
+    return subtotal - discount;
+}
+
+// Caller passes a LINQ query — NOT a materialized collection:
+var query = dbContext.OrderLines
+    .Where(l => l.OrderId == orderId); // Just a query definition
+
+decimal total = CalculateTotal(query);
+// Result: 3 database round-trips inside CalculateTotal
+// The caller had no idea — it just passed a "list of lines"
+```
+
+**Second trap: null vs empty**
+
+```csharp
+// Some callers pass null, others pass an empty collection
+public void ProcessItems(IEnumerable<string> items)
+{
+    foreach (var item in items) // NullReferenceException if items is null!
+    {
+        // ...
+    }
+}
+
+ProcessItems(null); // Crash
+ProcessItems(Enumerable.Empty<string>()); // Works fine — but are these the same semantically?
+```
+
+<Callout type="trap">
+A method receiving `IEnumerable<T>` has no way to know whether the argument is a materialized collection (safe to enumerate multiple times) or a lazy query (enumerates from source each time). Your method may silently trigger multiple database queries that the caller never expected.
 </Callout>
+
+---
+
+## Why It Happens
+
+`IEnumerable<T>` is the lowest common denominator: it promises only that you can iterate once. It says nothing about:
+- Whether iteration is expensive
+- Whether it is safe to iterate multiple times
+- Whether the sequence has already been evaluated
+- Whether `Count` is O(1) or O(n)
+
+```csharp
+// All of these implement IEnumerable<int>, but have different costs:
+IEnumerable<int> fromArray   = new[] { 1, 2, 3 };          // In-memory, free to enumerate
+IEnumerable<int> fromLinq    = Enumerable.Range(1, 100);    // Computed lazily, cheap
+IEnumerable<int> fromDb      = dbContext.Products.Select(p => p.Id); // DB round-trip!
+IEnumerable<int> fromFile    = File.ReadLines("data.txt").Select(int.Parse); // Reads file!
+IEnumerable<int> fromNetwork = ReadFromSocketAsync().Result.Select(...); // Network I/O!
+
+// Your method that accepts IEnumerable<int> doesn't know which it got
+```
+
+---
+
+## The Fix
+
+**Option 1: Accept `IReadOnlyCollection<T>` — signals caller must materialize**
+
+```csharp
+// BETTER — IReadOnlyCollection<T> signals: I need Count and multiple passes
+public decimal CalculateTotal(IReadOnlyCollection<OrderLine> lines)
+{
+    if (lines.Count == 0)  // O(1) — Count is a property, not an enumeration
+        return 0;
+
+    decimal subtotal = lines.Sum(l => l.Price * l.Quantity); // One enumeration
+    decimal discount = lines.Count > 5 ? subtotal * 0.1m : 0; // O(1) — no re-enumeration
+
+    return subtotal - discount;
+}
+
+// Caller is forced to materialize before calling:
+var lines = dbContext.OrderLines.Where(l => l.OrderId == id).ToList();
+decimal total = CalculateTotal(lines); // Clear — one DB call, then calculation
+```
+
+**Option 2: Materialize at the boundary of your method**
+
+```csharp
+// When you must accept IEnumerable<T> (public API, interface compliance):
+public decimal CalculateTotal(IEnumerable<OrderLine> lines)
+{
+    // Materialize immediately — document the behavior
+    var materialized = lines as IReadOnlyCollection<OrderLine>
+                       ?? lines.ToList();
+
+    if (materialized.Count == 0) return 0;
+
+    decimal subtotal = materialized.Sum(l => l.Price * l.Quantity);
+    decimal discount = materialized.Count > 5 ? subtotal * 0.1m : 0;
+    return subtotal - discount;
+}
+```
+
+**Option 3: Null handling**
+
+```csharp
+// Guard against null AND empty:
+public void ProcessItems(IEnumerable<string>? items)
+{
+    if (items is null) return; // or throw ArgumentNullException
+
+    foreach (var item in items)
+    {
+        // ...
+    }
+}
+
+// Or use null-coalescing to treat null as empty:
+public void ProcessItems(IEnumerable<string>? items)
+{
+    foreach (var item in items ?? Enumerable.Empty<string>())
+    {
+        // ...
+    }
+}
+```
+
+---
+
+<MythBuster
+  myth="IEnumerable<T> is the most flexible parameter type, so I should always use it"
+  truth="IEnumerable<T> is the most permissive type, which forces YOUR method to handle the worst case (lazy, expensive, non-rewindable). Prefer IReadOnlyList<T> or IReadOnlyCollection<T> when you need multiple passes or Count."
+/>
+
+---
+
+<CodeChallenge
+  id="13-traps/ienumerable-parameter/challenge-1"
+  title="How many times is the source enumerated?"
+  description="The method receives a LINQ query as IEnumerable<int>. How many times is the source iterated?"
+  code={`static int SumOfSquaresOfPositives(IEnumerable<int> numbers)
+{
+    var positives = numbers.Where(n => n > 0);
+    int count = positives.Count();
+    int sum   = positives.Sum(n => n * n);
+    return count > 0 ? sum / count : 0;
+}
+
+// Called with:
+var query = File.ReadLines("data.txt").Select(int.Parse);
+int result = SumOfSquaresOfPositives(query);`}
+  options={[
+    "1 — LINQ is smart enough to combine Count and Sum into one pass",
+    "2 — positives is enumerated by Count(), then again by Sum()",
+    "3 — numbers, positives.Count(), and positives.Sum() are each separate passes",
+    "0 — the query is fully lazy and never actually reads the file"
+  ]}
+  correctAnswer={1}
+  explanation="The file is read twice. 'positives' is a new IEnumerable<int> that wraps the original query. Count() enumerates it — reading the file from start. Sum() enumerates it again — reading the file a second time from start (the file stream is re-opened for ReadLines each time). Fix: var positives = numbers.Where(n => n > 0).ToList(); to materialize once."
+/>
+
+---
+
+<Callout type="senior">
+**The interface guideline hierarchy**
+
+When designing method parameters, pick the narrowest interface that satisfies what you actually need:
+
+| What you need | Best parameter type |
+|---|---|
+| Just to iterate once | `IEnumerable<T>` |
+| To know the count cheaply | `IReadOnlyCollection<T>` |
+| To index by position | `IReadOnlyList<T>` |
+| To add/remove items | `ICollection<T>` or `List<T>` |
+
+The key insight: `IEnumerable<T>` for parameters is often too permissive. It accepts lazy queries that callers will be surprised to see executed multiple times inside your method. At team level, establish the convention: if you enumerate more than once or check Count, require `IReadOnlyCollection<T>` at the parameter level so the responsibility to materialize is clearly on the caller.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "IEnumerable\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1" },
+    { label: "IReadOnlyCollection\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlycollection-1" },
+    { label: "IReadOnlyList\<T\> interface", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.ireadonlylist-1" },
+  ]}
+/>

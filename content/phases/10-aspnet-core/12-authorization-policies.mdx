@@ -1,24 +1,340 @@
 ---
-title: "Authorization Policies"
+title: "Authorization: Policies, Requirements, IAuthorizationHandler"
 slug: "authorization-policies"
 order: 12
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 15
+status: "published"
+tags: ["authorization", "policies", "IAuthorizationHandler", "requirements", "claims", "roles", "asp.net core"]
+summary: "Role-based authorization is just the beginning. Policy-based authorization with custom requirements and handlers lets you express any business rule as a first-class authorization concept."
+docsLinks:
+  - label: "Policy-based authorization in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies"
+  - label: "Custom authorization policy providers"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/iauthorizationpolicyprovider"
+  - label: "Resource-based authorization"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/resourcebased"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## From Role Checks to Policies
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Simple role-based authorization works but doesn't scale to complex business rules:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Simple — works but limited
+[Authorize(Roles = "Admin,Manager")]
+public IActionResult DeleteOrder(int id) => Ok();
+
+// Policy-based — expresses the business rule by name
+[Authorize(Policy = "CanDeleteOrders")]
+public IActionResult DeleteOrder(int id) => Ok();
+```
+
+Policies are named, reusable, and composable authorization rules. They replace scattered role-checks with named rules registered in one place.
+
+---
+
+## Built-in Policy Features
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    // Require a specific claim
+    options.AddPolicy("IsEmployee", policy =>
+        policy.RequireClaim("employee_id"));
+
+    // Require claim with specific value
+    options.AddPolicy("IsPremiumUser", policy =>
+        policy.RequireClaim("subscription", "premium", "enterprise"));
+
+    // Require role
+    options.AddPolicy("IsAdmin", policy =>
+        policy.RequireRole("Admin", "SuperAdmin"));
+
+    // Require authenticated user (explicit)
+    options.AddPolicy("AuthenticatedOnly", policy =>
+        policy.RequireAuthenticatedUser());
+
+    // Require a specific user name
+    options.AddPolicy("IsRootUser", policy =>
+        policy.RequireUserName("root@myapp.com"));
+
+    // Compound requirements — all must pass (AND logic)
+    options.AddPolicy("SeniorStaff", policy =>
+        policy.RequireRole("Staff")
+              .RequireClaim("years_experience", "5", "6", "7", "8", "9", "10+"));
+
+    // Custom assertion (lambda) — for simple one-off rules
+    options.AddPolicy("WorkingHoursOnly", policy =>
+        policy.RequireAssertion(ctx =>
+        {
+            var hour = DateTime.UtcNow.Hour;
+            return hour >= 9 && hour < 17; // 9am-5pm UTC
+        }));
+
+    // Fall-back policy — applies to all endpoints without explicit [Authorize]/[AllowAnonymous]
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+
+    // Default policy — applies when [Authorize] has no arguments
+    options.DefaultPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+```
+
+---
+
+## Custom Requirements and Handlers
+
+For complex rules, implement `IAuthorizationRequirement` and `IAuthorizationHandler`:
+
+```csharp
+// 1. Define the requirement (data carrier — what to check)
+public class MinimumAgeRequirement : IAuthorizationRequirement
+{
+    public int MinimumAge { get; }
+    public MinimumAgeRequirement(int minimumAge) => MinimumAge = minimumAge;
+}
+
+// 2. Define the handler (logic — how to check it)
+public class MinimumAgeHandler : AuthorizationHandler<MinimumAgeRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        MinimumAgeRequirement requirement)
+    {
+        var dateOfBirthClaim = context.User.FindFirst("date_of_birth");
+
+        if (dateOfBirthClaim is null)
+        {
+            // context.Fail() — explicitly deny (even if other handlers succeed)
+            // If we just return without calling Succeed, the requirement stays pending
+            return Task.CompletedTask;
+        }
+
+        if (!DateOnly.TryParse(dateOfBirthClaim.Value, out var dob))
+            return Task.CompletedTask;
+
+        var age = (DateOnly.FromDateTime(DateTime.Today) - dob).Days / 365;
+
+        if (age >= requirement.MinimumAge)
+            context.Succeed(requirement); // Pass — requirement met
+
+        return Task.CompletedTask;
+    }
+}
+
+// 3. Register both
+builder.Services.AddSingleton<IAuthorizationHandler, MinimumAgeHandler>();
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("Over18", policy =>
+        policy.Requirements.Add(new MinimumAgeRequirement(18)));
+
+    options.AddPolicy("Over21", policy =>
+        policy.Requirements.Add(new MinimumAgeRequirement(21)));
+});
+```
+
+---
+
+## Resource-Based Authorization
+
+When authorization depends on the specific resource (e.g., "can this user edit THIS document?"), inject `IAuthorizationService` and call it manually:
+
+```csharp
+// Requirement with resource awareness
+public class DocumentEditRequirement : IAuthorizationRequirement { }
+
+public class DocumentAuthorizationHandler
+    : AuthorizationHandler<DocumentEditRequirement, Document>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        DocumentEditRequirement requirement,
+        Document resource) // The specific resource being accessed
+    {
+        var userId = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        // Owner can always edit
+        if (resource.OwnerId.ToString() == userId)
+        {
+            context.Succeed(requirement);
+            return Task.CompletedTask;
+        }
+
+        // Admins can edit anything
+        if (context.User.IsInRole("Admin"))
+        {
+            context.Succeed(requirement);
+            return Task.CompletedTask;
+        }
+
+        // Collaborators can edit if explicitly listed
+        if (resource.CollaboratorIds.Contains(userId!))
+            context.Succeed(requirement);
+
+        return Task.CompletedTask;
+    }
+}
+
+// Usage in controller — inject IAuthorizationService
+[ApiController]
+public class DocumentsController : ControllerBase
+{
+    private readonly IAuthorizationService _authz;
+    private readonly IDocumentRepository _docs;
+
+    public DocumentsController(IAuthorizationService authz, IDocumentRepository docs)
+    {
+        _authz = authz;
+        _docs = docs;
+    }
+
+    [HttpPut("{id}")]
+    [Authorize] // User must be authenticated — resource check happens below
+    public async Task<IActionResult> Update(int id, UpdateDocumentRequest request)
+    {
+        var doc = await _docs.GetByIdAsync(id);
+        if (doc is null) return NotFound();
+
+        // Evaluate policy against the specific document resource
+        var authResult = await _authz.AuthorizeAsync(User, doc, "CanEditDocument");
+
+        if (!authResult.Succeeded)
+            return Forbid(); // 403
+
+        await _docs.UpdateAsync(id, request);
+        return NoContent();
+    }
+}
+```
+
+---
+
+## Multiple Handlers for One Requirement
+
+A requirement can have multiple handlers — useful for OR-logic authorization:
+
+```csharp
+// Multiple handlers for the same requirement — any one Succeed() is enough
+public class BuildingAccessRequirement : IAuthorizationRequirement { }
+
+public class EmployeeAccessHandler : AuthorizationHandler<BuildingAccessRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        BuildingAccessRequirement requirement)
+    {
+        if (context.User.HasClaim("department", "engineering"))
+            context.Succeed(requirement);
+        return Task.CompletedTask;
+    }
+}
+
+public class VisitorAccessHandler : AuthorizationHandler<BuildingAccessRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        BuildingAccessRequirement requirement)
+    {
+        if (context.User.HasClaim("visitor_pass", "valid"))
+            context.Succeed(requirement);
+        return Task.CompletedTask;
+    }
+}
+
+// Register both handlers — either succeeding grants access
+builder.Services.AddSingleton<IAuthorizationHandler, EmployeeAccessHandler>();
+builder.Services.AddSingleton<IAuthorizationHandler, VisitorAccessHandler>();
+```
+
+<Callout type="senior">
+**Senior Insight: IAuthorizationPolicyProvider for Dynamic Policies**
+
+Hard-coded policy names work for a fixed set of rules. For dynamic policies (e.g., "MinimumAge:18", "HasPermission:orders.delete"), implement `IAuthorizationPolicyProvider`:
+
+```csharp
+public class DynamicPolicyProvider : IAuthorizationPolicyProvider
+{
+    private const string MinimumAgePrefix = "MinimumAge:";
+    private const string PermissionPrefix = "HasPermission:";
+    private readonly DefaultAuthorizationPolicyProvider _fallback;
+
+    public DynamicPolicyProvider(IOptions<AuthorizationOptions> options)
+        => _fallback = new DefaultAuthorizationPolicyProvider(options);
+
+    public Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        if (policyName.StartsWith(MinimumAgePrefix))
+        {
+            var ageStr = policyName[MinimumAgePrefix.Length..];
+            if (int.TryParse(ageStr, out var age))
+            {
+                var policy = new AuthorizationPolicyBuilder()
+                    .AddRequirements(new MinimumAgeRequirement(age))
+                    .Build();
+                return Task.FromResult<AuthorizationPolicy?>(policy);
+            }
+        }
+
+        if (policyName.StartsWith(PermissionPrefix))
+        {
+            var permission = policyName[PermissionPrefix.Length..];
+            var policy = new AuthorizationPolicyBuilder()
+                .AddRequirements(new PermissionRequirement(permission))
+                .Build();
+            return Task.FromResult<AuthorizationPolicy?>(policy);
+        }
+
+        return _fallback.GetPolicyAsync(policyName);
+    }
+
+    public Task<AuthorizationPolicy> GetDefaultPolicyAsync() => _fallback.GetDefaultPolicyAsync();
+    public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() => _fallback.GetFallbackPolicyAsync();
+}
+
+// Usage:
+[Authorize(Policy = "MinimumAge:21")]
+[Authorize(Policy = "HasPermission:orders.delete")]
+public IActionResult DeleteOrder(int id) => Ok();
+```
 </Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/authorization-policies/quiz-1"
+  question="You have a policy with two requirements. Handler A calls context.Succeed() on Requirement 1. Handler B does not call Succeed or Fail on Requirement 2. What is the authorization result?"
+  options={[
+    "Authorization succeeds — at least one handler succeeded",
+    "Authorization fails — all requirements must succeed",
+    "Authorization fails — all handlers must call Succeed",
+    "Authorization succeeds — any Succeed result overrides everything"
+  ]}
+  correctAnswer={1}
+  explanation="All requirements in a policy must have at least one handler call context.Succeed() for authorization to succeed. If Requirement 2 has no handler that calls Succeed(), the overall policy fails — even if Requirement 1 succeeded. This is AND logic across requirements. OR logic is achieved by having multiple handlers for the same requirement."
+/>
+
+---
+
+<MythBuster
+  myth="You should check User.IsInRole() in controller actions for fine-grained access control"
+  truth="Scattering IsInRole() calls through controller code is hard to maintain, test, and audit. Policy-based authorization centralizes business rules as named policies with testable handlers. The question 'Can this user do this action?' belongs in an IAuthorizationHandler, not scattered through action methods. Use IAuthorizationService.AuthorizeAsync() for resource-based checks."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Policy-based authorization in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/policies" },
+    { label: "Resource-based authorization", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/resourcebased" },
+    { label: "Custom authorization policy providers", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/iauthorizationpolicyprovider" },
+    { label: "Role-based authorization", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authorization/roles" },
+  ]}
+/>

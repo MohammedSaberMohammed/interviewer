@@ -1,24 +1,346 @@
 ---
-title: "Outbox Pattern & Idempotency"
+title: "Outbox Pattern: Guaranteed Delivery and Idempotency Keys"
 slug: "outbox-idempotency"
 order: 7
 difficulty: "expert"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 18
+status: "published"
+tags: ["outbox pattern", "guaranteed delivery", "idempotency", "at-least-once", "messaging", "distributed systems", "reliability"]
+summary: "The Outbox pattern eliminates the dual-write problem — ensuring your database change and message publish are always in sync — while idempotency keys make your consumers safe to run multiple times."
+docsLinks:
+  - label: "Outbox pattern — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/transactional-outbox-cosmos"
+  - label: "Reliable messaging with Azure Service Bus"
+    url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview"
+  - label: "MassTransit Outbox — documentation"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Dual-Write Problem
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When a service needs to update a database AND publish a message, the naive approach creates a reliability gap:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// NAIVE — UNRELIABLE: Two separate operations, not atomic
+public async Task PlaceOrderAsync(CreateOrderCommand cmd)
+{
+    var order = await _orderRepo.SaveAsync(cmd); // Step 1: DB write
+
+    // What if the app crashes HERE? DB has the order, message never sent.
+    // What if the message broker is down? Order saved, event lost.
+    // What if we publish FIRST and the DB write fails? Event sent, no record.
+
+    await _messageBus.PublishAsync(new OrderPlacedEvent(order.Id)); // Step 2: Publish
+}
+```
+
+The **dual-write problem**: you cannot atomically commit to a database and publish to a message broker simultaneously without distributed transactions (which are expensive and complex).
+
+---
+
+## The Outbox Pattern
+
+The solution: treat the message publish as **a database write**. Store the outgoing message in an **Outbox table** within the same database transaction as the business data. A separate process reads the outbox and publishes messages to the broker.
+
+```
+Step 1: Single DB transaction:
+  BEGIN TRANSACTION
+    INSERT INTO Orders ...
+    INSERT INTO Outbox (id, payload, topic, status='Pending') ...
+  COMMIT
+
+Step 2: Outbox relay (background service):
+  Read Pending rows from Outbox
+  Publish each to the message broker
+  Mark row as Sent (or delete)
+```
+
+This guarantees: **the message is published if and only if the database transaction committed.**
+
+---
+
+## Implementing the Outbox in EF Core
+
+```csharp
+// Outbox message entity
+public class OutboxMessage
+{
+    public Guid Id { get; set; }
+    public string Topic { get; set; } = null!;
+    public string Payload { get; set; } = null!;
+    public string MessageType { get; set; } = null!;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ProcessedAt { get; set; }
+    public int RetryCount { get; set; }
+}
+
+// Domain service — writes business data + outbox message in one transaction
+public class OrderService
+{
+    private readonly AppDbContext _db;
+
+    public async Task PlaceOrderAsync(CreateOrderCommand cmd)
+    {
+        var order = new Order
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = cmd.CustomerId,
+            Status = OrderStatus.Pending
+        };
+
+        var outboxMessage = new OutboxMessage
+        {
+            Id = Guid.NewGuid(),
+            Topic = "order-events",
+            MessageType = nameof(OrderPlacedEvent),
+            Payload = JsonSerializer.Serialize(new OrderPlacedEvent(order.Id, cmd.CustomerId)),
+            CreatedAt = DateTime.UtcNow
+        };
+
+        // Single transaction — atomically commits both
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        _db.Orders.Add(order);
+        _db.OutboxMessages.Add(outboxMessage);
+        await _db.SaveChangesAsync();
+        await tx.CommitAsync();
+        // If anything fails, both are rolled back — no dual-write gap
+    }
+}
+
+// Outbox Relay — background service that publishes pending messages
+public class OutboxRelayService : BackgroundService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IMessageBus _bus;
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            await PublishPendingMessagesAsync(ct);
+            await Task.Delay(TimeSpan.FromSeconds(5), ct);
+        }
+    }
+
+    private async Task PublishPendingMessagesAsync(CancellationToken ct)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // Fetch unprocessed messages — process in batches
+        var pending = await db.OutboxMessages
+            .Where(m => m.ProcessedAt == null && m.RetryCount < 5)
+            .OrderBy(m => m.CreatedAt)
+            .Take(50)
+            .ToListAsync(ct);
+
+        foreach (var message in pending)
+        {
+            try
+            {
+                await _bus.PublishRawAsync(message.Topic, message.MessageType, message.Payload);
+                message.ProcessedAt = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                message.RetryCount++;
+                _logger.LogWarning(ex, "Failed to publish outbox message {Id}", message.Id);
+            }
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+}
+```
+
+---
+
+## Idempotency: Making Consumers Safe
+
+The outbox relay uses **at-least-once delivery**: if the relay crashes after publishing but before marking the message as processed, it will publish again on restart. Consumers **will receive the same message multiple times**.
+
+**Idempotency key**: A unique identifier (the message ID or a business key) that allows consumers to detect and discard duplicate messages.
+
+```csharp
+// Consumer with idempotency check
+public class OrderPlacedConsumer : IConsumer<OrderPlacedEvent>
+{
+    private readonly AppDbContext _db;
+
+    public async Task Consume(ConsumeContext<OrderPlacedEvent> context)
+    {
+        var messageId = context.MessageId?.ToString()
+            ?? context.Message.OrderId.ToString(); // fallback to business key
+
+        // Check if we already processed this message
+        var alreadyProcessed = await _db.ProcessedMessages
+            .AnyAsync(m => m.MessageId == messageId);
+
+        if (alreadyProcessed)
+        {
+            // Idempotent — safe to acknowledge and skip
+            return;
+        }
+
+        // Process the event
+        await _inventoryService.ReserveStockAsync(context.Message.OrderId);
+
+        // Record that we processed this message
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        _db.ProcessedMessages.Add(new ProcessedMessage
+        {
+            MessageId = messageId,
+            ProcessedAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync();
+        await tx.CommitAsync();
+    }
+}
+
+// ProcessedMessages table (deduplicate table)
+public class ProcessedMessage
+{
+    public string MessageId { get; set; } = null!;  // primary key
+    public DateTime ProcessedAt { get; set; }
+}
+```
+
+---
+
+## Idempotency in HTTP APIs
+
+The same principle applies to external HTTP calls. Clients can send an idempotency key header; the server stores it and returns the cached response for duplicates.
+
+```csharp
+// Idempotency middleware for POST endpoints
+public class IdempotencyMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly IDistributedCache _cache;
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        if (!context.Request.Method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            await _next(context);
+            return;
+        }
+
+        var idempotencyKey = context.Request.Headers["Idempotency-Key"].FirstOrDefault();
+        if (idempotencyKey is null)
+        {
+            await _next(context);
+            return;
+        }
+
+        var cacheKey = \$"idempotency:{idempotencyKey}";
+        var cached = await _cache.GetStringAsync(cacheKey);
+
+        if (cached is not null)
+        {
+            // Return the cached response — same result as first execution
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(cached);
+            return;
+        }
+
+        // Capture the response
+        var originalBody = context.Response.Body;
+        using var buffer = new MemoryStream();
+        context.Response.Body = buffer;
+
+        await _next(context);
+
+        buffer.Seek(0, SeekOrigin.Begin);
+        var responseBody = await new StreamReader(buffer).ReadToEndAsync();
+
+        // Store response for the idempotency key (24 hour TTL)
+        await _cache.SetStringAsync(cacheKey, responseBody, new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24)
+        });
+
+        buffer.Seek(0, SeekOrigin.Begin);
+        await buffer.CopyToAsync(originalBody);
+        context.Response.Body = originalBody;
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["Approach", "Guarantees", "Complexity", "Failure Behavior"]}
+  rows={[
+    ["Naive dual-write", "None — data and message can diverge", "Low", "Lost events or phantom events on crash"],
+    ["Outbox pattern", "At-least-once delivery guaranteed", "Medium", "Message may be published twice — consumer must be idempotent"],
+    ["Transactional messaging (e.g., MSMQ DTC)", "Exactly-once", "High", "Distributed lock, poor scalability"],
+    ["Outbox + idempotent consumer", "Effectively exactly-once semantics", "Medium-High", "Safe retry at every layer"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: MassTransit Has a Built-in Outbox**
+
+If you use MassTransit, you do not need to implement the outbox manually. MassTransit's Entity Framework outbox handles the pattern for you:
+
+```csharp
+// Program.cs
+builder.Services.AddMassTransit(x =>
+{
+    x.AddEntityFrameworkOutbox<AppDbContext>(o =>
+    {
+        o.UseSqlServer(); // or UsePostgres(), UseMySql()
+        o.QueryDelay = TimeSpan.FromSeconds(1); // polling interval
+        o.DuplicateDetectionWindow = TimeSpan.FromMinutes(30); // idempotency window
+    });
+
+    x.UsingRabbitMq((ctx, cfg) => cfg.ConfigureEndpoints(ctx));
+});
+```
+
+MassTransit automatically:
+1. Stores outgoing messages in the database within the current `DbContext` transaction
+2. Runs a background relay that publishes pending messages
+3. Deduplicates incoming messages using `InboxState` tracking
+
+In production, this eliminates an entire class of reliability bugs. If you are building microservices with EF Core and MassTransit, the built-in outbox is the right default choice — do not roll your own.
 </Callout>
+
+---
+
+<MythBuster
+  myth="If I use a reliable message broker like Azure Service Bus, I do not need the Outbox pattern."
+  reality="The broker's reliability only covers message delivery AFTER the message reaches the broker. The gap is between your database commit and your publish call — that is where messages are lost. If your process crashes after committing to the DB but before calling PublishAsync, the event is gone forever regardless of how reliable the broker is. The Outbox pattern closes this pre-broker gap by making the publish a DB operation first."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/outbox-idempotency/challenge-1"
+  question="Your outbox relay published an OrderPlacedEvent but crashed before marking it as processed. On restart, it publishes the same event again. The inventory consumer receives the same event twice. What is the correct behavior?"
+  options={[
+    "Reserve inventory twice — both deliveries are legitimate",
+    "The second delivery causes an exception because inventory is already reserved — this surfaces the bug",
+    "The consumer checks an idempotency key (message ID) and skips the second delivery — inventory is reserved exactly once",
+    "The message broker prevents duplicate delivery automatically"
+  ]}
+  correctAnswer={2}
+  explanation="At-least-once delivery means your consumer will receive the same message more than once. The correct design is idempotent consumers that detect duplicate messages using an idempotency key (the message ID or a business correlation ID). The consumer records the message ID in a processed-messages table within the same transaction as its business operation. On the second delivery, it finds the existing record and returns early without re-executing the business logic. This achieves effectively-exactly-once processing without the cost of distributed transactions."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Transactional Outbox with Cosmos DB", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/transactional-outbox-cosmos" },
+    { label: "Idempotent message processing — Service Bus", url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/duplicate-detection" },
+    { label: "Reliable web app patterns — Azure", url: "https://learn.microsoft.com/en-us/azure/architecture/web-apps/guides/reliable-web-app/dotnet/plan-implementation" },
+    { label: "Retry pattern — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/retry" },
+  ]}
+/>

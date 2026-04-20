@@ -1,24 +1,326 @@
 ---
-title: "Queue, Stack, PriorityQueue"
+title: "Queue<T>, Stack<T>, and PriorityQueue<T,P>"
 slug: "queue-stack-priorityqueue"
 order: 4
 difficulty: "intermediate"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["Queue<T>", "Stack<T>", "PriorityQueue", "FIFO", "LIFO", "heap", "BFS", "DFS", ".NET 6"]
+summary: "Queue<T> is FIFO backed by a circular buffer, Stack<T> is LIFO backed by an array, and PriorityQueue<T,P> (.NET 6+) is a min-heap. Each exists because the data access pattern — not just the stored type — defines the right structure."
+docsLinks:
+  - label: "Queue<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.queue-1"
+  - label: "Stack<T> Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.stack-1"
+  - label: "PriorityQueue<TElement,TPriority> Class (.NET 6+)"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## Queue\<T\>: First In, First Out
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+`Queue<T>` is a **circular buffer array** — elements are enqueued at the tail and dequeued from the head. The head and tail indices wrap around modulo the array length, avoiding constant shifting.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+var q = new Queue<string>();
+q.Enqueue("task-1");  // O(1) amortized
+q.Enqueue("task-2");
+q.Enqueue("task-3");
+
+Console.WriteLine(q.Count);       // 3
+Console.WriteLine(q.Peek());      // "task-1" — look without removing, O(1)
+
+string next = q.Dequeue();        // "task-1" — removes and returns, O(1)
+Console.WriteLine(q.Count);       // 2
+
+// Safe dequeue — no exception if empty
+if (q.TryDequeue(out string? item))
+    Console.WriteLine(item);      // "task-2"
+
+// Safe peek
+if (q.TryPeek(out string? front))
+    Console.WriteLine(front);     // "task-3"
+
+// Pre-allocate to avoid resize copies
+var prealloc = new Queue<int>(capacity: 1000);
+```
+
+### BFS Pattern with Queue
+
+```csharp
+// Breadth-First Search — Queue is the canonical BFS frontier structure
+IEnumerable<string> BfsFiles(string rootDir)
+{
+    var queue = new Queue<string>();
+    queue.Enqueue(rootDir);
+
+    while (queue.TryDequeue(out string? dir))
+    {
+        foreach (string file in Directory.GetFiles(dir))
+            yield return file;
+
+        foreach (string sub in Directory.GetDirectories(dir))
+            queue.Enqueue(sub);
+    }
+}
+```
+
+---
+
+## Stack\<T\>: Last In, First Out
+
+`Stack<T>` is a **dynamic array** where push/pop operate on the end (top). This makes both O(1) amortized — same growth strategy as `List<T>`.
+
+```csharp
+var stack = new Stack<string>();
+stack.Push("first");   // O(1) amortized
+stack.Push("second");
+stack.Push("third");
+
+Console.WriteLine(stack.Peek());   // "third" — look at top, O(1)
+string top = stack.Pop();          // "third" — removes top, O(1)
+
+// Safe versions
+if (stack.TryPop(out string? popped))
+    Console.WriteLine(popped);     // "second"
+
+if (stack.TryPeek(out string? peeked))
+    Console.WriteLine(peeked);     // "first"
+```
+
+### DFS Pattern with Stack
+
+```csharp
+// Iterative Depth-First Search — Stack replaces call stack to avoid recursion limits
+IEnumerable<int> DfsIterative(int start, Dictionary<int, List<int>> adj)
+{
+    var stack = new Stack<int>();
+    var visited = new HashSet<int>();
+
+    stack.Push(start);
+
+    while (stack.TryPop(out int node))
+    {
+        if (!visited.Add(node))  // already visited
+            continue;
+
+        yield return node;
+
+        // Push neighbors in reverse so leftmost is processed first
+        var neighbors = adj.GetValueOrDefault(node, []);
+        for (int i = neighbors.Count - 1; i >= 0; i--)
+            stack.Push(neighbors[i]);
+    }
+}
+
+// Classic use: undo/redo in an editor
+class Editor
+{
+    private readonly Stack<string> _undoStack = new();
+    private readonly Stack<string> _redoStack = new();
+    private string _content = "";
+
+    public void Type(string addition)
+    {
+        _undoStack.Push(_content);
+        _redoStack.Clear();
+        _content += addition;
+    }
+
+    public void Undo()
+    {
+        if (_undoStack.TryPop(out string? prev))
+        {
+            _redoStack.Push(_content);
+            _content = prev;
+        }
+    }
+}
+```
+
+---
+
+## PriorityQueue\<TElement, TPriority\>: Min-Heap (.NET 6+)
+
+Added in .NET 6, `PriorityQueue<TElement, TPriority>` is a **d-ary min-heap** (4-ary by default). The element with the **lowest priority value** dequeues first.
+
+```csharp
+// TElement = the thing you store; TPriority = the ordering key
+var pq = new PriorityQueue<string, int>();
+
+pq.Enqueue("low-priority task",    10);  // O(log n)
+pq.Enqueue("critical task",         1);
+pq.Enqueue("medium-priority task",  5);
+
+// Dequeue always returns the element with lowest priority number
+Console.WriteLine(pq.Dequeue());    // "critical task"     (priority 1)
+Console.WriteLine(pq.Dequeue());    // "medium-priority task" (priority 5)
+Console.WriteLine(pq.Dequeue());    // "low-priority task" (priority 10)
+
+// Peek without removing — O(1)
+pq.Enqueue("a", 3);
+pq.Enqueue("b", 1);
+pq.TryPeek(out string? elem, out int prio);
+Console.WriteLine($"{elem} @ {prio}"); // b @ 1
+
+// EnqueueDequeue — more efficient than Enqueue + Dequeue when queue is full
+// Returns smaller of: newly added element vs current min
+string result = pq.EnqueueDequeue("c", 2); // returns "b" (priority 1 < 2)
+```
+
+### Dijkstra's Algorithm with PriorityQueue
+
+```csharp
+// Dijkstra shortest path — PriorityQueue replaces sorted set approach
+Dictionary<int, int> Dijkstra(int start, Dictionary<int, List<(int node, int weight)>> graph)
+{
+    var dist = new Dictionary<int, int>();
+    var pq = new PriorityQueue<int, int>(); // (node, distanceSoFar)
+
+    pq.Enqueue(start, 0);
+    dist[start] = 0;
+
+    while (pq.TryDequeue(out int node, out int d))
+    {
+        if (d > dist.GetValueOrDefault(node, int.MaxValue))
+            continue; // stale entry — skip
+
+        foreach (var (neighbor, weight) in graph.GetValueOrDefault(node, []))
+        {
+            int newDist = d + weight;
+            if (newDist < dist.GetValueOrDefault(neighbor, int.MaxValue))
+            {
+                dist[neighbor] = newDist;
+                pq.Enqueue(neighbor, newDist);
+            }
+        }
+    }
+
+    return dist;
+}
+```
+
+### Max-Heap Workaround
+
+`PriorityQueue<T,P>` is always a min-heap. For max-heap behavior, negate the priority or use a custom `IComparer<P>`:
+
+```csharp
+// Option 1: negate numeric priority
+pq.Enqueue("item", -priority); // highest priority value dequeues first
+
+// Option 2: custom comparer (reverses the natural order)
+var maxHeap = new PriorityQueue<string, int>(
+    Comparer<int>.Create((a, b) => b.CompareTo(a))); // descending
+```
+
+---
+
+<ComparisonTable
+  headers={["Property", "Queue<T>", "Stack<T>", "PriorityQueue<T,P>"]}
+  rows={[
+    ["Order guarantee", "FIFO", "LIFO", "Min-priority first"],
+    ["Internal structure", "Circular buffer array", "Dynamic array", "4-ary min-heap array"],
+    ["Add", "Enqueue — O(1) amortized", "Push — O(1) amortized", "Enqueue — O(log n)"],
+    ["Remove", "Dequeue — O(1)", "Pop — O(1)", "Dequeue — O(log n)"],
+    ["Peek", "O(1)", "O(1)", "O(1)"],
+    ["Random access", "Not supported", "Not supported", "Not supported"],
+    ["Update priority", "Not supported", "Not supported", "Not supported (re-enqueue)"],
+    ["Thread-safe", "No (use ConcurrentQueue)", "No (use ConcurrentStack)", "No"],
+    ["Available since", ".NET 1.1", ".NET 1.1", ".NET 6"],
+  ]}
+/>
+
+---
+
+<Callout type="trap">
+**Trap: PriorityQueue Has No Update-Priority Operation**
+
+Once an item is enqueued, you cannot change its priority. The common workaround for Dijkstra-style algorithms is to re-enqueue with the new priority and skip stale entries on dequeue (the "lazy deletion" pattern shown above).
+
+```csharp
+// Stale-entry detection pattern
+while (pq.TryDequeue(out var item, out int p))
+{
+    if (p > bestKnownPriority[item])
+        continue; // stale — a better path was already found
+    // ... process item
+}
+```
+
+This means the queue may hold O(E) entries for a graph with E edges — acceptable in most cases but worth knowing for space analysis.
 </Callout>
+
+---
+
+<CodeChallenge
+  id="08-data-structures/queue-stack-priorityqueue/challenge-1"
+  title="Which Collection for a Task Scheduler?"
+  description="You're building a job scheduler where jobs have numeric priority (1 = urgent, 100 = low) and must be processed most-urgent-first. Jobs are added and consumed concurrently by multiple threads. What's the best data structure?"
+  code={`// Option A: SortedSet<(int priority, Job job)>
+var scheduler = new SortedSet<(int, Job)>();
+lock (scheduler) { scheduler.Add((priority, job)); }
+lock (scheduler) { var next = scheduler.Min; scheduler.Remove(next); }
+
+// Option B: PriorityQueue\<Job, int\>
+var pq = new PriorityQueue\<Job, int\>();
+lock (pq) { pq.Enqueue(job, priority); }
+lock (pq) { pq.TryDequeue(out var next, out _); }
+
+// Option C: List\<Job\> sorted on each dequeue
+var jobs = new List\<Job\>();
+lock (jobs) { jobs.Add(job); }
+lock (jobs) { jobs.Sort((a,b) => a.Priority - b.Priority); var next = jobs[0]; jobs.RemoveAt(0); }
+
+// Option D: Channel\<Job\> with a background re-prioritizer`}
+  options={[
+    "Option A — SortedSet gives O(log n) insert and O(log n) min-removal with natural ordering",
+    "Option B — PriorityQueue gives O(log n) insert and O(log n) dequeue, lower memory than SortedSet",
+    "Option C — sorting a List is fine because jobs are added infrequently",
+    "Option D — Channel + re-prioritizer is the correct concurrent approach"
+  ]}
+  correctAnswer={1}
+  explanation="Option B is correct for a single-threaded or manually-locked scheduler. PriorityQueue uses a compact array-based heap with better cache performance than SortedSet's tree nodes. SortedSet (Option A) would also work but allocates a node object per entry. Option C is O(n log n) on every dequeue — catastrophic. For true concurrent access, neither B nor A is thread-safe — you'd wrap with a lock (acceptable for most schedulers) or use a Channel<T> with a dedicated consumer (Option D), which is the right architecture for high-throughput concurrent job queues."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Channel\<T\> Is Usually Better Than Queue\<T\> for Producer-Consumer**
+
+For async producer-consumer scenarios, `System.Threading.Channels.Channel<T>` (introduced in .NET Core 3.0) is almost always superior to `Queue<T>` with manual locking:
+
+```csharp
+// Channel<T>: built-in backpressure, async await support, no lock needed
+var channel = Channel.CreateBounded<WorkItem>(new BoundedChannelOptions(100)
+{
+    FullMode = BoundedChannelFullMode.Wait // backpressure
+});
+
+// Producer
+await channel.Writer.WriteAsync(new WorkItem(data));
+
+// Consumer
+await foreach (var item in channel.Reader.ReadAllAsync())
+    await ProcessAsync(item);
+```
+
+`Channel<T>` handles:
+- Async blocking when empty (consumer waits without polling)
+- Backpressure when full (producer waits when bounded)
+- Thread-safe producer and consumer without explicit locks
+- `Completion` signaling when producers are done
+
+`Queue<T>` is appropriate for single-threaded algorithms (BFS, DFS, simulations). For anything involving threads, prefer `Channel<T>` or `ConcurrentQueue<T>`.
+</Callout>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Queue\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.queue-1" },
+    { label: "Stack\<T\> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.stack-1" },
+    { label: "PriorityQueue\<TElement,TPriority\> (.NET 6+)", url: "https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.priorityqueue-2" },
+    { label: "System.Threading.Channels overview", url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/channels" },
+  ]}
+/>

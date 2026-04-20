@@ -1,24 +1,273 @@
 ---
-title: "Kestrel & HTTP/2/3"
+title: "Kestrel: Server Configuration, Limits, HTTPS, HTTP/2"
 slug: "kestrel"
 order: 14
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["Kestrel", "HTTP/2", "HTTPS", "TLS", "server configuration", "limits", "asp.net core", "performance"]
+summary: "Kestrel is the cross-platform, high-performance web server at the core of every ASP.NET Core app. Knowing its configuration options, limits, and protocol support is essential for production deployments."
+docsLinks:
+  - label: "Kestrel web server in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel"
+  - label: "Configure Kestrel"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/options"
+  - label: "HTTPS configuration in Kestrel"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is Kestrel?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Kestrel is the cross-platform, libuv/socket-based web server that ships with ASP.NET Core. It handles:
+- TCP socket management
+- TLS termination
+- HTTP/1.1, HTTP/2, and HTTP/3 (QUIC)
+- Request buffering and response streaming
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+In production, Kestrel is typically placed behind a reverse proxy (Nginx, IIS, YARP, Azure Application Gateway) — but it can also be used edge-facing.
+
+---
+
+## Configuring Endpoints
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    // Listen on all interfaces, port 80 (HTTP)
+    serverOptions.ListenAnyIP(80);
+
+    // Listen on all interfaces, port 443 (HTTPS) with certificate
+    serverOptions.ListenAnyIP(443, listenOptions =>
+    {
+        listenOptions.UseHttps(httpsOptions =>
+        {
+            httpsOptions.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+            // Certificate from file
+            httpsOptions.ServerCertificate = X509Certificate2.CreateFromPemFile(
+                "certs/server.crt", "certs/server.key");
+        });
+
+        // Enable HTTP/2 on this endpoint
+        listenOptions.Protocols = HttpProtocols.Http1AndHttp2;
+    });
+
+    // Unix domain socket — useful in container-to-container communication
+    serverOptions.ListenUnixSocket("/var/run/myapp/kestrel.sock");
+
+    // Named pipe — Windows only
+    // serverOptions.ListenNamedPipe("MyPipeName");
+});
+```
+
+**Via appsettings.json (preferred for production):**
+
+```json
+{
+  "Kestrel": {
+    "Endpoints": {
+      "Http": {
+        "Url": "http://*:80"
+      },
+      "Https": {
+        "Url": "https://*:443",
+        "Certificate": {
+          "Path": "certs/server.pfx",
+          "Password": "certpassword"
+        }
+      },
+      "Http2Grpc": {
+        "Url": "https://*:5001",
+        "Protocols": "Http2"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Request and Connection Limits
+
+Kestrel has built-in limits to prevent resource exhaustion. Production apps should tune these:
+
+```csharp
+builder.WebHost.ConfigureKestrel(options =>
+{
+    // Global limits
+    options.Limits.MaxConcurrentConnections = 1000;
+    options.Limits.MaxConcurrentUpgradedConnections = 100; // WebSocket/HTTP upgrade
+    options.Limits.MaxRequestBodySize = 10 * 1024 * 1024;  // 10 MB
+    options.Limits.MaxRequestHeaderCount = 100;
+    options.Limits.MaxRequestHeadersTotalSize = 32 * 1024;  // 32 KB
+
+    // Timeouts to prevent slow clients from holding connections
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(30);
+
+    // HTTP/2 specific limits
+    options.Limits.Http2.MaxStreamsPerConnection = 100;
+    options.Limits.Http2.HeaderTableSize = 4096;
+    options.Limits.Http2.MaxFrameSize = 16384;
+    options.Limits.Http2.InitialConnectionWindowSize = 128 * 1024;    // 128 KB
+    options.Limits.Http2.InitialStreamWindowSize = 96 * 1024;         // 96 KB
+    options.Limits.Http2.MaxRequestHeaderFieldSize = 8192;
+});
+```
+
+**Per-endpoint body size override:**
+
+```csharp
+// Per-route override for large file uploads
+[RequestSizeLimit(100 * 1024 * 1024)] // 100 MB for this action only
+[HttpPost("upload")]
+public IActionResult Upload(IFormFile file) => Ok();
+
+// Disable limit entirely for a specific endpoint (use with caution!)
+[DisableRequestSizeLimit]
+[HttpPost("bulk-import")]
+public IActionResult BulkImport([FromBody] List<ImportRecord> records) => Ok();
+```
+
+---
+
+## HTTP/2 and HTTP/3
+
+```csharp
+// HTTP/2 requires HTTPS (except for h2c cleartext in development)
+serverOptions.ListenAnyIP(5000, options =>
+{
+    options.Protocols = HttpProtocols.Http1;         // HTTP/1.1 only
+});
+
+serverOptions.ListenAnyIP(5001, options =>
+{
+    options.UseHttps();
+    options.Protocols = HttpProtocols.Http1AndHttp2; // HTTP/1.1 + HTTP/2
+});
+
+serverOptions.ListenAnyIP(5002, options =>
+{
+    options.UseHttps();
+    options.Protocols = HttpProtocols.Http2;         // HTTP/2 only (gRPC)
+});
+
+// HTTP/3 (QUIC) — .NET 7+
+serverOptions.ListenAnyIP(5003, options =>
+{
+    options.UseHttps();
+    options.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
+});
+```
+
+<Callout type="warning">
+**HTTP/2 requires TLS in production.** Cleartext HTTP/2 (h2c) is allowed in development but most browsers and reverse proxies require HTTPS for HTTP/2. If gRPC services fail to connect, check that both client and server are using HTTP/2 and HTTPS.
+
+HTTP/3 uses QUIC (UDP-based) and requires the `Alt-Svc` header to advertise support. Browsers won't use HTTP/3 on the first request — they upgrade on subsequent requests.
 </Callout>
+
+---
+
+## TLS Certificate Management
+
+```csharp
+// Option 1: PFX file (most common)
+listenOptions.UseHttps("cert.pfx", "password");
+
+// Option 2: PEM files (common in Linux/container environments)
+listenOptions.UseHttps(X509Certificate2.CreateFromPemFile("cert.pem", "key.pem"));
+
+// Option 3: Certificate from certificate store (Windows)
+listenOptions.UseHttps(storeName: StoreName.My, storeLocation: StoreLocation.LocalMachine,
+    subject: "myapp.example.com");
+
+// Option 4: ASP.NET Core dev certificate (development only)
+// Created automatically by: dotnet dev-certs https --trust
+
+// Option 5: Let's Encrypt with LettuceEncrypt
+// dotnet add package LettuceEncrypt
+builder.Services.AddLettuceEncrypt();
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Kestrel Behind a Reverse Proxy — Forwarded Headers**
+
+When Kestrel sits behind Nginx, IIS, or a load balancer, the original client IP and scheme are in forwarded headers (`X-Forwarded-For`, `X-Forwarded-Proto`). Without configuring forwarded headers middleware, ASP.NET Core sees the proxy's IP and thinks all traffic is HTTP:
+
+```csharp
+// MUST come first in the pipeline — before UseHttpsRedirection
+var forwardedHeadersOptions = new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+};
+
+// Trust only specific proxy IPs (never trust all IPs in production)
+forwardedHeadersOptions.KnownProxies.Add(IPAddress.Parse("10.0.0.1")); // Nginx IP
+// or
+forwardedHeadersOptions.KnownNetworks.Add(
+    new IPNetwork(IPAddress.Parse("10.0.0.0"), 8)); // 10.0.0.0/8 subnet
+
+app.UseForwardedHeaders(forwardedHeadersOptions);
+app.UseHttpsRedirection(); // Now correctly reads forwarded scheme
+
+// With this configured:
+// context.Request.Scheme returns "https" even though Kestrel received HTTP
+// context.Connection.RemoteIpAddress returns the actual client IP
+```
+
+Also configure `AllowedHosts` in appsettings.json to prevent host header injection:
+```json
+{ "AllowedHosts": "myapp.com;www.myapp.com;*.myapp.com" }
+```
+</Callout>
+
+---
+
+<ComparisonTable
+  headers={["Protocol", "Transport", "Multiplexing", "TLS Required", "Use Case"]}
+  rows={[
+    ["HTTP/1.1", "TCP", "No (pipelining is broken)", "No", "General purpose, wide compat"],
+    ["HTTP/2", "TCP", "Yes — multiple streams per connection", "Yes (in practice)", "APIs, gRPC, parallel requests"],
+    ["HTTP/3", "QUIC (UDP)", "Yes — at transport layer", "Yes", "High-latency networks, mobile"],
+    ["WebSocket", "TCP (upgrade)", "No — single stream", "No", "Real-time bidirectional"],
+  ]}
+/>
+
+---
+
+<Quiz
+  id="10-aspnet-core/kestrel/quiz-1"
+  question="Your gRPC service works locally but fails in production with 'The request was made over HTTP instead of HTTPS'. What is the most likely configuration issue?"
+  options={[
+    "gRPC requires HTTP/1.1, not HTTP/2",
+    "The Kestrel endpoint for gRPC must use Protocols = HttpProtocols.Http2 with HTTPS enabled",
+    "gRPC is not supported in ASP.NET Core without IIS",
+    "The MaxRequestBodySize limit is too low for gRPC messages"
+  ]}
+  correctAnswer={1}
+  explanation="gRPC in ASP.NET Core requires HTTP/2, and HTTP/2 requires HTTPS (TLS) in all production environments. The gRPC endpoint must have listenOptions.UseHttps() and listenOptions.Protocols = HttpProtocols.Http2 (or Http1AndHttp2 if you want to support both). Using Http1 only or not enabling HTTPS will cause the 'HTTP instead of HTTPS' error."
+/>
+
+---
+
+<MythBuster
+  myth="Kestrel should always be behind IIS or Nginx in production — it's not safe to expose directly"
+  truth="Kestrel is production-safe and can be exposed directly, as many high-traffic services do. A reverse proxy adds value for SSL offloading across many backends, request routing, WAF rules, and static content serving — not because Kestrel is unsafe. Azure Container Apps, Kubernetes ingress, and many cloud deployments expose Kestrel directly with TLS from a cert store or cert-manager."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Kestrel web server in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel" },
+    { label: "Configure Kestrel options", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/options" },
+    { label: "Kestrel endpoints configuration", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints" },
+    { label: "HTTP/2 in Kestrel", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/http2" },
+    { label: "HTTP/3 with QUIC in Kestrel", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/http3" },
+  ]}
+/>
