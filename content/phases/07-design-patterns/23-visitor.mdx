@@ -1,24 +1,300 @@
 ---
-title: "Visitor"
+title: "Visitor — Double Dispatch"
 slug: "visitor"
 order: 23
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["visitor", "behavioral", "double dispatch", "expression visitor", "EF Core", "pattern matching"]
+summary: "Visitor adds new operations to a class hierarchy without modifying it — enabling extensible processing of object trees via double dispatch."
+docsLinks:
+  - label: "ExpressionVisitor Class"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions.expressionvisitor"
+  - label: "C# pattern matching (switch expressions)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Adding Operations to a Fixed Hierarchy
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+You have a stable class hierarchy (geometric shapes, AST nodes, DOM elements). You need to add operations periodically (rendering, serialization, area calculation, SQL translation). Without Visitor, each operation scatters `if (obj is Circle) ... else if (obj is Square) ...` checks everywhere — violating OCP.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Visitor lets you add a new operation by writing one new Visitor class — no changes to the shape hierarchy.
+
+---
+
+## Classic Visitor (Double Dispatch)
+
+```csharp
+// The element hierarchy — rarely changes
+public interface IShape
+{
+    void Accept(IShapeVisitor visitor); // the key: element accepts a visitor
+}
+
+public class Circle : IShape
+{
+    public double Radius { get; }
+    public Circle(double radius) => Radius = radius;
+
+    // Double dispatch: calls the visitor's method specific to Circle
+    public void Accept(IShapeVisitor visitor) => visitor.VisitCircle(this);
+}
+
+public class Rectangle : IShape
+{
+    public double Width { get; }
+    public double Height { get; }
+    public Rectangle(double w, double h) { Width = w; Height = h; }
+
+    public void Accept(IShapeVisitor visitor) => visitor.VisitRectangle(this);
+}
+
+public class Triangle : IShape
+{
+    public double Base { get; }
+    public double Height { get; }
+    public Triangle(double b, double h) { Base = b; Height = h; }
+
+    public void Accept(IShapeVisitor visitor) => visitor.VisitTriangle(this);
+}
+
+// Visitor interface — one method per element type
+public interface IShapeVisitor
+{
+    void VisitCircle(Circle circle);
+    void VisitRectangle(Rectangle rect);
+    void VisitTriangle(Triangle tri);
+}
+
+// Concrete visitors — each adds a different operation to ALL shapes
+public class AreaCalculator : IShapeVisitor
+{
+    public double TotalArea { get; private set; }
+
+    public void VisitCircle(Circle c)    => TotalArea += Math.PI * c.Radius * c.Radius;
+    public void VisitRectangle(Rectangle r) => TotalArea += r.Width * r.Height;
+    public void VisitTriangle(Triangle t)   => TotalArea += 0.5 * t.Base * t.Height;
+}
+
+public class SvgRenderer : IShapeVisitor
+{
+    private readonly StringBuilder _svg = new("<svg>\n");
+
+    public void VisitCircle(Circle c)    => _svg.AppendLine($"  <circle r='{c.Radius}' />");
+    public void VisitRectangle(Rectangle r) => _svg.AppendLine($"  <rect width='{r.Width}' height='{r.Height}' />");
+    public void VisitTriangle(Triangle t)   => _svg.AppendLine($"  <!-- triangle base={t.Base} -->");
+
+    public string GetSvg() => _svg.Append("</svg>").ToString();
+}
+
+// Usage — each shape calls the correct visitor method automatically
+var shapes = new IShape[] { new Circle(5), new Rectangle(3, 4), new Triangle(6, 8) };
+
+var areaCalc = new AreaCalculator();
+foreach (var shape in shapes)
+    shape.Accept(areaCalc);
+Console.WriteLine($"Total area: {areaCalc.TotalArea:F2}"); // 78.54 + 12 + 24 = 114.54
+
+var renderer = new SvgRenderer();
+foreach (var shape in shapes)
+    shape.Accept(renderer);
+Console.WriteLine(renderer.GetSvg());
+```
+
+---
+
+## Why "Double Dispatch"?
+
+C# is single-dispatch: method resolution is based on one object's type (the receiver's). Visitor achieves double dispatch via two virtual calls:
+
+```
+// First dispatch: shape.Accept(visitor) — resolves based on shape's runtime type
+// → Circle.Accept is called
+
+// Inside Circle.Accept:
+// Second dispatch: visitor.VisitCircle(this) — resolves based on visitor's runtime type
+// → AreaCalculator.VisitCircle is called
+
+// Result: behavior determined by BOTH shape type AND visitor type
+```
+
+---
+
+## Real .NET Example: `ExpressionVisitor`
+
+`System.Linq.Expressions.ExpressionVisitor` is the BCL's Visitor for expression trees:
+
+```csharp
+// Built-in Visitor base class — visit every node type
+public class ParameterReplacer : ExpressionVisitor
+{
+    private readonly ParameterExpression _oldParam;
+    private readonly ParameterExpression _newParam;
+
+    public ParameterReplacer(ParameterExpression oldParam, ParameterExpression newParam)
+    {
+        _oldParam = oldParam;
+        _newParam = newParam;
+    }
+
+    // Override only the node types you care about
+    protected override Expression VisitParameter(ParameterExpression node)
+        => node == _oldParam ? _newParam : base.VisitParameter(node);
+}
+
+// Use case: combine two predicates with different parameter names
+Expression<Func<Order, bool>> byStatus = o => o.Status == "Active";
+Expression<Func<Order, bool>> byTotal  = p => p.Total > 100;  // different param name!
+
+// Replace 'p' in byTotal with 'o' from byStatus
+var replacer = new ParameterReplacer(byTotal.Parameters[0], byStatus.Parameters[0]);
+Expression newBody = replacer.Visit(byTotal.Body);
+
+// Combine into one expression: o => o.Status == "Active" && o.Total > 100
+var combined = Expression.Lambda<Func<Order, bool>>(
+    Expression.AndAlso(byStatus.Body, newBody),
+    byStatus.Parameters[0]);
+
+// Now EF Core can translate the combined expression to SQL
+var results = dbContext.Orders.Where(combined).ToList();
+```
+
+---
+
+## Modern C# Alternative: Pattern Matching
+
+C# switch expressions with pattern matching can replace Visitor for many cases:
+
+```csharp
+// Without Visitor — pattern matching approach
+static double CalculateArea(IShape shape) => shape switch
+{
+    Circle c    => Math.PI * c.Radius * c.Radius,
+    Rectangle r => r.Width * r.Height,
+    Triangle t  => 0.5 * t.Base * t.Height,
+    _           => throw new ArgumentException($"Unknown shape: {shape.GetType().Name}")
+};
+
+// Same result — much simpler code
+double area = CalculateArea(new Circle(5));
+
+// Adding a new OPERATION is easy — just a new static method with switch
+static string Describe(IShape shape) => shape switch
+{
+    Circle c    => $"Circle with radius {c.Radius}",
+    Rectangle r => $"{r.Width}×{r.Height} rectangle",
+    Triangle t  => $"Triangle with base {t.Base}",
+    _           => "Unknown shape"
+};
+```
+
+---
+
+<ComparisonTable
+  title="Visitor vs Pattern Matching vs if/is Chains"
+  headers={["Approach", "Adding New Operation", "Adding New Element", "Type Safety", "Use When"]}
+  rows={[
+    ["Visitor (GoF)", "New Visitor class (easy)", "Update all Visitors (hard)", "Compile-time (interface)", "Many operations, stable hierarchy"],
+    ["switch pattern matching", "New static method (easy)", "Compiler warns on incomplete switch", "Good (with sealed hierarchy)", "C# 8+, simpler code preferred"],
+    ["if/is chains", "Update each method (hard)", "Easy (no interface)", "No — falls through silently", "Avoid — not maintainable"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/visitor/challenge-1"
+  title="Double Dispatch Explained"
+  description="Without the Visitor pattern, why can't you dispatch based on both the collection element type AND the operation type?"
+  code={`// Attempting single dispatch — fails to distinguish element types
+void Process(IShape shape, string operation)
+{
+    // How do you call the right method for each (shape, operation) combination?
+    if (operation == "area")
+    {
+        if (shape is Circle c)    return; // calculate PI*r^2
+        if (shape is Rectangle r) return; // calculate w*h
+    }
+    if (operation == "render")
+    {
+        if (shape is Circle c)    return; // render circle
+        if (shape is Rectangle r) return; // render rectangle
+    }
+    // N shapes x M operations = N*M if/else branches
+}`}
+  options={[
+    "Single dispatch is sufficient — use overloaded methods for each shape type",
+    "Single dispatch only selects method based on the receiver's type — to dispatch on BOTH types, you need two virtual calls (Visitor's double dispatch) or pattern matching",
+    "Use generics: Process<TShape, TOperation>() — the compiler resolves both types",
+    "This is not a real problem — just use a Dictionary<(Type, string), Action>"
+  ]}
+  correctAnswer={1}
+  explanation="C# only dispatches on the receiver's runtime type (single dispatch). To call different code based on BOTH the element type (Circle vs Rectangle) AND the visitor type (AreaCalculator vs SvgRenderer), you need double dispatch. Visitor achieves this via two virtual calls: shape.Accept(visitor) resolves the element type, then visitor.VisitCircle(this) resolves the operation type. Pattern matching with switch is a simpler C#-native alternative for when the hierarchy is sealed."
+/>
+
+---
+
+<Callout type="senior">
+**Visitor in EF Core Query Translation**
+
+EF Core's query translator IS a Visitor over the LINQ expression tree. It visits each node and translates it to SQL:
+
+```csharp
+// EF Core internally uses multiple Visitors to translate LINQ to SQL
+// 1. QueryCompilationContext — builds the expression pipeline
+// 2. RelationalQueryableMethodTranslatingExpressionVisitor — translates LINQ methods to SQL
+// 3. SqlNullabilityProcessor — adds NULL handling
+// 4. SearchConditionConvertingExpressionVisitor — converts conditions
+
+// You can hook into this with custom translators:
+public class MyCustomDbFunctionTranslator : IMethodCallTranslator
+{
+    private readonly ISqlExpressionFactory _sqlFactory;
+
+    public MyCustomDbFunctionTranslator(ISqlExpressionFactory sqlFactory)
+        => _sqlFactory = sqlFactory;
+
+    public SqlExpression? Translate(
+        SqlExpression? instance,
+        MethodInfo method,
+        IReadOnlyList<SqlExpression> arguments,
+        IDiagnosticsLogger<DbLoggerCategory.Query> logger)
+    {
+        // Translate a C# method call to a SQL function
+        if (method.DeclaringType == typeof(StringExtensions) && method.Name == "Soundex")
+            return _sqlFactory.Function("SOUNDEX", arguments, typeof(string));
+
+        return null;
+    }
+}
+```
+
+Understanding that EF Core is a Visitor over expression trees explains: why `Expression<Func<T, bool>>` is needed (Visitor can't traverse compiled IL), why some LINQ operations can't be translated (the Visitor has no rule for them), and why custom DB function mappings work (you register a new visit rule).
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/visitor/quiz-1"
+  question="When is the Visitor pattern a POOR choice?"
+  options={[
+    "When you have many operations to perform on the hierarchy",
+    "When the element hierarchy is stable and rarely changes",
+    "When the element hierarchy FREQUENTLY changes — adding new elements requires updating all visitors",
+    "When you need double dispatch behavior"
+  ]}
+  correctAnswer={2}
+  explanation="Visitor is poor when the element hierarchy changes frequently. Adding a new shape (Ellipse) requires adding VisitEllipse() to IShapeVisitor AND updating every single Visitor implementation — potentially dozens. This is the exact opposite of OCP for the element axis. Visitor optimizes for 'adding new operations' (easy — new Visitor class) at the cost of 'adding new element types' (hard — update all Visitors). Use it when operations change often but the hierarchy is stable."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ExpressionVisitor Class", url: "https://learn.microsoft.com/en-us/dotnet/api/system.linq.expressions.expressionvisitor" },
+    { label: "Pattern matching in C#", url: "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/functional/pattern-matching" },
+    { label: "EF Core — Custom function mappings", url: "https://learn.microsoft.com/en-us/ef/core/querying/database-functions#mapping-a-method-to-a-sql-function" },
+  ]}
+/>

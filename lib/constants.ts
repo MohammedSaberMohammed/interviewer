@@ -1,4 +1,4 @@
-import type { Difficulty, PhaseLevel } from '@/types'
+import type { Difficulty, PhaseLevel, XPLevel, BadgeDefinition } from '@/types'
 
 /* ─── .NET brand color ────────────────────────────────────────────────────── */
 export const DOTNET_PURPLE = '#512BD4'
@@ -119,3 +119,43 @@ export const DEFAULT_INTERVIEW_TIME_MINUTES = 15
 
 /* ─── Content paths ───────────────────────────────────────────────────────── */
 export const CONTENT_DIR = 'content/phases'
+
+/* ─── XP level thresholds ────────────────────────────────────────────────── */
+export const XP_LEVELS: Record<XPLevel, { min: number; max: number; label: string; message: string }> = {
+  novice:     { min: 0,     max: 999,   label: 'Novice',     message: "You're just getting started. Every expert was here once." },
+  apprentice: { min: 1000,  max: 4999,  label: 'Apprentice', message: "You've outgrown syntax questions. Ready for the internals?" },
+  senior:     { min: 5000,  max: 14999, label: 'Senior',     message: "Deep understanding unlocked. Architecture questions are next." },
+  architect:  { min: 15000, max: Infinity, label: 'Architect', message: "System-level thinking. You can reason about trade-offs under pressure." },
+}
+
+/* ─── XP awards ──────────────────────────────────────────────────────────── */
+export const XP_AWARDS = {
+  STEP_COMPLETE:       10,
+  CORRECT_FIRST_TRY:   10,
+  LESSON_COMPLETE:     50,
+  PHASE_COMPLETE:     500,
+  DAILY_GOAL_MET:     100,
+} as const
+
+/* ─── Daily goal default ─────────────────────────────────────────────────── */
+export const DEFAULT_DAILY_GOAL = 3
+
+/* ─── Max streak freezes ─────────────────────────────────────────────────── */
+export const MAX_STREAK_FREEZES = 2
+export const FREEZE_EARN_INTERVAL = 5 // earn 1 freeze every N streak days
+
+/* ─── Badge definitions ──────────────────────────────────────────────────── */
+export const BADGES: BadgeDefinition[] = [
+  { id: 'first-trap-spotted',  title: 'First Trap Spotted',  icon: '🪤', description: 'Complete your first Phase 13 challenge' },
+  { id: 'async-master',        title: 'Async Master',        icon: '⚡', description: 'Achieve 100% accuracy on Phase 5' },
+  { id: 'memory-wizard',       title: 'Memory Wizard',       icon: '🧠', description: 'Complete Phase 4' },
+  { id: 'streak-keeper',       title: 'Streak Keeper',       icon: '🔥', description: 'Maintain a 7-day streak' },
+  { id: 'streak-legend',       title: 'Streak Legend',       icon: '🏆', description: 'Maintain a 30-day streak' },
+  { id: 'perfect-phase',       title: 'Perfect Phase',       icon: '💯', description: 'Achieve 100% accuracy on any full phase' },
+  { id: 'foundation-solid',    title: 'Foundation Solid',    icon: '🏗️', description: 'Complete Phase 1' },
+  { id: 'senior-certified',    title: 'Senior Certified',    icon: '🎓', description: 'Complete all 13 phases' },
+  { id: 'night-owl',           title: 'Night Owl',           icon: '🦉', description: 'Study between 10pm–4am on 5 occasions' },
+  { id: 'early-bird',          title: 'Early Bird',          icon: '🌅', description: 'Study between 5am–8am on 5 occasions' },
+  { id: 'weekend-warrior',     title: 'Weekend Warrior',     icon: '⚔️', description: 'Study on both Saturday and Sunday' },
+  { id: 'trap-hunter',         title: 'Trap Hunter',         icon: '🎯', description: 'Complete all of Phase 13' },
+] as const

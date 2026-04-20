@@ -1,24 +1,302 @@
 ---
-title: "Specification"
+title: "Specification Pattern — Composable Predicates"
 slug: "specification"
 order: 26
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["specification", "data access", "EF Core", "predicates", "composable", "business rules", "Ardalis.Specification"]
+summary: "Specification encapsulates a business rule as a reusable, composable object — keeping query logic in the domain layer and enabling AND/OR/NOT combinations without modifying repositories."
+docsLinks:
+  - label: "Ardalis.Specification library"
+    url: "https://github.com/ardalis/Specification"
+  - label: "Specification pattern (Azure Architecture)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/specification"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Query Logic Scattered in Repositories
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When repositories accumulate many methods (`GetActiveOrders`, `GetPendingHighValueOrders`, `GetOrdersByCustomerInRegion`...), query logic becomes fragmented and each combination requires a new method. Business rules leak into infrastructure.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Repository growing out of control
+public interface IOrderRepository
+{
+    Task<IList<Order>> GetActiveOrdersAsync();
+    Task<IList<Order>> GetHighValueOrdersAsync(decimal threshold);
+    Task<IList<Order>> GetActiveHighValueOrdersAsync(decimal threshold); // combination!
+    Task<IList<Order>> GetOrdersByRegionAsync(string region);
+    Task<IList<Order>> GetActiveHighValueOrdersByRegionAsync(decimal t, string r); // explosion!
+    // ...
+}
+```
+
+---
+
+## Simple Specification
+
+```csharp
+// Generic specification — wraps a predicate expression
+public class Specification<T>
+{
+    public Expression<Func<T, bool>> Criteria { get; }
+
+    public Specification(Expression<Func<T, bool>> criteria)
+        => Criteria = criteria;
+
+    // Logical AND — combines two specifications
+    public Specification<T> And(Specification<T> other)
+        => new Specification<T>(CombineAnd(Criteria, other.Criteria));
+
+    // Logical OR
+    public Specification<T> Or(Specification<T> other)
+        => new Specification<T>(CombineOr(Criteria, other.Criteria));
+
+    // Logical NOT
+    public Specification<T> Not()
+        => new Specification<T>(CombineNot(Criteria));
+
+    private static Expression<Func<T, bool>> CombineAnd(
+        Expression<Func<T, bool>> left, Expression<Func<T, bool>> right)
+    {
+        var param   = left.Parameters[0];
+        var rightBody = new ParameterReplacer(right.Parameters[0], param).Visit(right.Body)!;
+        return Expression.Lambda<Func<T, bool>>(Expression.AndAlso(left.Body, rightBody), param);
+    }
+
+    private static Expression<Func<T, bool>> CombineOr(
+        Expression<Func<T, bool>> left, Expression<Func<T, bool>> right)
+    {
+        var param     = left.Parameters[0];
+        var rightBody = new ParameterReplacer(right.Parameters[0], param).Visit(right.Body)!;
+        return Expression.Lambda<Func<T, bool>>(Expression.OrElse(left.Body, rightBody), param);
+    }
+
+    private static Expression<Func<T, bool>> CombineNot(Expression<Func<T, bool>> expr)
+        => Expression.Lambda<Func<T, bool>>(Expression.Not(expr.Body), expr.Parameters[0]);
+}
+
+// Helper to replace parameter expressions (needed for combining lambdas)
+class ParameterReplacer : ExpressionVisitor
+{
+    private readonly ParameterExpression _oldParam, _newParam;
+    public ParameterReplacer(ParameterExpression old, ParameterExpression @new)
+    {
+        _oldParam = old; _newParam = @new;
+    }
+    protected override Expression VisitParameter(ParameterExpression node)
+        => node == _oldParam ? _newParam : base.VisitParameter(node);
+}
+```
+
+---
+
+## Named Specifications — Business Rules as Classes
+
+```csharp
+// Each specification = one business rule, named clearly
+public class ActiveOrderSpec : Specification<Order>
+{
+    public ActiveOrderSpec()
+        : base(o => o.Status == OrderStatus.Active) { }
+}
+
+public class HighValueOrderSpec : Specification<Order>
+{
+    public HighValueOrderSpec(decimal threshold = 1000m)
+        : base(o => o.Total >= threshold) { }
+}
+
+public class OrderByRegionSpec : Specification<Order>
+{
+    public OrderByRegionSpec(string region)
+        : base(o => o.Customer.Region == region) { }
+}
+
+// Composed at the call site — repository stays lean
+var spec = new ActiveOrderSpec()
+    .And(new HighValueOrderSpec(500m))
+    .And(new OrderByRegionSpec("Europe"));
+
+// Repository — one method handles any specification
+public interface IOrderRepository
+{
+    Task<IReadOnlyList<Order>> FindAsync(Specification<Order> spec, CancellationToken ct = default);
+}
+
+public class EfOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+    public EfOrderRepository(AppDbContext db) => _db = db;
+
+    public async Task<IReadOnlyList<Order>> FindAsync(Specification<Order> spec, CancellationToken ct = default)
+        => await _db.Orders
+            .Where(spec.Criteria) // EF Core translates to SQL
+            .ToListAsync(ct);
+}
+
+// Usage — compose and query
+var orders = await orderRepo.FindAsync(
+    new ActiveOrderSpec().And(new HighValueOrderSpec(500m)));
+```
+
+---
+
+## Ardalis.Specification — Production-Ready Library
+
+The **Ardalis.Specification** NuGet package provides a full-featured Specification with includes, ordering, and pagination:
+
+```csharp
+// Rich specification with Includes, Ordering, Pagination
+public class OrdersWithItemsSpec : Specification<Order, OrderListDto>
+{
+    public OrdersWithItemsSpec(OrderFilter filter)
+    {
+        Query
+            .Where(o => o.Status == filter.Status)
+            .Where(o => o.Total >= filter.MinTotal, condition: filter.MinTotal.HasValue)
+            .Include(o => o.Items).ThenInclude(i => i.Product)
+            .Include(o => o.Customer)
+            .OrderByDescending(o => o.CreatedAt)
+            .Skip((filter.Page - 1) * filter.PageSize)
+            .Take(filter.PageSize);
+
+        // Optional: project to DTO (avoids loading full entities)
+        Query.Select(o => new OrderListDto(
+            o.Id,
+            o.Customer.Name,
+            o.Total,
+            o.Items.Count));
+    }
+}
+
+// Repository using Ardalis.Specification
+public class EfRepository<T> : RepositoryBase<T>
+{
+    public EfRepository(AppDbContext db) : base(db) { }
+}
+
+// Usage
+var spec = new OrdersWithItemsSpec(new OrderFilter
+{
+    Status   = OrderStatus.Active,
+    MinTotal = 100m,
+    Page     = 1,
+    PageSize = 25,
+});
+
+IReadOnlyList<OrderListDto> orders = await orderRepo.ListAsync(spec);
+```
+
+---
+
+<ComparisonTable
+  title="Specification vs Ad-Hoc LINQ vs Separate Repository Methods"
+  headers={["Approach", "Reusability", "Composability", "Maintainability", "Use When"]}
+  rows={[
+    ["Ad-hoc LINQ in service", "None — inline query", "No", "Low — queries scattered", "Prototypes, simple apps"],
+    ["Repository methods (GetActive...)", "Medium — method reuse", "No — N×M combinations", "Medium — methods proliferate", "Small set of fixed queries"],
+    ["Specification pattern", "High — reusable specs", "Yes — And/Or/Not", "High — rules named, locatable", "Complex domains, many filter combinations"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/specification/challenge-1"
+  title="IsSatisfiedBy vs EF Core Criteria"
+  description="Specifications can have two methods: IsSatisfiedBy(T item) for in-memory and Criteria (Expression<Func<T,bool>>) for EF Core. When would you use each?"
+  code={`public class ActiveOrderSpec : Specification<Order>
+{
+    public ActiveOrderSpec()
+        : base(o => o.Status == OrderStatus.Active) { }
+
+    // Can also add an in-memory check
+    public bool IsSatisfiedBy(Order order)
+        => order.Status == OrderStatus.Active;
+}
+
+// Scenario A: Validating a newly created order object before saving
+// Scenario B: Querying active orders from the database`}
+  options={[
+    "Always use Criteria (Expression) — it works in both scenarios",
+    "A: IsSatisfiedBy — in-memory check on an object; B: Criteria — EF Core translates to SQL",
+    "A: Criteria; B: IsSatisfiedBy",
+    "Always use IsSatisfiedBy — it's simpler and works everywhere"
+  ]}
+  correctAnswer={1}
+  explanation="Use IsSatisfiedBy (in-memory) to validate/check individual objects without a DB roundtrip — e.g., 'can this order be cancelled?' before persisting the change. Use Criteria (Expression<Func<T, bool>>) for database queries — EF Core translates the expression tree to SQL. Never use IsSatisfiedBy for database filtering (it loads all records first). Specification with both methods serves as both a domain rule and a query filter."
+/>
+
+---
+
+<Callout type="senior">
+**Specification Pattern and Business Rules as First-Class Citizens**
+
+Specifications are more than query filters — they're named, testable business rules:
+
+```csharp
+// Business rules as named specifications — discoverable, testable
+public class EligibleForFreeShippingSpec : Specification<Order>
+{
+    public EligibleForFreeShippingSpec()
+        : base(o => o.Total >= 50m && !o.Items.Any(i => i.Product.IsHeavy)) { }
+
+    // Human-readable reason
+    public string GetViolationReason(Order order) =>
+        order.Total < 50m
+            ? $"Order total {order.Total:C} is below the £50 threshold"
+            : "Order contains heavy items that require a shipping surcharge";
+}
+
+// Test — specifications are independently testable
+[Fact]
+public void OrderOver50_NoHeavyItems_IsEligibleForFreeShipping()
+{
+    var order = new Order
+    {
+        Total = 75m,
+        Items = new List<OrderItem> { new() { Product = new() { IsHeavy = false } } }
+    };
+    var spec = new EligibleForFreeShippingSpec();
+    Assert.True(spec.IsSatisfiedBy(order));
+}
+
+// EF Core query — same specification
+var eligibleOrders = await orderRepo.FindAsync(new EligibleForFreeShippingSpec());
+
+// Pricing rule — composed specification
+var discount15 = new VolumeOrderSpec().And(new LoyalCustomerSpec());
+if (discount15.IsSatisfiedBy(order))
+    order.ApplyDiscount(0.15m);
+```
+
+Specifications bridge the domain model (business rules) and the persistence model (database queries) while keeping each concern in its appropriate layer.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/specification/quiz-1"
+  question="Why must Specification use Expression<Func<T, bool>> rather than Func<T, bool> for EF Core queries?"
+  options={[
+    "Expression is more type-safe than Func",
+    "EF Core needs an expression tree (data structure) it can inspect and translate to SQL; Func is compiled IL that EF Core cannot analyze",
+    "Func does not support lambda syntax",
+    "Expression is required by the ISpecification interface contract"
+  ]}
+  correctAnswer={1}
+  explanation="This is the Interpreter pattern connection from lesson 15. EF Core cannot translate compiled IL (Func<T, bool>) to SQL — it reads your condition as an opaque black box and must load all records into memory to apply it. Expression<Func<T, bool>> is a data structure (expression tree) that EF Core can inspect node by node and generate SQL from. Using Func instead of Expression for an EF Core .Where() is a performance bug that causes full table scans."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Ardalis.Specification on GitHub", url: "https://github.com/ardalis/Specification" },
+    { label: "Specification pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/specification" },
+    { label: "EF Core — filtering with LINQ", url: "https://learn.microsoft.com/en-us/ef/core/querying/filtering" },
+  ]}
+/>

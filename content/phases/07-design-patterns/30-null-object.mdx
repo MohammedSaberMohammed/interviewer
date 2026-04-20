@@ -1,24 +1,289 @@
 ---
-title: "Null Object"
+title: "Null Object — Replacing Null Checks with Neutral Behavior"
 slug: "null-object"
 order: 30
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 10
+status: "published"
+tags: ["null object", "behavioral", "null checks", "NullReferenceException", "NullLogger", "optional behavior"]
+summary: "Null Object provides a default, do-nothing implementation of an interface — eliminating null checks while maintaining correct behavior when an optional dependency is absent."
+docsLinks:
+  - label: "NullLogger<T> — BCL Null Object"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.abstractions.nulllogger-1"
+  - label: "Nullable reference types (C# 8)"
+    url: "https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Null Checks Everywhere
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When a dependency is optional — like a logger, a cache, or an event publisher — callers must constantly check for null:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+public class OrderService
+{
+    private readonly ILogger? _logger; // optional
+    private readonly IEventPublisher? _publisher; // optional
+
+    public async Task PlaceOrderAsync(Order order)
+    {
+        _logger?.LogInformation("Placing order {Id}", order.Id); // null check needed
+        // ... business logic ...
+        _logger?.LogInformation("Order placed: {Id}", order.Id);
+
+        if (_publisher != null)              // null check needed
+            await _publisher.PublishAsync(new OrderPlacedEvent(order.Id));
+    }
+}
+```
+
+If you have 50 method calls on `_logger`, that's 50 null checks or 50 `?.` operators. Null Object eliminates them.
+
+---
+
+## The Pattern
+
+```csharp
+// The interface
+public interface ILogger
+{
+    void LogInformation(string message, params object[] args);
+    void LogWarning(string message, params object[] args);
+    void LogError(Exception ex, string message, params object[] args);
+}
+
+// Real implementation
+public class ConsoleLogger : ILogger
+{
+    public void LogInformation(string message, params object[] args)
+        => Console.WriteLine($"[INFO] {string.Format(message, args)}");
+
+    public void LogWarning(string message, params object[] args)
+        => Console.WriteLine($"[WARN] {string.Format(message, args)}");
+
+    public void LogError(Exception ex, string message, params object[] args)
+        => Console.WriteLine($"[ERROR] {string.Format(message, args)}: {ex.Message}");
+}
+
+// NULL OBJECT — does nothing, same interface
+public class NullLogger : ILogger
+{
+    // Singleton — there's only one "do nothing" logger
+    public static readonly NullLogger Instance = new();
+    private NullLogger() { }
+
+    public void LogInformation(string message, params object[] args) { } // no-op
+    public void LogWarning(string message, params object[] args) { }     // no-op
+    public void LogError(Exception ex, string message, params object[] args) { } // no-op
+}
+
+// Service — no null checks needed
+public class OrderService
+{
+    private readonly ILogger _logger;
+
+    // Default to NullLogger — no null checks in methods
+    public OrderService(ILogger? logger = null)
+        => _logger = logger ?? NullLogger.Instance;
+
+    public async Task PlaceOrderAsync(Order order)
+    {
+        _logger.LogInformation("Placing order {Id}", order.Id); // no null check!
+        // ... business logic ...
+        _logger.LogInformation("Order placed: {Id}", order.Id); // no null check!
+    }
+}
+
+// Usage with real logger
+var service = new OrderService(new ConsoleLogger());
+
+// Usage without logger — no crash, no noise
+var silentService = new OrderService(); // uses NullLogger
+```
+
+---
+
+## Real .NET BCL Example: `NullLogger<T>`
+
+The .NET BCL ships `NullLogger<T>` and `NullLoggerFactory` — you don't need to write your own:
+
+```csharp
+using Microsoft.Extensions.Logging.Abstractions;
+
+// NullLogger<T> — the BCL's Null Object for ILogger<T>
+public class OrderProcessor
+{
+    private readonly ILogger<OrderProcessor> _logger;
+
+    // DI provides a real logger; tests can use NullLogger
+    public OrderProcessor(ILogger<OrderProcessor>? logger = null)
+        => _logger = logger ?? NullLogger<OrderProcessor>.Instance;
+
+    public void Process(Order order)
+    {
+        _logger.LogInformation("Processing order {Id}", order.Id);
+        // ...
+    }
+}
+
+// In tests — no logger needed
+var processor = new OrderProcessor(NullLogger<OrderProcessor>.Instance);
+processor.Process(testOrder); // no logging output, no null refs
+
+// In tests — capture log output for assertion
+var loggerFactory = LoggerFactory.Create(b => b.AddProvider(new TestLoggerProvider()));
+var logger = loggerFactory.CreateLogger<OrderProcessor>();
+var processor2 = new OrderProcessor(logger);
+```
+
+---
+
+## Null Object vs Null Coalescing
+
+```csharp
+// Null coalescing — still passes null around internally
+public class Report
+{
+    private readonly IFormatter? _formatter;
+
+    public string Format(string data)
+    {
+        // Inline null handling — repeated at every call site
+        return _formatter?.Format(data) ?? data; // fallback is scattered
+    }
+}
+
+// Null Object — eliminate null from the equation entirely
+public class NullFormatter : IFormatter
+{
+    public static readonly NullFormatter Instance = new();
+    public string Format(string data) => data; // identity — return as-is
+}
+
+public class Report
+{
+    private readonly IFormatter _formatter; // never null
+
+    public Report(IFormatter? formatter = null)
+        => _formatter = formatter ?? NullFormatter.Instance;
+
+    public string Format(string data) => _formatter.Format(data); // no null check!
+}
+```
+
+---
+
+<ComparisonTable
+  title="Null Object vs Alternatives"
+  headers={["Approach", "Null Checks", "Default Behavior", "Testability", "Use When"]}
+  rows={[
+    ["Null reference (nullable type)", "Required everywhere", "Crash (NullRefException)", "Poor", "Avoid for optional deps"],
+    ["Null coalescing (?? fallback)", "Once per call site", "Inline fallback", "Good", "Simple optional values"],
+    ["Null Object pattern", "None — eliminated", "Do-nothing implementation", "Excellent", "Optional service/dependency with multiple methods"],
+    ["Optional<T> / Maybe<T>", "Explicit check at boundary", "No implicit behavior", "Good", "Value that may or may not exist"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/null-object/challenge-1"
+  title="Null Object vs Result/Optional"
+  description="When is Null Object the wrong solution?"
+  code={`// Scenario A: A logger that may or may not be configured
+// — if no logger is configured, just skip logging silently
+
+// Scenario B: A user lookup that may return no user
+// — "no user found" has business meaning and the caller MUST handle it
+
+// Scenario C: An optional discount calculator
+// — if no calculator is configured, apply 0% discount`}
+  options={[
+    "Null Object is appropriate for all three scenarios",
+    "Null Object is appropriate for A and C; B should use Result<User> or Optional<User> — the absence has business meaning that must be handled explicitly",
+    "Null Object is only for logging — B and C should throw exceptions",
+    "None of the scenarios need Null Object — use nullable types instead"
+  ]}
+  correctAnswer={1}
+  explanation="Null Object is appropriate when absence means 'silently do nothing' (A: no logging = no problem; C: no discount = 0% discount). It's inappropriate when absence has business meaning that the caller must handle explicitly (B: user not found might mean 403, 404, or redirect to registration — the caller must decide). For B, use Result<User> or Optional<User> to force the caller to handle the absence case. Null Object hides the absence; Result/Optional makes it explicit."
+/>
+
+---
+
+<Callout type="senior">
+**Null Object in DI — Default Implementations**
+
+Null Object pairs well with optional service registration in DI:
+
+```csharp
+// Define the interface with a null object default
+public interface IFeatureFlags
+{
+    bool IsEnabled(string featureName);
+}
+
+public class NullFeatureFlags : IFeatureFlags
+{
+    public bool IsEnabled(string featureName) => false; // all features off by default
+}
+
+public class LaunchDarklyFeatureFlags : IFeatureFlags
+{
+    private readonly LdClient _client;
+    public LaunchDarklyFeatureFlags(LdClient client) => _client = client;
+    public bool IsEnabled(string name) => _client.BoolVariation(name, defaultValue: false);
+}
+
+// Register with Null Object as the default
+builder.Services.AddSingleton<IFeatureFlags, NullFeatureFlags>(); // default
+
+// Override with real implementation if configured
+if (!string.IsNullOrEmpty(builder.Configuration["LaunchDarkly:SdkKey"]))
+{
+    builder.Services.AddSingleton<IFeatureFlags, LaunchDarklyFeatureFlags>();
+    // This replaces the NullFeatureFlags registration
+}
+
+// Consumer — never needs to check if feature flags are configured
+public class ProductController : ControllerBase
+{
+    private readonly IFeatureFlags _flags;
+
+    public ProductController(IFeatureFlags flags) => _flags = flags;
+
+    public IActionResult GetProducts()
+    {
+        bool showNewLayout = _flags.IsEnabled("new-product-layout"); // safe in all environments
+        // ...
+    }
+}
+```
+
+This pattern is powerful for optional infrastructure: telemetry, feature flags, external notification services — when you want the code to work correctly in development/testing without requiring all services to be configured.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/null-object/quiz-1"
+  question="What is the key design requirement for a Null Object implementation?"
+  options={[
+    "It must log a warning when its methods are called",
+    "It must implement the same interface as the real object and do nothing (or provide safe defaults) — never throw or return null",
+    "It must be a singleton to avoid multiple allocations",
+    "It must be in a separate assembly to avoid coupling"
+  ]}
+  correctAnswer={1}
+  explanation="The key requirement: the Null Object must implement the same interface as the real object (so it's substitutable — Liskov Substitution Principle) and perform neutral/no-op behavior (returning safe defaults, doing nothing). It must NEVER throw exceptions or return null from its methods — that would defeat the purpose of eliminating null checks. Being a singleton is common (there's only one 'nothing') but not required. The location is irrelevant to the pattern."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "NullLogger<T> Class", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.abstractions.nulllogger-1" },
+    { label: "NullLoggerFactory Class", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.logging.abstractions.nullloggerfactory" },
+    { label: "Nullable reference types (C# 8)", url: "https://learn.microsoft.com/en-us/dotnet/csharp/nullable-references" },
+  ]}
+/>

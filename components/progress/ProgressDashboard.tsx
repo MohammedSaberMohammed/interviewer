@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Flame, BookOpen, Target, RotateCcw } from 'lucide-react'
+import { Flame, BookOpen, Target, RotateCcw, Zap } from 'lucide-react'
 import { useProgressStore } from '@/stores/progressStore'
 import { PhaseProgressBar } from './PhaseProgressBar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { DailyQuestCard } from '@/components/quest/DailyQuestCard'
+import { BADGES, XP_LEVELS } from '@/lib/constants'
 import type { Phase } from '@/types'
 
 interface ProgressDashboardProps {
@@ -47,8 +49,54 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
     }
   }
 
+  const levelConfig = XP_LEVELS[store.level]
+  const levelProgress = store.getLevelProgress()
+  const xpToNext = store.getXPToNextLevel()
+
   return (
     <div className="space-y-8">
+      {/* Daily quest + XP level side-by-side on md+ */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <DailyQuestCard
+          nextQuestHref="/phases/01-csharp-core"
+          nextQuestTitle="Phase 1 — C# Core"
+        />
+
+        {/* Level + XP card */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Level</h3>
+            <span className="rounded-full bg-[#512BD4]/10 px-2.5 py-0.5 text-xs font-semibold text-[#512BD4] dark:bg-violet-950/40 dark:text-violet-300">
+              {levelConfig.label}
+            </span>
+          </div>
+          <p className="text-3xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
+            {store.xpTotal.toLocaleString()} <span className="text-sm font-normal text-slate-400">XP</span>
+          </p>
+          {store.level !== 'architect' && (
+            <>
+              <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[#512BD4] to-violet-400 transition-all duration-300"
+                  style={{ width: `${levelProgress}%` }}
+                  role="progressbar"
+                  aria-valuenow={levelProgress}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${levelProgress}% to next level`}
+                />
+              </div>
+              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+                {xpToNext.toLocaleString()} XP to {
+                  store.level === 'novice' ? 'Apprentice' :
+                  store.level === 'apprentice' ? 'Senior' : 'Architect'
+                }
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
@@ -72,8 +120,11 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-bold">{store.streakDays}</p>
-            <p className="text-xs text-muted-foreground mt-1">days in a row</p>
+            <p className="text-3xl font-bold tabular-nums">{store.streakDays}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              days in a row
+              {store.streakFreezeCount > 0 && ` · ${store.streakFreezeCount} freeze${store.streakFreezeCount > 1 ? 's' : ''}`}
+            </p>
           </CardContent>
         </Card>
 
@@ -88,6 +139,33 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
             <p className="text-xs text-muted-foreground mt-1">total attempts</p>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Badges */}
+      <div>
+        <h2 className="text-lg font-semibold mb-4">Badges</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {BADGES.map((badge) => {
+            const unlocked = store.unlockedBadges.includes(badge.id)
+            return (
+              <div
+                key={badge.id}
+                className={`rounded-xl border p-3 text-center transition-colors ${
+                  unlocked
+                    ? 'border-[#512BD4]/30 bg-[#512BD4]/5 dark:border-violet-500/30 dark:bg-violet-950/20'
+                    : 'border-slate-200 bg-slate-50 opacity-40 dark:border-slate-800 dark:bg-slate-900/60'
+                }`}
+                title={badge.description}
+              >
+                <span className="text-2xl" aria-hidden="true">{badge.icon}</span>
+                <p className="mt-1 text-xs font-medium text-slate-700 dark:text-slate-300 leading-tight">{badge.title}</p>
+                {!unlocked && (
+                  <p className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500 leading-tight">{badge.description}</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* Phase progress */}

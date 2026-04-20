@@ -5,7 +5,15 @@ import { ChevronRight, Clock } from 'lucide-react'
 import { MDXRemote } from 'next-mdx-remote/rsc'
 import remarkFrontmatter from 'remark-frontmatter'
 import rehypeShiki from '@shikijs/rehype'
-import { getAllPhaseSlugs, getLessonMeta, getLesson, getAdjacentLessons, getPhaseMeta, getLessonRawMdx } from '@/lib/content'
+import {
+  getAllPhaseSlugs,
+  getLessonMeta,
+  getLesson,
+  getAdjacentLessons,
+  getPhaseMeta,
+  getLessonRawMdx,
+  extractQuestStepIds,
+} from '@/lib/content'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -21,6 +29,13 @@ import { ComparisonTable } from '@/components/lesson/ComparisonTable'
 import { MythBuster } from '@/components/lesson/MythBuster'
 import { MemoryVisualizer } from '@/components/lesson/MemoryVisualizer'
 import { CodePlayground } from '@/components/lesson/CodePlayground'
+import {
+  QuestStep,
+  CharacterTeach,
+  TapToSpot,
+  QuestLayout,
+  ReadAsArticleToggle,
+} from '@/components/quest'
 
 interface Props {
   params: Promise<{ phaseSlug: string; lessonSlug: string }>
@@ -36,6 +51,10 @@ const mdxComponents = {
   CodePlayground,
   DocsLink,
   DocsLinks,
+  // Quest components — available for re-authored lessons
+  QuestStep,
+  CharacterTeach,
+  TapToSpot,
 }
 
 export async function generateStaticParams() {
@@ -68,8 +87,36 @@ export default async function LessonPage({ params }: Props) {
   const allLessons = getLessonMeta(phaseSlug)
   const { prev, next } = getAdjacentLessons(phaseSlug, lessonSlug)
 
-  // Read raw MDX (includes frontmatter — remarkFrontmatter will strip it)
   const rawMdx = lesson.status === 'published' ? getLessonRawMdx(phaseSlug, lessonSlug) : null
+  const stepIds = rawMdx ? extractQuestStepIds(rawMdx) : []
+  const questMode = !!(lesson.questMode && stepIds.length > 0)
+
+  const nextLesson = next ? { slug: next.slug, title: next.title } : null
+
+  const mdxContent = rawMdx ? (
+    <MDXRemote
+      source={rawMdx}
+      components={mdxComponents}
+      options={{
+        mdxOptions: {
+          remarkPlugins: [remarkFrontmatter],
+          rehypePlugins: [
+            [rehypeShiki, {
+              themes: { light: 'github-light', dark: 'github-dark' },
+              langs: ['csharp', 'typescript', 'tsx', 'json', 'bash', 'xml', 'sql'],
+              defaultLanguage: 'csharp',
+              addLanguageClass: true,
+            }],
+          ],
+        },
+      }}
+    />
+  ) : (
+    <div className="rounded-xl border border-border bg-muted/30 p-8 text-center">
+      <p className="font-semibold mb-1">Content Coming Soon</p>
+      <p className="text-muted-foreground text-sm">This lesson is being written. Check back soon.</p>
+    </div>
+  )
 
   return (
     <>
@@ -102,12 +149,16 @@ export default async function LessonPage({ params }: Props) {
           <main id="main-content" className="flex-1 min-w-0 max-w-2xl">
             {/* Lesson header */}
             <div className="mb-8">
-              <div className="flex flex-wrap items-center gap-2 mb-2">
-                <DifficultyBadge level={lesson.difficulty} />
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Clock className="h-3 w-3" aria-hidden="true" />
-                  {lesson.readingTime} min read
-                </span>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <DifficultyBadge level={lesson.difficulty} />
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3" aria-hidden="true" />
+                    {lesson.readingTime} min read
+                  </span>
+                </div>
+                {/* Article mode toggle — always visible */}
+                <ReadAsArticleToggle />
               </div>
               <h1 className="text-3xl font-bold mb-2">{lesson.title}</h1>
               {lesson.summary && (
@@ -118,33 +169,19 @@ export default async function LessonPage({ params }: Props) {
               </div>
             </div>
 
-            {/* Lesson content */}
-            <div className="prose-lesson" id="lesson-content">
-              {rawMdx ? (
-                <MDXRemote
-                  source={rawMdx}
-                  components={mdxComponents}
-                  options={{
-                    mdxOptions: {
-                      remarkPlugins: [remarkFrontmatter],
-                      rehypePlugins: [
-                        [rehypeShiki, {
-                          themes: { light: 'github-light', dark: 'github-dark' },
-                          langs: ['csharp', 'typescript', 'tsx', 'json', 'bash', 'xml', 'sql'],
-                          defaultLanguage: 'csharp',
-                          addLanguageClass: true,
-                        }],
-                      ],
-                    },
-                  }}
-                />
-              ) : (
-                <div className="rounded-xl border border-border bg-muted/30 p-8 text-center">
-                  <p className="font-semibold mb-1">Content Coming Soon</p>
-                  <p className="text-muted-foreground text-sm">This lesson is being written. Check back soon.</p>
-                </div>
-              )}
-            </div>
+            {/* Lesson content — wrapped in QuestLayout for step navigation */}
+            <QuestLayout
+              phaseSlug={phaseSlug}
+              lessonSlug={lessonSlug}
+              lessonTitle={lesson.title}
+              stepIds={stepIds}
+              questMode={questMode}
+              nextLesson={nextLesson}
+            >
+              <div className="prose-lesson" id="lesson-content">
+                {mdxContent}
+              </div>
+            </QuestLayout>
 
             {/* Docs links */}
             {lesson.docsLinks.length > 0 && (

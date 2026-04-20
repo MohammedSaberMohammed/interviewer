@@ -1,24 +1,307 @@
 ---
-title: "Unit of Work"
+title: "Unit of Work — DbContext IS a UoW"
 slug: "unit-of-work"
 order: 25
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["unit of work", "data access", "DbContext", "EF Core", "transactions", "change tracking", "DDD"]
+summary: "Unit of Work tracks all changes to domain objects in a business transaction and commits them atomically. DbContext IS a Unit of Work — knowing when to wrap it is the senior skill."
+docsLinks:
+  - label: "EF Core change tracking"
+    url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/"
+  - label: "EF Core transactions"
+    url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Unit of Work?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A Unit of Work (UoW) maintains a list of objects affected by a business transaction and coordinates writing out changes and resolving concurrency problems. Martin Fowler's original definition:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+> "Maintains a list of objects affected by a business transaction and coordinates the writing out of changes and the resolution of concurrency problems."
+
+The key responsibilities:
+1. **Track changes** — know which objects were added, modified, deleted
+2. **Coordinate repositories** — multiple repos share the same transaction context
+3. **Commit atomically** — all changes succeed or none do
+4. **Clean up** — dispose connections and transaction resources
+
+---
+
+## DbContext IS the Unit of Work
+
+EF Core's `DbContext` already implements the UoW pattern:
+
+```csharp
+// DbContext tracks all changes across all DbSets
+public class AppDbContext : DbContext
+{
+    public DbSet<Order>    Orders    { get; set; } = null!;
+    public DbSet<Customer> Customers { get; set; } = null!;
+    public DbSet<Product>  Products  { get; set; } = null!;
+
+    // SaveChangesAsync() = UoW.Commit()
+    // It wraps all pending changes in a transaction and commits atomically
+}
+
+// Using DbContext as UoW directly (the common approach):
+public class OrderService
+{
+    private readonly AppDbContext _db; // THE Unit of Work
+
+    public OrderService(AppDbContext db) => _db = db;
+
+    public async Task PlaceOrderAsync(PlaceOrderDto dto)
+    {
+        // 1. Create order (tracked by _db)
+        var order = new Order { CustomerId = dto.CustomerId, Total = dto.Total };
+        await _db.Orders.AddAsync(order);
+
+        // 2. Reduce stock (tracked by _db — same UoW)
+        var product = await _db.Products.FindAsync(dto.ProductId)
+            ?? throw new NotFoundException("Product not found");
+        product.Stock -= dto.Quantity;
+
+        // 3. Update customer points (tracked by _db — same UoW)
+        var customer = await _db.Customers.FindAsync(dto.CustomerId)!;
+        customer.LoyaltyPoints += (int)(dto.Total / 10);
+
+        // 4. Commit ALL changes atomically (UoW.Commit)
+        await _db.SaveChangesAsync();
+        // If ANY step fails, none are committed — atomicity guaranteed
+    }
+}
+```
+
+---
+
+## When to Add an Explicit IUnitOfWork Wrapper
+
+You might wrap DbContext in your own IUnitOfWork when:
+- You want to abstract away EF Core completely (for testing or multiple data sources)
+- You use multiple DbContexts and need to coordinate commits
+- You follow strict Clean Architecture where application layer cannot reference EF Core
+
+```csharp
+// IUnitOfWork interface — used in application layer
+public interface IUnitOfWork
+{
+    Task<int> CommitAsync(CancellationToken ct = default);
+}
+
+// EF Core implementation
+public class EfUnitOfWork : IUnitOfWork
+{
+    private readonly AppDbContext _db;
+    public EfUnitOfWork(AppDbContext db) => _db = db;
+
+    public Task<int> CommitAsync(CancellationToken ct = default)
+        => _db.SaveChangesAsync(ct);
+}
+
+// Application layer — no EF Core reference
+public class OrderHandler : IRequestHandler<PlaceOrderCommand, int>
+{
+    private readonly IOrderRepository _orders;
+    private readonly IProductRepository _products;
+    private readonly IUnitOfWork _uow;
+
+    public OrderHandler(IOrderRepository orders, IProductRepository products, IUnitOfWork uow)
+    {
+        _orders   = orders;
+        _products = products;
+        _uow      = uow;
+    }
+
+    public async Task<int> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        var order   = Order.Create(cmd.CustomerId, cmd.Items);
+        var product = await _products.GetByIdAsync(cmd.ProductId, ct)
+            ?? throw new NotFoundException("Product not found");
+
+        product.ReduceStock(cmd.Quantity);
+        await _orders.AddAsync(order, ct);
+
+        await _uow.CommitAsync(ct); // single commit for all changes
+        return order.Id;
+    }
+}
+```
+
+---
+
+## EF Core Change Tracking — The UoW Internals
+
+Understanding how DbContext tracks changes helps you avoid bugs:
+
+```csharp
+var order = await dbContext.Orders.FindAsync(orderId);
+// EntityState = Unchanged — loaded from DB, no modifications
+
+order.Status = "Shipped";
+// EntityState = Modified — change tracker detected the property change
+
+var newOrder = new Order { CustomerId = 5, Total = 99.99m };
+dbContext.Orders.Add(newOrder);
+// EntityState = Added — will be INSERTed on SaveChanges
+
+dbContext.Orders.Remove(order);
+// EntityState = Deleted — will be DELETEd on SaveChanges
+
+// Inspect tracked entities
+foreach (var entry in dbContext.ChangeTracker.Entries())
+    Console.WriteLine($"{entry.Entity.GetType().Name}: {entry.State}");
+
+// SaveChanges generates SQL only for tracked changes:
+// UPDATE Orders SET Status = 'Shipped' WHERE Id = 1
+// INSERT INTO Orders (CustomerId, Total) VALUES (5, 99.99)
+await dbContext.SaveChangesAsync();
+```
+
+---
+
+## Explicit Transactions for Complex Scenarios
+
+When you need more control than SaveChanges provides:
+
+```csharp
+// Use explicit transaction when multiple SaveChanges calls must be atomic
+await using var transaction = await dbContext.Database.BeginTransactionAsync();
+try
+{
+    // Step 1 — first save
+    dbContext.Payments.Add(payment);
+    await dbContext.SaveChangesAsync(); // partial commit within transaction
+
+    // Step 2 — uses payment.Id
+    dbContext.Orders.Add(new Order { PaymentId = payment.Id });
+    await dbContext.SaveChangesAsync(); // another partial commit
+
+    await transaction.CommitAsync(); // atomically commits BOTH steps
+}
+catch
+{
+    await transaction.RollbackAsync(); // reverts BOTH steps
+    throw;
+}
+```
+
+---
+
+<ComparisonTable
+  title="Unit of Work Approaches"
+  headers={["Approach", "Abstraction Level", "Testability", "EF Coupling", "When to Use"]}
+  rows={[
+    ["DbContext directly", "Low — EF exposed", "Use EF InMemory or SQLite", "High", "Most applications — simple, pragmatic"],
+    ["IUnitOfWork wrapping DbContext", "Medium", "Mock IUnitOfWork", "Hidden from app layer", "Clean Architecture, multiple repos sharing UoW"],
+    ["Dapper + manual transaction", "Low — SQL exposed", "Mock IDbConnection", "None", "Read-heavy, performance-critical queries"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/unit-of-work/challenge-1"
+  title="DbContext Scope Bug"
+  description="What is the problem with this service registration and usage?"
+  code={`// Registration
+builder.Services.AddSingleton<AppDbContext>(); // SINGLETON!
+builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+
+// Usage in controller (Scoped)
+public class OrdersController : ControllerBase
+{
+    private readonly IOrderRepository _repo;
+    public OrdersController(IOrderRepository repo) => _repo = repo;
+
+    [HttpPost]
+    public async Task<IActionResult> Create(CreateOrderDto dto)
+    {
+        await _repo.AddAsync(new Order { /* ... */ });
+        await _repo.CommitAsync();
+        return Ok();
+    }
+}`}
+  options={[
+    "No problem — Singleton DbContext is more efficient than Scoped",
+    "The Singleton DbContext is shared across all requests — change tracking state, connection pooling, and race conditions will cause data corruption",
+    "The problem is that IOrderRepository is Scoped while DbContext is Singleton — DI will throw",
+    "Both B and C — Singleton DbContext causes data bugs AND the captive dependency DI exception"
+  ]}
+  correctAnswer={3}
+  explanation="Both problems exist. (1) DI captive dependency: a Scoped service (IOrderRepository) captures a Singleton (DbContext) — ASP.NET Core DI throws InvalidOperationException at startup or first resolution. (2) If you force it, a Singleton DbContext is catastrophic: it's shared across all requests simultaneously, causing change tracking to mix entities from different requests, connection exhaustion, thread safety issues, and stale data. DbContext MUST be Scoped (one per request). This is one of the most common and severe EF Core bugs."
+/>
+
+---
+
+<Callout type="senior">
+**Outbox Pattern + Unit of Work**
+
+A critical distributed systems pattern: publishing events atomically with database changes. The Outbox Pattern uses UoW to ensure events are never lost:
+
+```csharp
+// Outbox message table — events stored in the SAME transaction as domain changes
+public class OutboxMessage
+{
+    public Guid     Id          { get; set; } = Guid.NewGuid();
+    public string   Type        { get; set; } = "";
+    public string   Payload     { get; set; } = "";
+    public DateTime CreatedAt   { get; set; } = DateTime.UtcNow;
+    public DateTime? ProcessedAt { get; set; }
+}
+
+// In the UoW commit (DbContext.SaveChanges override)
+public override async Task<int> SaveChangesAsync(CancellationToken ct = default)
+{
+    // Before committing, collect domain events and write to outbox table
+    var events = ChangeTracker.Entries<BaseEntity>()
+        .SelectMany(e => e.Entity.DomainEvents)
+        .ToList();
+
+    foreach (var evt in events)
+    {
+        OutboxMessages.Add(new OutboxMessage
+        {
+            Type    = evt.GetType().Name,
+            Payload = JsonSerializer.Serialize(evt, evt.GetType()),
+        });
+    }
+
+    int result = await base.SaveChangesAsync(ct);
+    // Domain changes AND outbox messages committed in ONE transaction
+
+    // A background job later reads the outbox and publishes to message bus
+    return result;
+}
+```
+
+This guarantees: if the database commit succeeds, the event WILL be published (eventually). If the database commit fails, the event is NOT published. No lost events, no double commits.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/unit-of-work/quiz-1"
+  question="DbContext is registered as Scoped in ASP.NET Core by default (via AddDbContext). Why Scoped, not Transient or Singleton?"
+  options={[
+    "Scoped is the default — it has no specific reason for DbContext",
+    "Singleton would share tracking state across all requests causing corruption; Transient would create a new DbContext per injection losing the ability to track changes across a request",
+    "Transient DbContexts cannot open connections",
+    "Singleton is not allowed for disposable services"
+  ]}
+  correctAnswer={1}
+  explanation="Scoped (one per HTTP request) is the correct lifetime for DbContext. Singleton: all requests share one DbContext — tracked entities mix between requests, causing data corruption, connection exhaustion, and thread safety issues. Transient: a new DbContext per injection means a repository can't share the change-tracked state with another repository in the same request — two inserts might go to different DbContexts and you'd need two SaveChanges calls. Scoped gives one DbContext per request, shared by all services handling that request, ensuring atomicity."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "EF Core change tracking", url: "https://learn.microsoft.com/en-us/ef/core/change-tracking/" },
+    { label: "EF Core transactions", url: "https://learn.microsoft.com/en-us/ef/core/saving/transactions" },
+    { label: "AddDbContext — service lifetime", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/#using-dbcontext-with-dependency-injection" },
+    { label: "Outbox pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/transactional-outbox-cosmos" },
+  ]}
+/>

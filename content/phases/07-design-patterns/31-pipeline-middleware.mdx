@@ -1,24 +1,393 @@
 ---
-title: "Pipeline / Middleware"
+title: "Pipeline / Middleware — Build Your Own from Scratch"
 slug: "pipeline-middleware"
 order: 31
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 14
+status: "published"
+tags: ["pipeline", "middleware", "ASP.NET Core", "chain of responsibility", "MediatR", "RequestDelegate", "cross-cutting concerns"]
+summary: "Pipeline/Middleware is the most practical pattern in modern .NET — understanding how to build one from scratch and how ASP.NET Core's pipeline works under the hood is a senior-level skill."
+docsLinks:
+  - label: "ASP.NET Core middleware fundamentals"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/"
+  - label: "Write custom middleware"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write"
+  - label: "RequestDelegate"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.http.requestdelegate"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is a Pipeline?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+A pipeline is a series of processing stages where each stage:
+1. Receives a request/input
+2. Optionally does work before passing to the next stage
+3. Calls the next stage in the chain
+4. Optionally does work after the next stage returns
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+This is Chain of Responsibility, but bidirectional — work flows both before and after the next stage.
+
+---
+
+## Building a Pipeline from Scratch
+
+Let's build a simple request pipeline in pure C# — no frameworks:
+
+```csharp
+// The pipeline context
+public class PipelineContext
+{
+    public HttpRequest  Request  { get; }
+    public HttpResponse Response { get; }
+    public Dictionary<string, object> Items { get; } = new();
+
+    public PipelineContext(HttpRequest request, HttpResponse response)
+    {
+        Request  = request;
+        Response = response;
+    }
+}
+
+// A middleware function signature
+public delegate Task MiddlewareDelegate(PipelineContext context, Func<Task> next);
+
+// Pipeline builder — registers and chains middleware
+public class PipelineBuilder
+{
+    private readonly List<Func<Func<Task>, Func<PipelineContext, Task>>> _stages = new();
+
+    public PipelineBuilder Use(MiddlewareDelegate middleware)
+    {
+        _stages.Add(next =>
+            context => middleware(context, () => next(context)));
+        return this;
+    }
+
+    public Func<PipelineContext, Task> Build()
+    {
+        // Start with a terminal handler that does nothing
+        Func<PipelineContext, Task> pipeline = _ => Task.CompletedTask;
+
+        // Chain in reverse — each stage wraps the next
+        foreach (var stage in Enumerable.Reverse(_stages))
+            pipeline = stage(pipeline);
+
+        return pipeline;
+    }
+}
+
+// Usage
+var builder = new PipelineBuilder();
+
+builder.Use(async (ctx, next) =>
+{
+    Console.WriteLine("1. Before");
+    await next();               // call next stage
+    Console.WriteLine("1. After");
+});
+
+builder.Use(async (ctx, next) =>
+{
+    Console.WriteLine("2. Before");
+    await next();
+    Console.WriteLine("2. After");
+});
+
+builder.Use(async (ctx, next) =>
+{
+    Console.WriteLine("3. Handler (no next call — terminal)");
+    // Terminal stage — don't call next
+});
+
+var pipeline = builder.Build();
+await pipeline(context);
+// Output:
+// 1. Before
+// 2. Before
+// 3. Handler (no next call — terminal)
+// 2. After
+// 1. After
+```
+
+---
+
+## ASP.NET Core Middleware — How It Works
+
+ASP.NET Core's `IApplicationBuilder` is exactly this pattern. `RequestDelegate = Func<HttpContext, Task>`:
+
+```csharp
+// ASP.NET Core RequestDelegate is: delegate Task RequestDelegate(HttpContext context)
+// IApplicationBuilder.Use() is the stage registration
+
+// Under the hood, ASP.NET Core builds:
+// UseMiddleware<A>() → UseMiddleware<B>() → MapControllers()
+// becomes:
+// A.InvokeAsync(ctx, next: () => B.InvokeAsync(ctx, next: () => routeHandler(ctx)))
+
+// Class-based middleware
+public class TimingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<TimingMiddleware> _logger;
+
+    // IApplicationBuilder.UseMiddleware resolves dependencies from DI
+    public TimingMiddleware(RequestDelegate next, ILogger<TimingMiddleware> logger)
+    {
+        _next   = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var sw = Stopwatch.StartNew();
+
+        await _next(context); // call next middleware/endpoint
+
+        sw.Stop();
+        _logger.LogInformation(
+            "{Method} {Path} completed in {Ms}ms",
+            context.Request.Method,
+            context.Request.Path,
+            sw.ElapsedMilliseconds);
+    }
+}
+
+// Register
+app.UseMiddleware<TimingMiddleware>();
+
+// Or inline for simple middleware
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("X-Powered-By", "MyApp/1.0");
+    await next(context);
+});
+
+// Terminal middleware (Use without calling next = Run)
+app.Run(async context =>
+{
+    await context.Response.WriteAsync("Hello from the terminal handler!");
+});
+```
+
+---
+
+## Building a Typed Application Pipeline
+
+```csharp
+// Strongly typed pipeline — not just HTTP
+public interface IPipelineBehavior<TRequest, TResponse>
+{
+    Task<TResponse> HandleAsync(TRequest request, Func<Task<TResponse>> next, CancellationToken ct = default);
+}
+
+public class Pipeline<TRequest, TResponse>
+{
+    private readonly List<IPipelineBehavior<TRequest, TResponse>> _behaviors;
+    private readonly Func<TRequest, CancellationToken, Task<TResponse>> _handler;
+
+    public Pipeline(
+        IEnumerable<IPipelineBehavior<TRequest, TResponse>> behaviors,
+        Func<TRequest, CancellationToken, Task<TResponse>> handler)
+    {
+        _behaviors = behaviors.ToList();
+        _handler   = handler;
+    }
+
+    public Task<TResponse> ExecuteAsync(TRequest request, CancellationToken ct = default)
+    {
+        // Build the chain in reverse
+        Func<Task<TResponse>> next = () => _handler(request, ct);
+
+        foreach (var behavior in Enumerable.Reverse(_behaviors))
+        {
+            var captured = next; // capture current next
+            var b        = behavior;
+            next = () => b.HandleAsync(request, captured, ct);
+        }
+
+        return next();
+    }
+}
+
+// Example behaviors
+public class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+{
+    public async Task<TResponse> HandleAsync(TRequest request, Func<Task<TResponse>> next, CancellationToken ct)
+    {
+        Console.WriteLine($"Handling {typeof(TRequest).Name}");
+        var response = await next();
+        Console.WriteLine($"Handled {typeof(TRequest).Name}");
+        return response;
+    }
+}
+
+public class ValidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : IValidatable
+{
+    public async Task<TResponse> HandleAsync(TRequest request, Func<Task<TResponse>> next, CancellationToken ct)
+    {
+        request.Validate(); // throws ValidationException if invalid
+        return await next();
+    }
+}
+
+// Usage
+var pipeline = new Pipeline<CreateOrderRequest, int>(
+    behaviors: new IPipelineBehavior<CreateOrderRequest, int>[]
+    {
+        new LoggingBehavior<CreateOrderRequest, int>(),
+        new ValidationBehavior<CreateOrderRequest, int>(),
+    },
+    handler: (req, ct) => orderService.CreateAsync(req, ct));
+
+int orderId = await pipeline.ExecuteAsync(new CreateOrderRequest { /* ... */ });
+```
+
+---
+
+## Short-Circuiting in Pipelines
+
+```csharp
+// Authentication middleware — short-circuits for unauthenticated requests
+public class AuthenticationMiddleware : IPipelineBehavior<ApiRequest, ApiResponse>
+{
+    private readonly ITokenValidator _validator;
+
+    public AuthenticationMiddleware(ITokenValidator validator) => _validator = validator;
+
+    public async Task<ApiResponse> HandleAsync(
+        ApiRequest request, Func<Task<ApiResponse>> next, CancellationToken ct)
+    {
+        if (!_validator.IsValid(request.AuthToken))
+        {
+            // Short-circuit — don't call next, return error immediately
+            return new ApiResponse(StatusCode: 401, Body: "Unauthorized");
+        }
+
+        return await next(); // authenticated — pass through
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  title="Pipeline Implementations in .NET Ecosystem"
+  headers={["Pipeline", "Package", "Context Type", "Use Case"]}
+  rows={[
+    ["ASP.NET Core", "Built-in", "HttpContext", "HTTP request processing"],
+    ["MediatR behaviors", "MediatR", "IRequest<T>", "CQRS command/query cross-cutting"],
+    ["HttpClient handlers", "Built-in", "HttpRequestMessage", "Outgoing HTTP processing"],
+    ["Channel pipelines", "System.Threading.Channels", "Custom message", "Background processing queues"],
+    ["Custom pipeline", "None", "Any type", "Domain-specific pipelines"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/pipeline-middleware/challenge-1"
+  title="Middleware Execution Order"
+  description="Given this middleware registration order, in what sequence do 'Before' and 'After' messages print?"
+  code={`app.Use(async (ctx, next) => {
+    Console.WriteLine("A: Before");
+    await next(ctx);
+    Console.WriteLine("A: After");
+});
+
+app.Use(async (ctx, next) => {
+    Console.WriteLine("B: Before");
+    await next(ctx);
+    Console.WriteLine("B: After");
+});
+
+app.Run(async ctx => {
+    Console.WriteLine("C: Handler");
+});`}
+  options={[
+    "A: Before, A: After, B: Before, B: After, C: Handler",
+    "A: Before, B: Before, C: Handler, B: After, A: After",
+    "C: Handler, B: Before, B: After, A: Before, A: After",
+    "A: Before, B: Before, B: After, A: After, C: Handler"
+  ]}
+  correctAnswer={1}
+  explanation="Middleware executes like nested function calls. A wraps B which wraps C. Execution: A.Before → B.Before → C (terminal, no next) → B.After → A.After. This bidirectional flow is the key characteristic of the pipeline pattern — each middleware can do work both before and after the downstream chain executes. The 'After' code in A runs LAST because A is the outermost wrapper — it waits for everything downstream to complete."
+/>
+
+---
+
+<Callout type="senior">
+**ASP.NET Core Middleware Internals — RequestDelegate Chain**
+
+Understanding how `IApplicationBuilder` builds the pipeline helps diagnose ordering issues:
+
+```csharp
+// What IApplicationBuilder.Build() does internally:
+public RequestDelegate Build()
+{
+    // Start with 404 handler — if no middleware handles the request
+    RequestDelegate pipeline = context =>
+    {
+        context.Response.StatusCode = 404;
+        return Task.CompletedTask;
+    };
+
+    // Chain in reverse — each middleware wraps the next
+    foreach (var middleware in _middlewares.Reverse())
+    {
+        pipeline = middleware(pipeline); // wrap: middleware receives current pipeline as 'next'
+    }
+
+    return pipeline; // the outermost wrapper
+}
+
+// This means:
+// Use(A).Use(B).Use(C) creates:
+// A(next: B(next: C(next: 404handler)))
+
+// Practical implications:
+// 1. Exception-handling middleware must be FIRST (outermost) to catch errors from all downstream
+// 2. Authentication must be BEFORE Authorization
+// 3. Routing must be BEFORE endpoint execution
+// 4. CORS must be before Authentication (preflight requests)
+
+// Correct order in Program.cs:
+app.UseExceptionHandler("/error");  // 1. Outermost — catches all exceptions
+app.UseHttpsRedirection();           // 2. Redirect HTTP to HTTPS
+app.UseStaticFiles();                // 3. Serve static files before routing overhead
+app.UseRouting();                    // 4. Match routes to endpoints
+app.UseCors();                       // 5. Before auth — CORS preflight bypasses auth
+app.UseAuthentication();             // 6. Identify who the user is
+app.UseAuthorization();              // 7. Check if user is allowed
+app.MapControllers();                // 8. Terminal — execute the matched endpoint
+```
+
+**Interview tip**: Being able to explain why middleware order matters (and the specific cases where wrong order causes bugs) demonstrates real ASP.NET Core expertise. The most common mistakes: not calling `UseRouting()` before `UseAuthorization()`, or placing `UseExceptionHandler` in the wrong position.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/pipeline-middleware/quiz-1"
+  question="In ASP.NET Core, what is the difference between app.Use() and app.Run()?"
+  options={[
+    "Use() is for class-based middleware; Run() is for inline lambda middleware",
+    "Use() receives a 'next' delegate and can pass the request forward or short-circuit; Run() is a terminal handler that never calls next",
+    "Run() is faster than Use() because it skips the delegate chain",
+    "There is no functional difference — they are equivalent"
+  ]}
+  correctAnswer={1}
+  explanation="app.Use() registers middleware that receives both the HttpContext AND a 'next' delegate — it can choose to call next (passing the request forward) or not (short-circuiting). app.Run() registers a terminal handler that does NOT receive a 'next' delegate — it always terminates the pipeline. app.Run() is essentially app.Use() where the middleware never calls next. Placing app.Run() before other middleware makes those subsequent middleware unreachable (dead code)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "ASP.NET Core middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/" },
+    { label: "Write custom ASP.NET Core middleware", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/write" },
+    { label: "Factory-based middleware activation", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/extensibility" },
+    { label: "MediatR Pipeline Behaviors", url: "https://github.com/jbogard/MediatR/wiki/Behaviors" },
+  ]}
+/>

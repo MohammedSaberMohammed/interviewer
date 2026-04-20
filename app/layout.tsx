@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SearchProvider } from '@/components/search/SearchProvider'
+import { GamificationProviders } from '@/components/quest/GamificationProviders'
 import { buildSearchIndex } from '@/lib/content'
 import './globals.css'
 
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 Skip to content
               </a>
               {children}
+              <GamificationProviders />
             </SearchProvider>
           </TooltipProvider>
         </ThemeProvider>
