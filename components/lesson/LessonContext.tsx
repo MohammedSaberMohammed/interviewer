@@ -10,7 +10,7 @@ export interface LessonContextValue {
   phaseNumber: number
 }
 
-const LessonContext = createContext<LessonContextValue | null>(null)
+export const LessonContext = createContext<LessonContextValue | null>(null)
 
 export function useLessonContext() {
   return useContext(LessonContext)
