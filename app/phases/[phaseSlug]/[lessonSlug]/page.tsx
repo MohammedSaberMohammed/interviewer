@@ -99,6 +99,9 @@ export default async function LessonPage({ params }: Props) {
       source={rawMdx}
       components={mdxComponents}
       options={{
+        // Allow JS expressions in MDX props (template literals, arrays, numbers).
+        // Safe because MDX files are static content we control, not user input.
+        blockJS: false,
         mdxOptions: {
           remarkPlugins: [remarkFrontmatter],
           rehypePlugins: [
