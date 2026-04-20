@@ -36,6 +36,7 @@ import {
   QuestLayout,
   ReadAsArticleToggle,
 } from '@/components/quest'
+import { AddLessonToBasketButton } from '@/components/basket/AddLessonToBasketButton'
 
 interface Props {
   params: Promise<{ phaseSlug: string; lessonSlug: string }>
@@ -157,8 +158,21 @@ export default async function LessonPage({ params }: Props) {
                     {lesson.readingTime} min read
                   </span>
                 </div>
-                {/* Article mode toggle — always visible */}
-                <ReadAsArticleToggle />
+                {/* Basket + article mode */}
+                <div className="flex items-center gap-2">
+                  {lesson.status === 'published' && (
+                    <AddLessonToBasketButton
+                      lessonSlug={lessonSlug}
+                      phaseSlug={phaseSlug}
+                      lessonTitle={lesson.title}
+                      phaseTitle={phaseMeta?.title ?? ''}
+                      phaseNumber={phaseMeta?.number ?? 0}
+                      difficulty={lesson.difficulty}
+                      summary={lesson.summary}
+                    />
+                  )}
+                  <ReadAsArticleToggle />
+                </div>
               </div>
               <h1 className="text-3xl font-bold mb-2">{lesson.title}</h1>
               {lesson.summary && (

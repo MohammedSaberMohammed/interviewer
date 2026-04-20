@@ -16,6 +16,7 @@ import {
   ShoppingBasket,
   Plus,
   ArrowUpDown,
+  BookOpen,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
@@ -118,7 +119,7 @@ export default function BasketDetailPage() {
                     <h1 className="text-2xl font-bold">{basket.name}</h1>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {questions.length} question{questions.length !== 1 ? 's' : ''}
+                    {questions.length} item{questions.length !== 1 ? 's' : ''}
                     {questions.length > 1 && (
                       <span className="ml-2 inline-flex items-center gap-1 text-xs text-muted-foreground/60">
                         <ArrowUpDown className="h-3 w-3" />
@@ -199,7 +200,7 @@ export default function BasketDetailPage() {
                         </button>
                       </div>
 
-                      {/* Question preview */}
+                      {/* Item preview */}
                       <div className="px-3 py-1">
                         {q.type === 'challenge' ? (
                           <CodeChallenge
@@ -207,20 +208,36 @@ export default function BasketDetailPage() {
                             question={q.question}
                             code={q.code ?? ''}
                             language={q.language ?? 'csharp'}
-                            options={q.options}
-                            correctAnswer={q.correctAnswer}
-                            explanation={q.explanation}
+                            options={q.options ?? []}
+                            correctAnswer={q.correctAnswer ?? 0}
+                            explanation={q.explanation ?? ''}
                             difficulty={q.difficulty as Difficulty}
                           />
-                        ) : (
+                        ) : q.type === 'quiz' ? (
                           <Quiz
                             id={`basket-preview-${q.id}`}
                             question={q.question}
-                            options={q.options}
-                            correctAnswer={q.correctAnswer}
-                            explanation={q.explanation}
+                            options={q.options ?? []}
+                            correctAnswer={q.correctAnswer ?? 0}
+                            explanation={q.explanation ?? ''}
                             difficulty={q.difficulty as Difficulty}
                           />
+                        ) : (
+                          /* Lesson item */
+                          <Link
+                            href={`/phases/${q.phaseSlug}/${q.lessonSlug}`}
+                            className="flex items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 my-2 hover:border-primary/30 hover:bg-accent transition-all group"
+                          >
+                            <BookOpen className="h-4 w-4 shrink-0 text-[#512BD4] dark:text-violet-300 mt-0.5" aria-hidden="true" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium group-hover:text-primary transition-colors">{q.lessonTitle}</p>
+                              {q.summary && (
+                                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{q.summary}</p>
+                              )}
+                              <p className="text-xs text-muted-foreground/60 mt-1">{q.phaseTitle}</p>
+                            </div>
+                            <DifficultyBadge level={q.difficulty as Difficulty} />
+                          </Link>
                         )}
                       </div>
                     </div>

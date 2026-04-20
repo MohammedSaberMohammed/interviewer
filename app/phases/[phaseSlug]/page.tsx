@@ -8,6 +8,7 @@ import { Footer } from '@/components/layout/Footer'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
 import { PhaseProgressBar } from '@/components/progress/PhaseProgressBar'
 import { Badge } from '@/components/ui/badge'
+import { AddLessonToBasketButton } from '@/components/basket/AddLessonToBasketButton'
 import { PHASE_LEVEL_CONFIG } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
@@ -126,23 +127,36 @@ export default async function PhaseOverviewPage({ params }: Props) {
               return (
                 <div key={lesson.slug}>
                   {isPublished ? (
-                    <Link
-                      href={`/phases/${phaseSlug}/${lesson.slug}`}
-                      className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 hover:border-primary/30 hover:bg-accent transition-all group"
-                    >
-                      <Circle className="h-4 w-4 shrink-0 text-muted-foreground/40" aria-hidden="true" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-xs text-muted-foreground tabular-nums">{String(i + 1).padStart(2, '0')}</span>
-                          <span className="font-medium text-sm group-hover:text-primary transition-colors truncate">{lesson.title}</span>
+                    <div className="flex items-center rounded-xl border border-border bg-card hover:border-primary/30 hover:bg-accent transition-all group">
+                      <Link
+                        href={`/phases/${phaseSlug}/${lesson.slug}`}
+                        className="flex flex-1 items-center gap-3 px-4 py-3 min-w-0"
+                      >
+                        <Circle className="h-4 w-4 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-xs text-muted-foreground tabular-nums">{String(i + 1).padStart(2, '0')}</span>
+                            <span className="font-medium text-sm group-hover:text-primary transition-colors truncate">{lesson.title}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <DifficultyBadge level={lesson.difficulty} />
+                            <span className="text-xs text-muted-foreground">{lesson.readingTime} min read</span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <DifficultyBadge level={lesson.difficulty} />
-                          <span className="text-xs text-muted-foreground">{lesson.readingTime} min read</span>
-                        </div>
-                      </div>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
-                    </Link>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
+                      </Link>
+                      <AddLessonToBasketButton
+                        lessonSlug={lesson.slug}
+                        phaseSlug={phaseSlug}
+                        lessonTitle={lesson.title}
+                        phaseTitle={phase.title}
+                        phaseNumber={phase.number}
+                        difficulty={lesson.difficulty}
+                        summary={lesson.summary}
+                        iconOnly
+                        className="mr-2"
+                      />
+                    </div>
                   ) : (
                     <div
                       className="flex items-center gap-3 rounded-xl border border-border bg-card/50 px-4 py-3 opacity-60 cursor-not-allowed"
