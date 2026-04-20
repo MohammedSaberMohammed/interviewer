@@ -1,24 +1,319 @@
 ---
-title: "Options Pattern"
+title: "Options Pattern — IOptions<T>, IOptionsSnapshot<T>, IOptionsMonitor<T>"
 slug: "options-pattern"
 order: 28
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["options pattern", "configuration", "IOptions", "IOptionsSnapshot", "IOptionsMonitor", "appsettings", "validation"]
+summary: "The Options pattern provides strongly-typed, validatable configuration with three lifetimes — knowing when to use IOptions vs IOptionsSnapshot vs IOptionsMonitor is a key .NET skill."
+docsLinks:
+  - label: "Options pattern in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options"
+  - label: "IOptions<TOptions> Interface"
+    url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.ioptions-1"
+  - label: "Options validation"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options#options-validation"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Stringly-Typed Configuration
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Accessing configuration via `IConfiguration["SmtpSettings:Host"]` is fragile — typos are runtime errors, types aren't enforced, and there's no validation. The Options pattern solves all of this.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Fragile — typo in key, no validation, string everywhere
+string host = configuration["SmtpSettings:Host"] ?? throw new Exception("Missing!");
+int port = int.Parse(configuration["SmtpSettings:Port"]!);
+bool ssl = bool.Parse(configuration["SmtpSettings:UseSsl"]!);
+```
+
+---
+
+## Defining and Binding Options
+
+```csharp
+// Strongly-typed options class
+public class SmtpSettings
+{
+    // Required by convention for IOptions binding
+    public const string SectionName = "SmtpSettings";
+
+    [Required]
+    public string Host { get; init; } = "";
+
+    [Range(1, 65535)]
+    public int Port { get; init; } = 587;
+
+    public bool UseSsl { get; init; } = true;
+
+    [Required, EmailAddress]
+    public string FromAddress { get; init; } = "";
+
+    public string? Username { get; init; }
+    public string? Password { get; init; }
+}
+
+// appsettings.json
+// {
+//   "SmtpSettings": {
+//     "Host": "smtp.example.com",
+//     "Port": 587,
+//     "UseSsl": true,
+//     "FromAddress": "noreply@example.com"
+//   }
+// }
+
+// Registration in Program.cs
+builder.Services
+    .AddOptions<SmtpSettings>()
+    .BindConfiguration(SmtpSettings.SectionName)
+    .ValidateDataAnnotations()          // validates [Required], [Range] etc.
+    .ValidateOnStart();                 // fail fast at startup, not first use
+
+// Or shorter form (without validation):
+builder.Services.Configure<SmtpSettings>(
+    builder.Configuration.GetSection(SmtpSettings.SectionName));
+```
+
+---
+
+## The Three Interfaces
+
+### `IOptions<T>` — Singleton, no hot reload
+
+```csharp
+// IOptions<T> is Singleton — reads configuration ONCE at startup
+public class EmailService
+{
+    private readonly SmtpSettings _settings;
+
+    public EmailService(IOptions<SmtpSettings> options)
+    {
+        _settings = options.Value; // safe to cache — Singleton lifetime
+    }
+
+    public async Task SendAsync(string to, string subject, string body)
+    {
+        using var client = new SmtpClient(_settings.Host, _settings.Port);
+        // ...
+    }
+}
+
+// Use IOptions<T> when:
+// - Configuration doesn't change after startup
+// - Service is Singleton or Transient
+// - You want maximum simplicity
+```
+
+### `IOptionsSnapshot<T>` — Scoped, per-request config
+
+```csharp
+// IOptionsSnapshot<T> is Scoped — re-reads configuration per request
+// Supports hot reload (if configuration source supports it)
+public class TenantEmailService
+{
+    private readonly SmtpSettings _settings;
+
+    // IOptionsSnapshot is Scoped — inject into Scoped or Transient services only
+    public TenantEmailService(IOptionsSnapshot<SmtpSettings> options)
+    {
+        _settings = options.Value;
+    }
+
+    // Or get named options — different config per tenant
+    public TenantEmailService(IOptionsSnapshot<SmtpSettings> options, string tenantName)
+    {
+        _settings = options.Get(tenantName); // named options
+    }
+}
+
+// Named options — different configurations for different named contexts
+builder.Services.Configure<SmtpSettings>("TenantA", opts =>
+{
+    opts.Host        = "smtp-a.example.com";
+    opts.FromAddress = "noreply@tenant-a.com";
+});
+builder.Services.Configure<SmtpSettings>("TenantB", opts =>
+{
+    opts.Host        = "smtp-b.example.com";
+    opts.FromAddress = "noreply@tenant-b.com";
+});
+```
+
+### `IOptionsMonitor<T>` — Singleton, hot reload
+
+```csharp
+// IOptionsMonitor<T> is Singleton and supports real-time change notifications
+public class FeatureFlagService
+{
+    private readonly IOptionsMonitor<FeatureFlags> _monitor;
+
+    public FeatureFlagService(IOptionsMonitor<FeatureFlags> monitor)
+    {
+        _monitor = monitor;
+
+        // Subscribe to configuration changes
+        monitor.OnChange(flags =>
+        {
+            Console.WriteLine($"Feature flags updated: NewCheckoutEnabled={flags.NewCheckoutEnabled}");
+        });
+    }
+
+    // Always reads current config — picks up hot-reload changes
+    public bool IsNewCheckoutEnabled => _monitor.CurrentValue.NewCheckoutEnabled;
+
+    // Named options via Monitor
+    public FeatureFlags GetForTenant(string tenant) => _monitor.Get(tenant);
+}
+
+// Enable file-watching hot reload
+builder.Configuration.AddJsonFile("appsettings.json", reloadOnChange: true);
+```
+
+---
+
+## Options Validation
+
+```csharp
+// Custom validation with IValidateOptions<T>
+public class SmtpSettingsValidator : IValidateOptions<SmtpSettings>
+{
+    public ValidateOptionsResult Validate(string? name, SmtpSettings options)
+    {
+        var errors = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(options.Host))
+            errors.Add("Host is required.");
+        if (options.Port is < 1 or > 65535)
+            errors.Add($"Port {options.Port} is not a valid port number.");
+        if (options.UseSsl && options.Port == 25)
+            errors.Add("SSL cannot be used with port 25.");
+
+        return errors.Count > 0
+            ? ValidateOptionsResult.Fail(errors)
+            : ValidateOptionsResult.Success;
+    }
+}
+
+// Register validator
+builder.Services.AddSingleton<IValidateOptions<SmtpSettings>, SmtpSettingsValidator>();
+
+builder.Services.AddOptions<SmtpSettings>()
+    .BindConfiguration("SmtpSettings")
+    .ValidateOnStart(); // runs SmtpSettingsValidator at startup
+```
+
+---
+
+<ComparisonTable
+  title="IOptions vs IOptionsSnapshot vs IOptionsMonitor"
+  headers={["Interface", "Lifetime", "Hot Reload", "Named Options", "Use When"]}
+  rows={[
+    ["IOptions<T>", "Singleton", "No", "No", "Static config — most services"],
+    ["IOptionsSnapshot<T>", "Scoped", "Yes (per request)", "Yes (.Get(name))", "Per-request config, multi-tenant, Scoped services"],
+    ["IOptionsMonitor<T>", "Singleton", "Yes (live)", "Yes (.Get(name))", "Singleton services needing live config updates"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/options-pattern/challenge-1"
+  title="Wrong Options Interface in Singleton"
+  description="What is wrong with injecting IOptionsSnapshot<T> into a Singleton service?"
+  code={`// Registration
+builder.Services.AddSingleton<CacheService>(); // Singleton!
+
+// Service
+public class CacheService
+{
+    private readonly CacheSettings _settings;
+
+    // BUG: IOptionsSnapshot is Scoped; CacheService is Singleton
+    public CacheService(IOptionsSnapshot<CacheSettings> options)
+    {
+        _settings = options.Value;
+    }
+}`}
+  options={[
+    "No bug — IOptionsSnapshot works in any service lifetime",
+    "Captive dependency: the Singleton captures a Scoped IOptionsSnapshot — DI throws at startup or gives stale configuration forever",
+    "IOptionsSnapshot cannot be used with generic types",
+    "The bug is that CacheSettings must implement IOptions itself"
+  ]}
+  correctAnswer={1}
+  explanation="IOptionsSnapshot<T> is a Scoped service (new instance per HTTP request). Injecting it into a Singleton creates a captive dependency — ASP.NET Core DI throws InvalidOperationException because a Singleton cannot depend on a Scoped service. Even if you force it (via factory), the Singleton would capture the first request's snapshot and use it forever (stale config). Fix: use IOptions<T> (Singleton, no reload) or IOptionsMonitor<T> (Singleton, live reload) for Singleton services."
+/>
+
+---
+
+<Callout type="senior">
+**Options Pattern Best Practices**
+
+```csharp
+// 1. Always use ValidateOnStart() in production
+builder.Services.AddOptions<DatabaseSettings>()
+    .BindConfiguration("Database")
+    .ValidateDataAnnotations()
+    .ValidateOnStart(); // fail fast — catch config errors at startup, not at 2am
+
+// 2. Expose settings via strongly-typed wrappers, not raw IOptions<T>
+// Instead of injecting IOptions everywhere, expose what services need
+public class EmailService
+{
+    private readonly string _host;
+    private readonly int    _port;
+
+    public EmailService(IOptions<SmtpSettings> options)
+    {
+        // Extract what you need — tests can set these without IOptions
+        _host = options.Value.Host;
+        _port = options.Value.Port;
+    }
+}
+
+// 3. Use PostConfigure for overriding options in tests
+services.PostConfigure<SmtpSettings>(opts =>
+{
+    opts.Host = "localhost"; // override in test environment
+    opts.Port = 2525;
+});
+
+// 4. Environment-specific configuration
+builder.Configuration
+    .AddJsonFile("appsettings.json")
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true)
+    .AddEnvironmentVariables() // overrides appsettings for production secrets
+    .AddUserSecrets<Program>(optional: true); // dev machine secrets, never committed
+```
+
+**Interview tip**: When asked about configuration in .NET, show you know the difference between the three interfaces AND that you validate on startup. Missing `ValidateOnStart()` means configuration errors only surface when the broken code path is hit — potentially days after deployment.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/options-pattern/quiz-1"
+  question="Why is it recommended to call .ValidateOnStart() when configuring Options?"
+  options={[
+    "It improves the performance of option resolution during requests",
+    "It validates configuration at application startup — catching missing or invalid settings before serving any requests",
+    "It enables hot reload for configuration files",
+    "It is required for IOptionsMonitor to work correctly"
+  ]}
+  correctAnswer={1}
+  explanation=".ValidateOnStart() runs your validators (DataAnnotations and IValidateOptions<T>) when the application starts, before it serves any requests. Without it, validation runs lazily on first access — which might be hours after deployment, in a rarely-hit code path, in the middle of the night. Failing fast at startup means configuration problems are caught immediately during deployment, when you're watching logs, rather than discovered from production error reports."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Options pattern in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options" },
+    { label: "IOptions<TOptions> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.ioptions-1" },
+    { label: "IOptionsMonitor<TOptions> Interface", url: "https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.ioptionsmonitor-1" },
+    { label: "Options validation", url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options#options-validation" },
+  ]}
+/>

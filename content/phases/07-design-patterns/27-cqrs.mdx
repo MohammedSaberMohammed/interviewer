@@ -1,24 +1,317 @@
 ---
-title: "CQRS"
+title: "CQRS — Commands vs Queries"
 slug: "cqrs"
 order: 27
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["CQRS", "commands", "queries", "MediatR", "read model", "write model", "event sourcing"]
+summary: "CQRS separates read (query) operations from write (command) operations — enabling independent optimization of read and write models, from simple method separation to full event sourcing."
+docsLinks:
+  - label: "CQRS pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+  - label: "MediatR — IRequest and IRequestHandler"
+    url: "https://github.com/jbogard/MediatR"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## What Is CQRS?
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+CQRS — Command Query Responsibility Segregation — separates reading data (queries) from writing data (commands). Coined by Greg Young, based on Bertrand Meyer's Command-Query Separation (CQS):
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+- **Query**: returns data, has NO side effects, is idempotent
+- **Command**: changes state, returns void or a status, has side effects
+
+At its simplest, CQRS is just naming discipline. At its most extreme, it means separate databases for reading and writing.
+
+---
+
+## Level 1: Method Separation (Simplest CQRS)
+
+```csharp
+// No frameworks needed — just separate methods
+public class OrderService
+{
+    private readonly AppDbContext _db;
+    public OrderService(AppDbContext db) => _db = db;
+
+    // QUERY — read-only, no side effects
+    public async Task<IReadOnlyList<OrderSummaryDto>> GetPendingOrdersAsync()
+        => await _db.Orders
+            .Where(o => o.Status == "Pending")
+            .Select(o => new OrderSummaryDto(o.Id, o.Total, o.CreatedAt))
+            .AsNoTracking() // read-only — don't track entities
+            .ToListAsync();
+
+    // QUERY — parameterized
+    public async Task<OrderDetailDto?> GetOrderDetailAsync(int id)
+        => await _db.Orders
+            .Include(o => o.Items).ThenInclude(i => i.Product)
+            .Include(o => o.Customer)
+            .Where(o => o.Id == id)
+            .Select(o => new OrderDetailDto(o.Id, o.Customer.Name, o.Items.Select(i => i.Product.Name)))
+            .AsNoTracking()
+            .FirstOrDefaultAsync();
+
+    // COMMAND — changes state, returns void
+    public async Task PlaceOrderAsync(PlaceOrderCommand cmd)
+    {
+        var order = Order.Create(cmd.CustomerId, cmd.Items);
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync();
+    }
+
+    // COMMAND — another mutation
+    public async Task CancelOrderAsync(int orderId, string reason)
+    {
+        var order = await _db.Orders.FindAsync(orderId)
+            ?? throw new NotFoundException($"Order {orderId} not found");
+        order.Cancel(reason);
+        await _db.SaveChangesAsync();
+    }
+}
+```
+
+---
+
+## Level 2: MediatR CQRS Implementation
+
+```csharp
+// ---- QUERIES ----
+// Query object
+public record GetPendingOrdersQuery() : IRequest<IReadOnlyList<OrderSummaryDto>>;
+
+// Query handler — optimized for reads
+public class GetPendingOrdersHandler : IRequestHandler<GetPendingOrdersQuery, IReadOnlyList<OrderSummaryDto>>
+{
+    private readonly AppDbContext _db;
+    public GetPendingOrdersHandler(AppDbContext db) => _db = db;
+
+    public async Task<IReadOnlyList<OrderSummaryDto>> Handle(
+        GetPendingOrdersQuery query, CancellationToken ct)
+        => await _db.Orders
+            .Where(o => o.Status == "Pending")
+            .Select(o => new OrderSummaryDto(o.Id, o.Total, o.CreatedAt))
+            .AsNoTracking() // queries never change state — skip change tracking
+            .ToListAsync(ct);
+}
+
+// ---- COMMANDS ----
+// Command object
+public record PlaceOrderCommand(
+    int    CustomerId,
+    IReadOnlyList<OrderItemDto> Items
+) : IRequest<int>; // returns new OrderId
+
+// Command handler — focus on business logic and state changes
+public class PlaceOrderHandler : IRequestHandler<PlaceOrderCommand, int>
+{
+    private readonly AppDbContext   _db;
+    private readonly IMediator      _mediator;
+
+    public PlaceOrderHandler(AppDbContext db, IMediator mediator)
+    {
+        _db       = db;
+        _mediator = mediator;
+    }
+
+    public async Task<int> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        // Domain logic
+        var order = Order.Create(cmd.CustomerId, cmd.Items);
+
+        // Stock validation
+        foreach (var item in cmd.Items)
+        {
+            var product = await _db.Products.FindAsync(new object[] { item.ProductId }, ct)
+                ?? throw new NotFoundException($"Product {item.ProductId} not found");
+            if (product.Stock < item.Quantity)
+                throw new BusinessException($"Insufficient stock for {product.Name}");
+            product.Stock -= item.Quantity;
+        }
+
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync(ct);
+
+        // Publish domain event after commit
+        await _mediator.Publish(new OrderPlacedEvent(order.Id, cmd.CustomerId), ct);
+
+        return order.Id;
+    }
+}
+
+// Controller — thin, delegates everything to MediatR
+[ApiController, Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    public OrdersController(IMediator mediator) => _mediator = mediator;
+
+    [HttpGet("pending")]
+    public async Task<IReadOnlyList<OrderSummaryDto>> GetPending()
+        => await _mediator.Send(new GetPendingOrdersQuery());
+
+    [HttpPost]
+    public async Task<IActionResult> Place(PlaceOrderCommand cmd)
+    {
+        int orderId = await _mediator.Send(cmd);
+        return CreatedAtAction(nameof(GetPending), new { id = orderId }, null);
+    }
+}
+```
+
+---
+
+## Level 3: Separate Read and Write Models
+
+For high-scale systems, queries and commands use different data stores:
+
+```csharp
+// Write model — normalized, consistent, domain-rich
+public class Order { /* EF Core entity with business logic */ }
+
+// Read model — denormalized, optimized for display (separate table or DB)
+public record OrderReadModel(
+    int    Id,
+    string CustomerName,
+    string CustomerEmail,
+    decimal Total,
+    int     ItemCount,
+    string  StatusDisplayName, // human-readable status
+    string  FormattedDate      // pre-formatted for display
+);
+
+// Read model updated via domain events (projection)
+public class OrderProjectionHandler : INotificationHandler<OrderPlacedEvent>
+{
+    private readonly ReadDbContext _readDb;
+
+    public async Task Handle(OrderPlacedEvent evt, CancellationToken ct)
+    {
+        // Denormalize and write to the read model store
+        var readModel = new OrderReadModel(
+            Id:                evt.OrderId,
+            CustomerName:      evt.CustomerName,
+            CustomerEmail:     evt.CustomerEmail,
+            Total:             evt.Total,
+            ItemCount:         evt.ItemCount,
+            StatusDisplayName: "Pending",
+            FormattedDate:     evt.CreatedAt.ToString("MMM d, yyyy"));
+
+        await _readDb.Orders.AddAsync(readModel, ct);
+        await _readDb.SaveChangesAsync(ct);
+    }
+}
+
+// Query reads from the optimized read model — no joins needed!
+public async Task<OrderReadModel?> GetOrderAsync(int id)
+    => await _readDb.Orders.FindAsync(id);
+```
+
+---
+
+<ComparisonTable
+  title="CQRS Implementation Levels"
+  headers={["Level", "Description", "Complexity", "When to Use"]}
+  rows={[
+    ["Level 1 — Method separation", "Query/Command as named methods", "None", "All apps — best practice naming"],
+    ["Level 2 — MediatR CQRS", "IRequest<T> per command/query", "Low", "When controllers become fat, need pipeline behaviors"],
+    ["Level 3 — Separate read/write models", "Different schemas optimized for each side", "High", "High-read throughput, complex reporting queries"],
+    ["Level 4 — Event Sourcing", "Write side stores events; read side projects", "Very High", "Full audit trail, temporal queries, complex domain"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/cqrs/challenge-1"
+  title="Command vs Query Classification"
+  description="Classify each operation as Command or Query. Which one violates CQS?"
+  code={`// A: Get user profile
+Task<UserDto> GetUserAsync(int userId);
+
+// B: Place an order, return the new order ID
+Task<int> PlaceOrderAsync(PlaceOrderDto dto);
+
+// C: Pop an item from a processing queue (removes AND returns)
+Task<WorkItem?> DequeueAsync();
+
+// D: Log a page view (write-only, returns void)
+Task LogPageViewAsync(string page);`}
+  options={[
+    "A=Query, B=Command, C=Query, D=Command",
+    "A=Query, B=Command, C=Violates CQS (returns AND mutates), D=Command",
+    "A=Query, B=Violates CQS (returns AND mutates), C=Command, D=Command",
+    "All four are Commands because they all involve database writes"
+  ]}
+  correctAnswer={1}
+  explanation="A is a pure Query (read-only, no side effects). B is a Command (mutates state) — returning the new ID is a pragmatic compromise CQRS allows (commands can return IDs to avoid extra round-trips). C violates CQS strictly — it both mutates state (removes item) and returns a value. This is sometimes called an 'asking question' or a pragmatic exception to CQS for queue semantics. D is a Command (writes, returns void). In practice, CQRS is pragmatic — returning IDs from commands is common and accepted."
+/>
+
+---
+
+<Callout type="senior">
+**CQRS Without MediatR — Don't Over-Engineer**
+
+MediatR is convenient but adds ceremony. For simple applications, direct service injection achieves CQRS just as well:
+
+```csharp
+// Separate services for reads and writes — CQRS without MediatR
+public interface IOrderQueries   // read side
+{
+    Task<OrderSummaryDto?> GetSummaryAsync(int id, CancellationToken ct = default);
+    Task<PagedResult<OrderListDto>> SearchAsync(OrderSearchRequest req, CancellationToken ct = default);
+}
+
+public interface IOrderCommands  // write side
+{
+    Task<int>  PlaceAsync(PlaceOrderCommand cmd, CancellationToken ct = default);
+    Task       CancelAsync(int orderId, string reason, CancellationToken ct = default);
+    Task       ShipAsync(int orderId, CancellationToken ct = default);
+}
+
+// Inject both in the controller
+public class OrdersController : ControllerBase
+{
+    public OrdersController(IOrderQueries queries, IOrderCommands commands) { }
+}
+```
+
+**When MediatR adds genuine value**:
+- Pipeline behaviors (logging, validation, caching) applied globally
+- Many handlers in a large codebase — avoids wiring fat controllers
+- Event notifications to multiple handlers
+
+**When MediatR is overkill**:
+- Small applications with 5-10 endpoints
+- Teams unfamiliar with the pattern — the indirection confuses
+- Simple CRUD apps where the "pattern" is just ceremony
+
+Start with direct service injection, migrate to MediatR when pipeline behaviors become needed.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/cqrs/quiz-1"
+  question="Why do CQRS queries typically use .AsNoTracking() in EF Core?"
+  options={[
+    "AsNoTracking() is required for read-only queries to compile",
+    "Queries don't modify state — change tracking overhead is wasted; AsNoTracking() improves performance and reduces memory usage",
+    "AsNoTracking() enables parallel query execution",
+    "Without AsNoTracking(), EF Core throws on read-only operations"
+  ]}
+  correctAnswer={1}
+  explanation="Change tracking consumes memory (EF stores a snapshot of every loaded entity) and CPU (comparing current vs original values). For queries that only read data and never call SaveChanges(), this overhead is pure waste. AsNoTracking() tells EF Core to skip change tracking for this query — entities are returned as plain objects with no tracking state. This improves performance (especially for large result sets) and reduces memory pressure. Always use AsNoTracking() for read-side queries in CQRS."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "CQRS pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" },
+    { label: "EF Core AsNoTracking()", url: "https://learn.microsoft.com/en-us/ef/core/querying/tracking" },
+    { label: "Implementing CQRS in a microservice", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/apply-simplified-microservice-cqrs-ddd-patterns" },
+  ]}
+/>

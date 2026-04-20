@@ -1,24 +1,337 @@
 ---
-title: "Result Pattern"
+title: "Result Pattern — Returning Errors Without Exceptions"
 slug: "result-pattern"
 order: 29
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 12
+status: "published"
+tags: ["result pattern", "error handling", "exceptions", "OneOf", "FluentResults", "discriminated union", "functional"]
+summary: "The Result pattern makes failures explicit in the type system — returning either a success value or an error, avoiding exceptions for expected failure cases."
+docsLinks:
+  - label: "FluentResults library"
+    url: "https://github.com/altmann/FluentResults"
+  - label: "OneOf library (discriminated unions)"
+    url: "https://github.com/mcintyre321/OneOf"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Exceptions for Expected Failures
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+Exceptions are designed for exceptional situations — unexpected failures like network timeouts, disk full, null references. Using exceptions for expected business failures (user not found, validation error, insufficient funds) is problematic:
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+```csharp
+// Exception-based — several problems:
+public async Task<User> GetUserAsync(int id)
+{
+    var user = await db.Users.FindAsync(id);
+    if (user == null)
+        throw new NotFoundException($"User {id} not found"); // is "not found" exceptional?
+
+    return user;
+}
+
+// Problems:
+// 1. Caller must remember to catch NotFoundException (invisible in the signature)
+// 2. Exception unwinding is expensive (~10x slower than return)
+// 3. Control flow via exceptions is confusing
+// 4. Hides the normal failure path from the type system
+```
+
+---
+
+## Building a Result Type
+
+```csharp
+// Basic Result type
+public class Result<T>
+{
+    private readonly T?        _value;
+    private readonly string?   _error;
+
+    public bool IsSuccess { get; }
+    public bool IsFailure => !IsSuccess;
+
+    public T Value => IsSuccess ? _value!
+        : throw new InvalidOperationException("Cannot access Value on a failed result.");
+
+    public string Error => IsFailure ? _error!
+        : throw new InvalidOperationException("Cannot access Error on a successful result.");
+
+    private Result(T value)   { _value = value; IsSuccess = true; }
+    private Result(string err){ _error = err;   IsSuccess = false; }
+
+    public static Result<T> Success(T value) => new(value);
+    public static Result<T> Failure(string error) => new(error);
+
+    // Functional mapping
+    public Result<TNext> Map<TNext>(Func<T, TNext> mapper) =>
+        IsSuccess ? Result<TNext>.Success(mapper(_value!)) : Result<TNext>.Failure(_error!);
+
+    public Result<TNext> Bind<TNext>(Func<T, Result<TNext>> binder) =>
+        IsSuccess ? binder(_value!) : Result<TNext>.Failure(_error!);
+}
+
+// Non-generic for operations that return void
+public class Result
+{
+    public bool IsSuccess { get; }
+    public bool IsFailure => !IsSuccess;
+    public string? Error  { get; }
+
+    private Result(bool success, string? error) { IsSuccess = success; Error = error; }
+
+    public static Result Success()              => new(true, null);
+    public static Result Failure(string error)  => new(false, error);
+}
+```
+
+---
+
+## Using the Result Pattern
+
+```csharp
+// Method signature makes failure explicit
+public async Task<Result<User>> GetUserAsync(int id)
+{
+    var user = await db.Users.FindAsync(id);
+    return user != null
+        ? Result<User>.Success(user)
+        : Result<User>.Failure($"User {id} not found");
+}
+
+public async Task<Result<decimal>> GetAccountBalanceAsync(int userId)
+{
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.UserId == userId);
+    if (account == null)
+        return Result<decimal>.Failure("Account not found");
+    if (!account.IsActive)
+        return Result<decimal>.Failure("Account is inactive");
+    return Result<decimal>.Success(account.Balance);
+}
+
+// Caller must handle both outcomes — compiler enforces it
+var result = await GetUserAsync(42);
+if (result.IsFailure)
+    return NotFound(result.Error);
+
+User user = result.Value; // safe to access — we checked IsSuccess
+
+// In ASP.NET Core — mapping Result to HTTP responses
+[HttpGet("{id}")]
+public async Task<IActionResult> GetUser(int id)
+{
+    var result = await userService.GetUserAsync(id);
+
+    return result.IsSuccess
+        ? Ok(new UserDto(result.Value))
+        : NotFound(new { error = result.Error });
+}
+```
+
+---
+
+## Rich Error Types
+
+```csharp
+// Typed errors — more information than a string
+public abstract record Error(string Code, string Message);
+
+public record NotFoundError(string Resource, int Id)
+    : Error("NOT_FOUND", $"{Resource} with id {Id} was not found");
+
+public record ValidationError(IReadOnlyList<string> Failures)
+    : Error("VALIDATION_FAILED", "One or more validation errors occurred");
+
+public record BusinessError(string Code, string Message) : Error(Code, Message);
+
+// Result with typed error
+public class Result<T, TError>
+{
+    public T?     Value   { get; }
+    public TError? Error  { get; }
+    public bool   IsSuccess { get; }
+
+    private Result(T value)    { Value = value; IsSuccess = true;  }
+    private Result(TError err) { Error = err;   IsSuccess = false; }
+
+    public static Result<T, TError> Ok(T value)  => new(value);
+    public static Result<T, TError> Fail(TError e) => new(e);
+}
+
+// Usage
+async Task<Result<User, NotFoundError>> GetUserAsync(int id)
+{
+    var user = await db.Users.FindAsync(id);
+    return user != null
+        ? Result<User, NotFoundError>.Ok(user)
+        : Result<User, NotFoundError>.Fail(new NotFoundError("User", id));
+}
+
+// Map error to HTTP response
+var result = await GetUserAsync(id);
+if (result.Error is NotFoundError notFound)
+    return NotFound(new { notFound.Message });
+```
+
+---
+
+## FluentResults — Production Library
+
+The **FluentResults** NuGet package provides a battle-tested Result implementation:
+
+```csharp
+using FluentResults;
+
+// Return Result or Result<T>
+public async Task<Result<UserDto>> CreateUserAsync(CreateUserDto dto)
+{
+    if (await db.Users.AnyAsync(u => u.Email == dto.Email))
+        return Result.Fail(new Error("Email already in use")
+            .WithMetadata("field", "email"));
+
+    var user = new User { Email = dto.Email, Name = dto.Name };
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+
+    return Result.Ok(new UserDto(user.Id, user.Name, user.Email));
+}
+
+// Caller
+var result = await CreateUserAsync(dto);
+
+if (result.IsFailed)
+{
+    // Access all errors
+    foreach (var error in result.Errors)
+        Console.WriteLine($"{error.Message}: {error.Metadata}");
+    return UnprocessableEntity(result.Errors.Select(e => e.Message));
+}
+
+UserDto created = result.Value;
+```
+
+---
+
+<ComparisonTable
+  title="Exception vs Result Pattern"
+  headers={["Aspect", "Exceptions", "Result Pattern"]}
+  rows={[
+    ["Failure visibility", "Hidden — not in method signature", "Explicit — return type shows failure possibility"],
+    ["Performance", "Expensive — stack unwinding", "Cheap — simple return value"],
+    ["Caller obligation", "Optional catch (forgotten = crash)", "Must check IsSuccess before accessing Value"],
+    ["Flow control", "Non-local jumps (try/catch)", "Normal control flow (if/else)"],
+    ["Use for", "Unexpected/unrecoverable errors", "Expected business failures"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/result-pattern/challenge-1"
+  title="When to Throw vs When to Return Result"
+  description="For each scenario, should you throw an exception or return a Result?"
+  code={`// A: User not found by ID in a web API endpoint
+public async Task<???> GetUserByIdAsync(int id) { }
+
+// B: Database connection string is null at startup
+public void InitializeDatabase(string? connectionString) { }
+
+// C: Insufficient funds when trying to place a trade
+public async Task<???> PlaceTradeAsync(TradeRequest request) { }
+
+// D: Invalid JSON in a request body
+public async Task<???> ParseRequestAsync(string json) { }`}
+  options={[
+    "All should throw exceptions — exceptions are simpler",
+    "A=Result, B=Exception, C=Result, D=Result",
+    "A=Exception, B=Exception, C=Result, D=Exception",
+    "All should return Result — exceptions should never be used"
+  ]}
+  correctAnswer={1}
+  explanation="A: Return Result — 'user not found' is an expected business outcome for a lookup, not an exceptional situation. B: Throw ArgumentNullException — null connection string at startup is a programming error (configuration mistake), exceptional and unrecoverable. C: Return Result — 'insufficient funds' is a normal business failure in a trading system, expected and frequent. D: Return Result — invalid JSON is an expected client error (bad request), not exceptional. Rule: use exceptions for unexpected/unrecoverable situations; use Result for expected business failures."
+/>
+
+---
+
+<Callout type="senior">
+**Result Pattern in ASP.NET Core — Minimal APIs and Problem Details**
+
+Combining Result pattern with RFC 9457 Problem Details provides consistent, machine-readable API errors:
+
+```csharp
+// Extension method to convert Result to IResult (Minimal API)
+public static class ResultExtensions
+{
+    public static IResult ToHttpResult<T>(this Result<T> result) => result switch
+    {
+        { IsSuccess: true }  => Results.Ok(result.Value),
+        { Error: NotFoundError e } => Results.Problem(
+            title:      "Resource Not Found",
+            detail:     e.Message,
+            statusCode: 404,
+            type:       "https://tools.ietf.org/html/rfc7231#section-6.5.4"),
+        { Error: ValidationError e } => Results.ValidationProblem(
+            e.Failures.ToDictionary(f => "general", _ => new[] { f })),
+        { Error: BusinessError e } => Results.Problem(
+            title:      "Business Rule Violation",
+            detail:     e.Message,
+            statusCode: 422),
+        _ => Results.Problem(statusCode: 500, title: "Internal Server Error"),
+    };
+}
+
+// Clean Minimal API endpoint
+app.MapGet("/api/users/{id}", async (int id, IUserService service) =>
+    (await service.GetUserAsync(id)).ToHttpResult());
+
+// Returns:
+// 200 OK: { "id": 1, "name": "Alice" }
+// 404 Not Found: { "type": "...", "title": "Resource Not Found", "detail": "User 1 not found" }
+```
+
+This keeps controllers/handlers thin while providing rich, RFC-compliant error responses. OneOf (discriminated unions) is another approach:
+
+```csharp
+// OneOf<T1, T2, T3> — explicit sum type (union type)
+public async Task<OneOf<User, NotFound, ValidationError>> GetUserAsync(int id)
+{
+    if (id <= 0) return new ValidationError(new[] { "Id must be positive" });
+    var user = await db.Users.FindAsync(id);
+    return user ?? (OneOf<User, NotFound, ValidationError>)new NotFound();
+}
+
+// Caller — exhaustive matching, compiler verifies all cases
+var result = await GetUserAsync(id);
+return result.Match(
+    user      => Ok(new UserDto(user)),
+    notFound  => NotFound(),
+    valError  => BadRequest(valError.Failures));
+```
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/result-pattern/quiz-1"
+  question="Why is accessing Result.Value without checking IsSuccess considered a bug?"
+  options={[
+    "It's not a bug — accessing Value returns null if the result failed",
+    "It throws InvalidOperationException — the same as accessing .Value on a failed Maybe/Option type",
+    "It causes a NullReferenceException because Value is null on failure",
+    "Both B and C — the behavior depends on the Result implementation"
+  ]}
+  correctAnswer={3}
+  explanation="Both B and C are valid depending on implementation. A well-designed Result type throws InvalidOperationException with a clear message ('Cannot access Value on failed result') when Value is accessed on failure — giving a helpful error. A poorly designed one returns null (causing a NullReferenceException elsewhere). The point is: always check IsSuccess before accessing Value. The Result pattern's value is making this obligation visible in the type — but it doesn't prevent the bug at compile time (unlike F#'s discriminated unions or Rust's Result type which enforce exhaustive matching)."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "FluentResults library", url: "https://github.com/altmann/FluentResults" },
+    { label: "OneOf — discriminated unions for C#", url: "https://github.com/mcintyre321/OneOf" },
+    { label: "Problem Details for HTTP APIs (RFC 9457)", url: "https://www.rfc-editor.org/rfc/rfc9457" },
+    { label: "ProblemDetails in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/web-api/handle-errors#use-apiproblemdetailsfactory" },
+  ]}
+/>

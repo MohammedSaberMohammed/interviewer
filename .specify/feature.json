@@ -1,0 +1,12 @@
+{
+  "name": "interviewer-app",
+  "path": ".specify/features/interviewer-app",
+  "status": "planned",
+  "created": "2026-04-20",
+  "artifacts": {
+    "constitution": ".specify/memory/constitution.md",
+    "spec": ".specify/features/interviewer-app/spec.md",
+    "plan": ".specify/features/interviewer-app/plan.md",
+    "tasks": ".specify/features/interviewer-app/tasks.md"
+  }
+}

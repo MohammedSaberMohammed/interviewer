@@ -1,24 +1,276 @@
 ---
-title: "Repository"
+title: "Repository Pattern — IRepository<T>"
 slug: "repository"
 order: 24
 difficulty: "advanced"
-readingTime: 0
-status: "draft"
-tags: []
-summary: "Coming soon."
-docsLinks: []
+readingTime: 13
+status: "published"
+tags: ["repository", "data access", "IRepository", "EF Core", "DDD", "generic repository", "testability"]
+summary: "Repository abstracts data access behind a collection-like interface — enabling business logic to work with domain objects without knowing about SQL, EF Core, or HTTP."
+docsLinks:
+  - label: "Repository pattern (Azure Architecture Center)"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/repository"
+  - label: "EF Core — working with DbContext"
+    url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/"
 ---
 
-import { Callout } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
 
-<Callout type="info" title="Content Coming Soon">
-This lesson is part of the curriculum and will be published soon. Topics covered:
+## The Problem: Data Access Coupled to Business Logic
 
-- Core concepts and fundamentals
-- Common interview questions
-- Practical C# examples
-- Senior-level insights
+When business logic directly calls `dbContext.Orders.Where(...).ToList()`, it knows about EF Core, LINQ, and SQL. Changing the database or switching to an API requires modifying business logic. Testing requires a real database.
 
-Start with [Phase 1](/phases/01-csharp-core) which is fully available now.
+Repository hides data access behind an interface that looks like a simple collection.
+
+---
+
+## Generic Repository Interface
+
+```csharp
+// Generic repository — basic CRUD for any entity
+public interface IRepository<T> where T : class
+{
+    Task<T?> GetByIdAsync(int id, CancellationToken ct = default);
+    Task<IReadOnlyList<T>> GetAllAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<T>> FindAsync(
+        Expression<Func<T, bool>> predicate, CancellationToken ct = default);
+    Task AddAsync(T entity, CancellationToken ct = default);
+    void Update(T entity);
+    void Remove(T entity);
+}
+
+// EF Core implementation
+public class EfRepository<T> : IRepository<T> where T : class
+{
+    protected readonly AppDbContext _db;
+    protected readonly DbSet<T>    _set;
+
+    public EfRepository(AppDbContext db)
+    {
+        _db  = db;
+        _set = db.Set<T>();
+    }
+
+    public async Task<T?> GetByIdAsync(int id, CancellationToken ct = default)
+        => await _set.FindAsync(new object[] { id }, ct);
+
+    public async Task<IReadOnlyList<T>> GetAllAsync(CancellationToken ct = default)
+        => await _set.ToListAsync(ct);
+
+    public async Task<IReadOnlyList<T>> FindAsync(
+        Expression<Func<T, bool>> predicate, CancellationToken ct = default)
+        => await _set.Where(predicate).ToListAsync(ct);
+
+    public async Task AddAsync(T entity, CancellationToken ct = default)
+        => await _set.AddAsync(entity, ct);
+
+    public void Update(T entity) => _db.Entry(entity).State = EntityState.Modified;
+    public void Remove(T entity) => _set.Remove(entity);
+}
+```
+
+---
+
+## Specific Repository — The Preferred Approach
+
+Generic repositories expose too much. A specific repository exposes only what the domain needs:
+
+```csharp
+// Specific repository interface — reveals intent, hides EF
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdWithItemsAsync(int id, CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetPendingOrdersAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<Order>> GetOrdersByCustomerAsync(int customerId, CancellationToken ct = default);
+    Task<decimal> GetTotalRevenueAsync(DateRange period, CancellationToken ct = default);
+    Task AddAsync(Order order, CancellationToken ct = default);
+    void Remove(Order order);
+}
+
+// EF Core implementation
+public class EfOrderRepository : IOrderRepository
+{
+    private readonly AppDbContext _db;
+
+    public EfOrderRepository(AppDbContext db) => _db = db;
+
+    public async Task<Order?> GetByIdWithItemsAsync(int id, CancellationToken ct = default)
+        => await _db.Orders
+            .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public async Task<IReadOnlyList<Order>> GetPendingOrdersAsync(CancellationToken ct = default)
+        => await _db.Orders
+            .Where(o => o.Status == OrderStatus.Pending)
+            .OrderBy(o => o.CreatedAt)
+            .ToListAsync(ct);
+
+    public async Task<decimal> GetTotalRevenueAsync(DateRange period, CancellationToken ct = default)
+        => await _db.Orders
+            .Where(o => o.CreatedAt >= period.Start && o.CreatedAt <= period.End)
+            .SumAsync(o => o.Total, ct);
+
+    public async Task AddAsync(Order order, CancellationToken ct = default)
+        => await _db.Orders.AddAsync(order, ct);
+
+    public void Remove(Order order) => _db.Orders.Remove(order);
+}
+
+// Register
+builder.Services.AddScoped<IOrderRepository, EfOrderRepository>();
+
+// Business logic — knows nothing about EF
+public class OrderService
+{
+    private readonly IOrderRepository _orders;
+
+    public OrderService(IOrderRepository orders) => _orders = orders;
+
+    public async Task<decimal> GetMonthlyRevenueAsync(int year, int month)
+    {
+        var period = new DateRange(new DateTime(year, month, 1),
+                                   new DateTime(year, month, 1).AddMonths(1));
+        return await _orders.GetTotalRevenueAsync(period);
+    }
+}
+```
+
+---
+
+## In-Memory Repository for Tests
+
+The primary benefit of Repository is testability:
+
+```csharp
+public class InMemoryOrderRepository : IOrderRepository
+{
+    private readonly List<Order> _orders = new();
+
+    public Task<Order?> GetByIdWithItemsAsync(int id, CancellationToken ct = default)
+        => Task.FromResult(_orders.FirstOrDefault(o => o.Id == id));
+
+    public Task<IReadOnlyList<Order>> GetPendingOrdersAsync(CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<Order>>(
+            _orders.Where(o => o.Status == OrderStatus.Pending).ToList());
+
+    public Task<decimal> GetTotalRevenueAsync(DateRange period, CancellationToken ct = default)
+        => Task.FromResult(
+            _orders.Where(o => o.CreatedAt >= period.Start && o.CreatedAt <= period.End)
+                   .Sum(o => o.Total));
+
+    public Task AddAsync(Order order, CancellationToken ct = default)
+    {
+        order.Id = _orders.Count + 1; // simulate auto-increment
+        _orders.Add(order);
+        return Task.CompletedTask;
+    }
+
+    public void Remove(Order order) => _orders.Remove(order);
+}
+
+// Fast unit test — no database required
+[Fact]
+public async Task GetMonthlyRevenue_SumsOrdersInPeriod()
+{
+    var repo = new InMemoryOrderRepository();
+    await repo.AddAsync(new Order { Total = 100, CreatedAt = new DateTime(2024, 3, 15) });
+    await repo.AddAsync(new Order { Total = 200, CreatedAt = new DateTime(2024, 3, 20) });
+    await repo.AddAsync(new Order { Total = 50,  CreatedAt = new DateTime(2024, 4, 1) }); // out of period
+
+    var service = new OrderService(repo);
+    decimal revenue = await service.GetMonthlyRevenueAsync(2024, 3);
+
+    Assert.Equal(300, revenue);
+}
+```
+
+---
+
+<ComparisonTable
+  title="Generic Repository vs Specific Repository"
+  headers={["Aspect", "Generic IRepository<T>", "Specific IOrderRepository"]}
+  rows={[
+    ["Interface", "Broad — CRUD for any T", "Narrow — only what the domain needs"],
+    ["Reveals intent", "No — callers must know query details", "Yes — GetPendingOrdersAsync() is self-documenting"],
+    ["Optimization", "Limited — generic queries only", "Full — can use Includes, projections, aggregates"],
+    ["Testability", "Both equally testable", "Both equally testable"],
+    ["Recommendation", "Anti-pattern per most DDD experts", "Preferred — aligns with DDD Aggregate Repositories"],
+  ]}
+/>
+
+---
+
+<CodeChallenge
+  id="07-design-patterns/repository/challenge-1"
+  title="Is Repository on Top of EF Core Redundant?"
+  description="A senior developer says 'DbContext IS already a repository — adding IRepository on top just adds layers.' How do you respond?"
+  code={`// DbContext has DbSet<Order> which has:
+// - FindAsync, FirstOrDefaultAsync, Where, Include
+// - Add, Update, Remove
+// Isn't that already a Repository?`}
+  options={[
+    "Yes — always use DbContext directly; IRepository is just unnecessary indirection",
+    "Partially true — DbContext is a repository, but wrapping it enables testability without EF, hides query details, and enforces domain intent",
+    "No — DbContext is not a Repository because it doesn't implement IRepository<T>",
+    "Depends on whether you need multiple database backends"
+  ]}
+  correctAnswer={1}
+  explanation="The senior developer is partially right — DbContext is already a Unit of Work + Repository combined. The debate is real in the .NET community. Arguments FOR wrapping: (1) testability without EF (InMemory repo is faster and avoids EF quirks); (2) domain intent encapsulation (GetPendingOrdersAsync() vs Where(o => o.Status == 'Pending')); (3) shields domain from EF API changes. Arguments AGAINST: extra layer, possible 'leaky abstraction', EF Core InMemory provider already enables testing. For lean apps: use EF directly. For complex domain logic with DDD: specific repositories add value."
+/>
+
+---
+
+<Callout type="senior">
+**Repository in DDD — Aggregate Roots Only**
+
+In Domain-Driven Design, repositories are created per **Aggregate Root**, not per entity. An Aggregate Root is the entry point to a cluster of related entities:
+
+```csharp
+// Order is the Aggregate Root — OrderItem is part of the aggregate
+// You ONLY have IOrderRepository — NOT IOrderItemRepository
+// (OrderItems are accessed only through Orders)
+
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(int id, CancellationToken ct = default);
+    Task AddAsync(Order order, CancellationToken ct = default);
+    // No methods for OrderItem — always accessed via Order
+}
+
+// Domain logic — manipulates the entire aggregate
+var order = await orderRepository.GetByIdAsync(orderId);
+order.AddItem(new OrderItem(productId, quantity)); // modifies aggregate
+order.Apply(new DiscountCode("SAVE10"));           // modifies aggregate
+// No separate orderItemRepository.AddAsync() call!
+
+await unitOfWork.CommitAsync(); // saves entire aggregate atomically
+```
+
+**Red flag**: If you find yourself with `IOrderItemRepository`, `IProductVariantRepository`, `IAddressRepository` etc., you're likely not modeling aggregates correctly. Ask: "What entity is the consistency boundary here?" That entity is the Aggregate Root, and it gets one Repository.
 </Callout>
+
+---
+
+<Quiz
+  id="07-design-patterns/repository/quiz-1"
+  question="Why doesn't Repository typically expose SaveChanges / Commit directly?"
+  options={[
+    "Because repositories only perform reads, not writes",
+    "Saving is the responsibility of the Unit of Work — separating query/mutation from committing enables multiple repositories to participate in one transaction",
+    "Because DbContext.SaveChangesAsync() is too slow to expose",
+    "To prevent developers from committing too frequently"
+  ]}
+  correctAnswer={1}
+  explanation="The Repository's job is to provide collection-like access to domain objects (CRUD). Committing/saving is the Unit of Work's responsibility — it tracks all changes across multiple repositories and commits them atomically. If each Repository exposed SaveChanges(), you'd call it multiple times per request, potentially committing partial state. The UoW (often DbContext itself) ensures all changes from all repositories in a request are committed together or not at all."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Repository pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/repository" },
+    { label: "EF Core DbContext", url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/" },
+    { label: ".NET Application Architecture — Repository pattern", url: "https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/infrastructure-persistence-layer-design" },
+  ]}
+/>
