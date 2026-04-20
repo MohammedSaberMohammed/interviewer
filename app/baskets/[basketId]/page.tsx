@@ -230,7 +230,13 @@ export default function BasketDetailPage() {
                     <div
                       key={q.id}
                       draggable={!activeFilter}
-                      onDragStart={() => !activeFilter && handleDragStart(idx)}
+                      onDragStart={(e) => {
+                        if ((e.target as HTMLElement).closest('[data-no-drag]')) {
+                          e.preventDefault()
+                          return
+                        }
+                        if (!activeFilter) handleDragStart(idx)
+                      }}
                       onDragOver={(e) => !activeFilter && handleDragOver(e, idx)}
                       onDrop={(e) => !activeFilter && handleDrop(e, idx)}
                       onDragEnd={handleDragEnd}
@@ -276,8 +282,8 @@ export default function BasketDetailPage() {
                         </button>
                       </div>
 
-                      {/* Item preview */}
-                      <div className="px-3 py-1">
+                      {/* Item preview — data-no-drag prevents draggable parent from stealing click events */}
+                      <div className="px-3 py-1" data-no-drag>
                         {q.type === 'challenge' ? (
                           <CodeChallenge
                             id={`basket-preview-${q.id}`}
