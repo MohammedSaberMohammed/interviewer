@@ -83,11 +83,11 @@ export function Navbar() {
             </Button>
           </Link>
 
-          {/* Baskets link */}
-          <Link href="/baskets">
+          {/* Interview Templates link */}
+          <Link href="/interview-templates">
             <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
               <ShoppingBasket className="h-3.5 w-3.5" />
-              Baskets
+              Templates
             </Button>
           </Link>
 

@@ -75,8 +75,8 @@ export function AddLessonToBasketButton({
       <button
         type="button"
         onClick={handleClick}
-        title={inAnyBasket ? 'In a basket' : 'Add lesson to basket'}
-        aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to basket'}
+        title={inAnyBasket ? 'In a template' : 'Add lesson to template'}
+        aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to template'}
         className={cn(
           'flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors shrink-0 text-xs font-medium gap-1',
           inAnyBasket
@@ -97,8 +97,8 @@ export function AddLessonToBasketButton({
     <button
       type="button"
       onClick={handleClick}
-      title={inAnyBasket ? 'In a basket' : 'Add lesson to basket'}
-      aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to basket'}
+      title={inAnyBasket ? 'In a template' : 'Add lesson to template'}
+      aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to template'}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
         inAnyBasket
@@ -111,7 +111,7 @@ export function AddLessonToBasketButton({
         ? <Check className="h-3.5 w-3.5" />
         : <ShoppingBasket className="h-3.5 w-3.5" />
       }
-      {inAnyBasket ? 'In basket' : 'Add to basket'}
+      {inAnyBasket ? 'In template' : 'Add to template'}
     </button>
   )
 }

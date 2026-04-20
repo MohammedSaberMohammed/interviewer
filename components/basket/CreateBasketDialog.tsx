@@ -40,12 +40,12 @@ export function CreateBasketDialog() {
     <Dialog open={state.createOpen} onOpenChange={(open) => !open && closeAll()}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>New candidate basket</DialogTitle>
+          <DialogTitle>New interview template</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-3 py-1">
           <p className="text-sm text-muted-foreground">
-            Give your basket a name — for example: &ldquo;John interview&rdquo; or &ldquo;Senior .NET 2024&rdquo;.
+            Give your template a name — for example: &ldquo;John interview&rdquo; or &ldquo;Senior .NET 2024&rdquo;.
           </p>
           <input
             ref={inputRef}
@@ -53,7 +53,7 @@ export function CreateBasketDialog() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-            placeholder="Basket name…"
+            placeholder="Template name…"
             maxLength={60}
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none ring-0 transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
@@ -64,7 +64,7 @@ export function CreateBasketDialog() {
             Cancel
           </Button>
           <Button onClick={handleCreate} disabled={!name.trim()} size="sm">
-            Create basket
+            Create template
           </Button>
         </DialogFooter>
       </DialogContent>

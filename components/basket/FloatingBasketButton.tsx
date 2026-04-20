@@ -26,7 +26,7 @@ export function FloatingBasketButton() {
         <button
           type="button"
           onClick={openCreate}
-          aria-label="Create new candidate basket"
+          aria-label="New interview template"
           className="flex h-12 w-12 items-center justify-center rounded-full border border-[#512BD4]/30 bg-white shadow-md transition-all hover:scale-105 hover:border-[#512BD4] hover:shadow-lg dark:bg-slate-900 dark:border-violet-500/30 dark:hover:border-violet-400"
         >
           <ShoppingBasket className="h-5 w-5 text-[#512BD4] dark:text-violet-300" />
@@ -38,18 +38,18 @@ export function FloatingBasketButton() {
         </button>
         {/* Tooltip */}
         <div className="pointer-events-none absolute bottom-full left-0 mb-2 whitespace-nowrap rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md opacity-0 transition-opacity group-hover:opacity-100">
-          New candidate basket
+          New interview template
           <div className="absolute -bottom-1 left-4 h-2 w-2 rotate-45 border-b border-r border-border bg-popover" />
         </div>
       </div>
 
-      {/* View baskets link (only shown if baskets exist) */}
+      {/* View templates link (only shown if templates exist) */}
       {baskets.length > 0 && (
         <Link
-          href="/baskets"
+          href="/interview-templates"
           className="rounded-full border border-border bg-white px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:border-[#512BD4]/40 hover:text-[#512BD4] dark:bg-slate-900"
         >
-          {baskets.length} basket{baskets.length !== 1 ? 's' : ''}
+          {baskets.length} template{baskets.length !== 1 ? 's' : ''}
         </Link>
       )}
     </div>

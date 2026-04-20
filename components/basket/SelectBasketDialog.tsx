@@ -38,12 +38,12 @@ export function SelectBasketDialog() {
     <Dialog open={state.selectOpen} onOpenChange={(open) => { if (!open) { closeAll(); setSelected(null) } }}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Add to basket</DialogTitle>
+          <DialogTitle>Add to template</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-2 py-1">
           {baskets.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">No baskets yet.</p>
+            <p className="text-sm text-muted-foreground text-center py-4">No templates yet.</p>
           ) : (
             <div className="space-y-1.5 max-h-64 overflow-y-auto">
               {baskets.map((basket) => {
@@ -88,7 +88,7 @@ export function SelectBasketDialog() {
             className="w-full flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-sm text-muted-foreground hover:border-primary/50 hover:text-primary transition-colors"
           >
             <Plus className="h-4 w-4" />
-            Create new basket
+            Create new template
           </button>
         </div>
 
@@ -97,7 +97,7 @@ export function SelectBasketDialog() {
             Cancel
           </Button>
           <Button size="sm" disabled={!selected} onClick={handleAdd}>
-            Add to basket
+            Add to template
           </Button>
         </DialogFooter>
       </DialogContent>

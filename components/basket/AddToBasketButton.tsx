@@ -39,8 +39,8 @@ export function AddToBasketButton({ question, className }: AddToBasketButtonProp
     <button
       type="button"
       onClick={handleClick}
-      title={inAnyBasket ? 'Added to basket' : 'Add to basket'}
-      aria-label={inAnyBasket ? 'Already in a basket' : 'Add question to basket'}
+      title={inAnyBasket ? 'Added to template' : 'Add to template'}
+      aria-label={inAnyBasket ? 'Already in a template' : 'Add question to template'}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
         inAnyBasket
@@ -54,7 +54,7 @@ export function AddToBasketButton({ question, className }: AddToBasketButtonProp
       ) : (
         <ShoppingBasket className="h-3.5 w-3.5" />
       )}
-      {inAnyBasket ? 'In basket' : 'Add to basket'}
+      {inAnyBasket ? 'In template' : 'Add to template'}
     </button>
   )
 }
