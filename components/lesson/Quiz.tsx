@@ -6,6 +6,8 @@ import { CheckCircle2, XCircle, HelpCircle, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useProgressStore } from '@/stores/progressStore'
 import { DifficultyBadge } from './DifficultyBadge'
+import { AddToBasketButton } from '@/components/basket/AddToBasketButton'
+import { useLessonContext } from '@/components/lesson/LessonContext'
 import type { Difficulty } from '@/types'
 
 interface QuizProps {
@@ -27,6 +29,24 @@ export function Quiz({ id, difficulty = 'foundation', prompt, question, options 
   const [hintIndex, setHintIndex] = useState(0)
   const [showExplanation, setShowExplanation] = useState(false)
   const recordChallengeAnswer = useProgressStore((s) => s.recordChallengeAnswer)
+  const lessonCtx = useLessonContext()
+
+  const basketQuestion = lessonCtx ? {
+    id,
+    type: 'quiz' as const,
+    title: 'Quiz',
+    question: displayPrompt,
+    options,
+    correctAnswer,
+    explanation,
+    difficulty,
+    lessonSlug: lessonCtx.lessonSlug,
+    phaseSlug: lessonCtx.phaseSlug,
+    lessonTitle: lessonCtx.lessonTitle,
+    phaseTitle: lessonCtx.phaseTitle,
+    phaseNumber: lessonCtx.phaseNumber,
+    addedAt: 0,
+  } : null
 
   const isCorrect = submitted && selected === correctAnswer
 
@@ -51,7 +71,10 @@ export function Quiz({ id, difficulty = 'foundation', prompt, question, options 
           <HelpCircle className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
           <span className="text-sm font-semibold">Quiz</span>
         </div>
-        <DifficultyBadge level={difficulty} />
+        <div className="flex items-center gap-2">
+          <DifficultyBadge level={difficulty} />
+          {basketQuestion && <AddToBasketButton question={basketQuestion} />}
+        </div>
       </div>
 
       <div className="p-4 space-y-4">

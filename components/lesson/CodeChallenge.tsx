@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { useProgressStore } from '@/stores/progressStore'
 import { DifficultyBadge } from './DifficultyBadge'
 import { DocsLink } from './DocsLink'
+import { AddToBasketButton } from '@/components/basket/AddToBasketButton'
+import { useLessonContext } from '@/components/lesson/LessonContext'
 import type { Difficulty } from '@/types'
 
 interface CodeChallengeProps {
@@ -48,6 +50,26 @@ export function CodeChallenge({
   const [hintIndex, setHintIndex] = useState(0)
   const [showExplanation, setShowExplanation] = useState(false)
   const recordChallengeAnswer = useProgressStore((s) => s.recordChallengeAnswer)
+  const lessonCtx = useLessonContext()
+
+  const basketQuestion = lessonCtx ? {
+    id,
+    type: 'challenge' as const,
+    title: displayTitle,
+    question: displayPrompt,
+    options,
+    correctAnswer,
+    explanation,
+    code: code ?? '',
+    language: language ?? 'csharp',
+    difficulty,
+    lessonSlug: lessonCtx.lessonSlug,
+    phaseSlug: lessonCtx.phaseSlug,
+    lessonTitle: lessonCtx.lessonTitle,
+    phaseTitle: lessonCtx.phaseTitle,
+    phaseNumber: lessonCtx.phaseNumber,
+    addedAt: 0,
+  } : null
 
   const isCorrect = submitted && selected === correctAnswer
 
@@ -72,7 +94,10 @@ export function CodeChallenge({
           <Code2 className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
           <span className="text-sm font-semibold">{displayTitle}</span>
         </div>
-        <DifficultyBadge level={difficulty} />
+        <div className="flex items-center gap-2">
+          <DifficultyBadge level={difficulty} />
+          {basketQuestion && <AddToBasketButton question={basketQuestion} />}
+        </div>
       </div>
 
       <div className="p-4 space-y-4">

@@ -4,6 +4,8 @@ import { ThemeProvider } from 'next-themes'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SearchProvider } from '@/components/search/SearchProvider'
 import { GamificationProviders } from '@/components/quest/GamificationProviders'
+import { BasketDialogProvider } from '@/components/basket/BasketContext'
+import { BasketGlobalUI } from '@/components/basket/BasketProviders'
 import { buildSearchIndex } from '@/lib/content'
 import './globals.css'
 
@@ -46,13 +48,16 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           disableTransitionOnChange={false}
         >
           <TooltipProvider>
-            <SearchProvider entries={searchEntries}>
-              <a href="#main-content" className="skip-to-content">
-                Skip to content
-              </a>
-              {children}
-              <GamificationProviders />
-            </SearchProvider>
+            <BasketDialogProvider>
+              <SearchProvider entries={searchEntries}>
+                <a href="#main-content" className="skip-to-content">
+                  Skip to content
+                </a>
+                {children}
+                <GamificationProviders />
+                <BasketGlobalUI />
+              </SearchProvider>
+            </BasketDialogProvider>
           </TooltipProvider>
         </ThemeProvider>
       </body>

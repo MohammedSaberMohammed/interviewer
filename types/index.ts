@@ -179,3 +179,30 @@ export interface NavItem {
   href: string
   description?: string
 }
+
+/* ─── Basket ──────────────────────────────────────────────────────────────── */
+export interface Basket {
+  id: string
+  name: string
+  createdAt: number
+  questionIds: string[] // ordered list
+}
+
+export interface BasketQuestion {
+  id: string           // e.g. "01-csharp-core/clr-cts-cls/challenge-1"
+  type: 'challenge' | 'quiz'
+  title: string        // "Code Challenge" or "Quiz"
+  question: string     // the prompt/question text
+  options: string[]
+  correctAnswer: number
+  explanation: string
+  code?: string
+  language?: string
+  difficulty: string
+  lessonSlug: string
+  phaseSlug: string
+  lessonTitle: string
+  phaseTitle: string
+  phaseNumber: number
+  addedAt: number
+}

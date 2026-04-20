@@ -36,6 +36,7 @@ import {
   QuestLayout,
   ReadAsArticleToggle,
 } from '@/components/quest'
+import { LessonContextProvider } from '@/components/lesson/LessonContext'
 
 interface Props {
   params: Promise<{ phaseSlug: string; lessonSlug: string }>
@@ -170,18 +171,26 @@ export default async function LessonPage({ params }: Props) {
             </div>
 
             {/* Lesson content — wrapped in QuestLayout for step navigation */}
-            <QuestLayout
-              phaseSlug={phaseSlug}
-              lessonSlug={lessonSlug}
-              lessonTitle={lesson.title}
-              stepIds={stepIds}
-              questMode={questMode}
-              nextLesson={nextLesson}
-            >
-              <div className="prose-lesson" id="lesson-content">
-                {mdxContent}
-              </div>
-            </QuestLayout>
+            <LessonContextProvider value={{
+              lessonSlug,
+              phaseSlug,
+              lessonTitle: lesson.title,
+              phaseTitle: phaseMeta?.title ?? '',
+              phaseNumber: phaseMeta?.number ?? 0,
+            }}>
+              <QuestLayout
+                phaseSlug={phaseSlug}
+                lessonSlug={lessonSlug}
+                lessonTitle={lesson.title}
+                stepIds={stepIds}
+                questMode={questMode}
+                nextLesson={nextLesson}
+              >
+                <div className="prose-lesson" id="lesson-content">
+                  {mdxContent}
+                </div>
+              </QuestLayout>
+            </LessonContextProvider>
 
             {/* Docs links */}
             {lesson.docsLinks.length > 0 && (
