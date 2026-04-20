@@ -101,21 +101,20 @@ export function CodeChallenge({
       </div>
 
       <div className="p-4 space-y-4">
-        {/* Prompt */}
-        {displayPrompt && <p className="text-sm font-medium leading-relaxed">{displayPrompt}</p>}
-
         {/* Code block */}
         <div className="overflow-hidden rounded-lg border border-border">
           <div className="border-b border-border bg-muted/50 px-3 py-1.5">
             <span className="text-xs font-mono text-muted-foreground">{language}</span>
           </div>
           <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[#0d1117] p-4 text-sm font-mono leading-relaxed">
-            <code className={`language-${language}`}>{code}</code>
+            <code className={`language-${language} text-slate-800 dark:text-slate-100`}>{code}</code>
           </pre>
         </div>
 
-        {/* Question */}
-        <p className="text-sm text-muted-foreground">What is the output?</p>
+        {/* Question prompt */}
+        <p className="text-sm font-medium leading-relaxed">
+          {displayPrompt || 'What is the output?'}
+        </p>
 
         {/* Options */}
         <div className="space-y-2" role="radiogroup" aria-label="Answer options">

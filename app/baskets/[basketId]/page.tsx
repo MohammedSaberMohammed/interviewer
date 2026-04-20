@@ -284,26 +284,36 @@ export default function BasketDetailPage() {
 
                       {/* Item preview — data-no-drag prevents draggable parent from stealing click events */}
                       <div className="px-3 py-1" data-no-drag>
-                        {q.type === 'challenge' ? (
+                        {q.type === 'challenge' && q.options?.length ? (
                           <CodeChallenge
                             id={`basket-preview-${q.id}`}
                             question={q.question}
                             code={q.code ?? ''}
                             language={q.language ?? 'csharp'}
-                            options={q.options ?? []}
+                            options={q.options}
+                            correctAnswer={q.correctAnswer ?? 0}
+                            explanation={q.explanation ?? ''}
+                            difficulty={q.difficulty as Difficulty}
+                          />
+                        ) : q.type === 'challenge' ? (
+                          <div className="my-3 rounded-lg border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">
+                            This item has outdated data — remove it and re-add from the{' '}
+                            <Link href={`/phases/${q.phaseSlug}/${q.lessonSlug}`} className="underline hover:text-foreground">lesson</Link>.
+                          </div>
+                        ) : q.type === 'quiz' && q.options?.length ? (
+                          <Quiz
+                            id={`basket-preview-${q.id}`}
+                            question={q.question}
+                            options={q.options}
                             correctAnswer={q.correctAnswer ?? 0}
                             explanation={q.explanation ?? ''}
                             difficulty={q.difficulty as Difficulty}
                           />
                         ) : q.type === 'quiz' ? (
-                          <Quiz
-                            id={`basket-preview-${q.id}`}
-                            question={q.question}
-                            options={q.options ?? []}
-                            correctAnswer={q.correctAnswer ?? 0}
-                            explanation={q.explanation ?? ''}
-                            difficulty={q.difficulty as Difficulty}
-                          />
+                          <div className="my-3 rounded-lg border border-dashed border-border px-4 py-3 text-xs text-muted-foreground">
+                            This item has outdated data — remove it and re-add from the{' '}
+                            <Link href={`/phases/${q.phaseSlug}/${q.lessonSlug}`} className="underline hover:text-foreground">lesson</Link>.
+                          </div>
                         ) : (
                           /* Lesson item */
                           <Link

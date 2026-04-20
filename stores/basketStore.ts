@@ -4,6 +4,13 @@ import type { Basket, BasketQuestion } from '@/types'
 
 const BASKET_STORAGE_KEY = 'interviewer-app-baskets-v1'
 
+// Validates a stored BasketQuestion has all required display fields
+function isValidStoredQuestion(q: BasketQuestion): boolean {
+  if (q.type === 'lesson') return true
+  // challenge/quiz require options + question to render
+  return !!(q.options?.length && q.question !== undefined)
+}
+
 interface BasketState {
   baskets: Basket[]
   questions: Record<string, BasketQuestion> // keyed by question id
@@ -82,6 +89,28 @@ export const useBasketStore = create<BasketState>()(
     }),
     {
       name: BASKET_STORAGE_KEY,
+      version: 1,
+      migrate: (persistedState: unknown, version: number) => {
+        const raw = persistedState as { baskets?: Basket[]; questions?: Record<string, BasketQuestion> }
+        if (version < 1) {
+          // Remove challenge/quiz items that are missing required display fields
+          const questions = raw.questions ?? {}
+          const validQuestions: Record<string, BasketQuestion> = {}
+          for (const [id, q] of Object.entries(questions)) {
+            if (isValidStoredQuestion(q)) validQuestions[id] = q
+          }
+          const validIds = new Set(Object.keys(validQuestions))
+          return {
+            ...raw,
+            questions: validQuestions,
+            baskets: (raw.baskets ?? []).map((b) => ({
+              ...b,
+              questionIds: b.questionIds.filter((id) => validIds.has(id)),
+            })),
+          }
+        }
+        return raw
+      },
       storage: createJSONStorage(() => {
         if (typeof window === 'undefined') {
           return { getItem: () => null, setItem: () => undefined, removeItem: () => undefined }
