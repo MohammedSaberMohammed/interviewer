@@ -3,6 +3,7 @@ import { Hero } from '@/components/home/Hero'
 import { Roadmap } from '@/components/home/Roadmap'
 import { FeatureGrid } from '@/components/home/FeatureGrid'
 import { PhaseCard } from '@/components/home/PhaseCard'
+import { GamificationWidget } from '@/components/home/GamificationWidget'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
 
@@ -14,6 +15,9 @@ export default function HomePage() {
       <Navbar />
       <main id="main-content">
         <Hero />
+        <div className="container mx-auto px-4">
+          <GamificationWidget />
+        </div>
         <Roadmap phases={phases} />
         <FeatureGrid />
 

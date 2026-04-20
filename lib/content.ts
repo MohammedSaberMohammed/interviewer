@@ -115,6 +115,21 @@ export function getLessonRawMdx(phaseSlug: string, lessonSlug: string): string |
   return null
 }
 
+/**
+ * Extracts the ordered list of <QuestStep id="..."> IDs from raw MDX source.
+ * Used server-side to pass stepIds to the QuestLayout client component.
+ */
+export function extractQuestStepIds(rawMdx: string): string[] {
+  const ids: string[] = []
+  // Match <QuestStep id="..." or <QuestStep id='...'
+  const re = /<QuestStep[^>]+\bid=["']([^"']+)["']/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(rawMdx)) !== null) {
+    if (m[1]) ids.push(m[1])
+  }
+  return ids
+}
+
 export function buildSearchIndex(): SearchEntry[] {
   const entries: SearchEntry[] = []
 
