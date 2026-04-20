@@ -21,7 +21,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
 import { cn } from '@/lib/utils'
+import { DIFFICULTY_ORDER, DIFFICULTY_CONFIG } from '@/lib/constants'
 import type { BasketQuestion, Difficulty } from '@/types'
+
+const DIFFICULTIES: Difficulty[] = ['foundation', 'intermediate', 'advanced', 'expert']
 
 export default function BasketDetailPage() {
   const params = useParams()
@@ -36,14 +39,36 @@ export default function BasketDetailPage() {
 
   // Local ordered list (synced from store, modified by DnD)
   const [orderedIds, setOrderedIds] = useState<string[]>([])
+  const [activeFilter, setActiveFilter] = useState<Difficulty | null>(null)
+
+  function sortByDifficulty(ids: string[]) {
+    return [...ids].sort((a, b) => {
+      const qa = useBasketStore.getState().getQuestion(a)
+      const qb = useBasketStore.getState().getQuestion(b)
+      return (DIFFICULTY_ORDER[qa?.difficulty ?? ''] ?? 0) - (DIFFICULTY_ORDER[qb?.difficulty ?? ''] ?? 0)
+    })
+  }
 
   useEffect(() => {
     useBasketStore.persist.rehydrate()
+    const b = useBasketStore.getState().getBasket(basketId)
+    if (b) {
+      const sorted = sortByDifficulty(b.questionIds)
+      setOrderedIds(sorted)
+      useBasketStore.getState().reorderQuestions(basketId, sorted)
+    }
     setMounted(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Keep local list in sync when items are added/removed externally
   useEffect(() => {
-    if (basket) setOrderedIds([...basket.questionIds])
+    if (!mounted || !basket) return
+    // Preserve existing order for items already in list; append new ones sorted
+    const existing = orderedIds.filter((id) => basket.questionIds.includes(id))
+    const added = basket.questionIds.filter((id) => !orderedIds.includes(id))
+    const next = [...existing, ...sortByDifficulty(added)]
+    setOrderedIds(next)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [basket?.questionIds.join(',')])
 
@@ -84,7 +109,8 @@ export default function BasketDetailPage() {
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
-  const questions = orderedIds.map((id) => getQuestion(id)).filter(Boolean) as BasketQuestion[]
+  const allItems = orderedIds.map((id) => getQuestion(id)).filter(Boolean) as BasketQuestion[]
+  const questions = activeFilter ? allItems.filter((q) => q.difficulty === activeFilter) : allItems
 
   return (
     <>
@@ -120,7 +146,7 @@ export default function BasketDetailPage() {
                   </div>
                   <p className="text-sm text-muted-foreground">
                     {questions.length} item{questions.length !== 1 ? 's' : ''}
-                    {questions.length > 1 && (
+                    {allItems.length > 1 && !activeFilter && (
                       <span className="ml-2 inline-flex items-center gap-1 text-xs text-muted-foreground/60">
                         <ArrowUpDown className="h-3 w-3" />
                         Drag to reorder
@@ -130,20 +156,70 @@ export default function BasketDetailPage() {
                 </div>
               </div>
 
+              {/* Difficulty filter pills */}
+              {allItems.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => setActiveFilter(null)}
+                    className={cn(
+                      'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                      activeFilter === null
+                        ? 'border-[#512BD4] bg-[#512BD4] text-white'
+                        : 'border-border text-muted-foreground hover:border-[#512BD4]/40 hover:text-[#512BD4]',
+                    )}
+                  >
+                    All ({allItems.length})
+                  </button>
+                  {DIFFICULTIES.filter((d) => allItems.some((q) => q.difficulty === d)).map((d) => {
+                    const cfg = DIFFICULTY_CONFIG[d]
+                    const count = allItems.filter((q) => q.difficulty === d).length
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setActiveFilter(activeFilter === d ? null : d)}
+                        className={cn(
+                          'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                          activeFilter === d
+                            ? `${cfg.bgClass} ${cfg.textClass} border-transparent`
+                            : 'border-border text-muted-foreground hover:border-current',
+                          activeFilter === d && 'opacity-100',
+                        )}
+                      >
+                        {cfg.label} ({count})
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
               {/* Empty state */}
               {questions.length === 0 && (
                 <div className="mt-8 flex flex-col items-center justify-center py-16 text-center rounded-xl border border-dashed border-border">
                   <ShoppingBasket className="h-8 w-8 text-muted-foreground/30 mb-3" />
-                  <p className="font-medium mb-1">No questions yet</p>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Browse lessons and click &ldquo;Add to basket&rdquo; on any question.
-                  </p>
-                  <Link href="/phases">
-                    <Button size="sm" variant="outline" className="gap-2">
-                      <Plus className="h-4 w-4" />
-                      Browse lessons
-                    </Button>
-                  </Link>
+                  {activeFilter ? (
+                    <>
+                      <p className="font-medium mb-1">No {DIFFICULTY_CONFIG[activeFilter].label.toLowerCase()} items</p>
+                      <p className="text-sm text-muted-foreground mb-4">Try a different difficulty filter.</p>
+                      <Button size="sm" variant="outline" onClick={() => setActiveFilter(null)}>
+                        Show all
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="font-medium mb-1">No items yet</p>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        Browse lessons and click &ldquo;Add to basket&rdquo; on any question or lesson.
+                      </p>
+                      <Link href="/phases">
+                        <Button size="sm" variant="outline" className="gap-2">
+                          <Plus className="h-4 w-4" />
+                          Browse lessons
+                        </Button>
+                      </Link>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -153,10 +229,10 @@ export default function BasketDetailPage() {
                   {questions.map((q, idx) => (
                     <div
                       key={q.id}
-                      draggable
-                      onDragStart={() => handleDragStart(idx)}
-                      onDragOver={(e) => handleDragOver(e, idx)}
-                      onDrop={(e) => handleDrop(e, idx)}
+                      draggable={!activeFilter}
+                      onDragStart={() => !activeFilter && handleDragStart(idx)}
+                      onDragOver={(e) => !activeFilter && handleDragOver(e, idx)}
+                      onDrop={(e) => !activeFilter && handleDrop(e, idx)}
                       onDragEnd={handleDragEnd}
                       className={cn(
                         'group relative rounded-xl border bg-card transition-all duration-150',

@@ -34,6 +34,14 @@ export const DIFFICULTY_CONFIG: Record<
   },
 }
 
+/* ─── Difficulty sort order (junior → senior) ─────────────────────────────── */
+export const DIFFICULTY_ORDER: Record<string, number> = {
+  foundation: 0,
+  intermediate: 1,
+  advanced: 2,
+  expert: 3,
+}
+
 /* ─── Phase level config ──────────────────────────────────────────────────── */
 export const PHASE_LEVEL_CONFIG: Record<
   PhaseLevel,

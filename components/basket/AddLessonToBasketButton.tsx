@@ -78,16 +78,16 @@ export function AddLessonToBasketButton({
         title={inAnyBasket ? 'In a basket' : 'Add lesson to basket'}
         aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to basket'}
         className={cn(
-          'flex items-center justify-center rounded-lg p-1.5 transition-colors shrink-0',
+          'flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors shrink-0 text-xs font-medium gap-1',
           inAnyBasket
-            ? 'text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
-            : 'text-muted-foreground/30 hover:text-[#512BD4] hover:bg-[#512BD4]/5 dark:hover:text-violet-300',
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400'
+            : 'border-border bg-background text-muted-foreground hover:border-[#512BD4]/50 hover:text-[#512BD4] hover:bg-[#512BD4]/5 dark:hover:border-violet-500/40 dark:hover:text-violet-300',
           className,
         )}
       >
         {inAnyBasket
-          ? <Check className="h-4 w-4" />
-          : <ShoppingBasket className="h-4 w-4" />
+          ? <Check className="h-3.5 w-3.5" />
+          : <ShoppingBasket className="h-3.5 w-3.5" />
         }
       </button>
     )
