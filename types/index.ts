@@ -143,6 +143,24 @@ export interface ProgressState {
   getLevelProgress: () => number // 0–100
 }
 
+/* ─── Extracted challenge (parsed from MDX source) ───────────────────────── */
+export interface ExtractedChallenge {
+  id: string
+  type: 'challenge' | 'quiz'
+  title?: string
+  prompt?: string        // description/question text
+  code?: string          // CodeChallenge only
+  options: string[]
+  correctAnswer: number
+  explanation: string
+  difficulty: Difficulty
+  phaseSlug: string
+  lessonSlug: string
+  lessonTitle: string
+  phaseTitle: string
+  phaseNumber: number
+}
+
 /* ─── CodeChallenge / Quiz component props ────────────────────────────────── */
 export interface ChallengeMeta {
   id: string
