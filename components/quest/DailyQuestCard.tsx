@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useShallow } from 'zustand/react/shallow'
 import { useProgressStore } from '@/stores/progressStore'
 import { StreakBadge } from './StreakBadge'
 
@@ -12,12 +13,12 @@ interface DailyQuestCardProps {
 
 export function DailyQuestCard({ nextQuestHref, nextQuestTitle }: DailyQuestCardProps) {
   const { streakDays, streakFreezeCount, dailyGoal, lessonsCompletedToday } = useProgressStore(
-    (s) => ({
+    useShallow((s) => ({
       streakDays: s.streakDays,
       streakFreezeCount: s.streakFreezeCount,
       dailyGoal: s.dailyGoal,
       lessonsCompletedToday: s.lessonsCompletedToday,
-    }),
+    })),
   )
 
   const pct = Math.min(100, Math.round((lessonsCompletedToday / dailyGoal) * 100))
