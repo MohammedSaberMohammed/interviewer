@@ -20,11 +20,6 @@ interface CodeBlockProps extends React.HTMLAttributes<HTMLPreElement> {
   'data-language'?: string
 }
 
-/**
- * Custom <pre> MDX component — wraps Shiki-highlighted code blocks with:
- * - a language label header
- * - a copy-to-clipboard button
- */
 export function CodeBlock({ children, 'data-language': language, style, className }: CodeBlockProps) {
   const [copied, setCopied] = useState(false)
   const preRef = useRef<HTMLPreElement>(null)
@@ -40,28 +35,52 @@ export function CodeBlock({ children, 'data-language': language, style, classNam
   const langLabel = language ? (LANGUAGE_LABELS[language] ?? language) : 'code'
 
   return (
-    <div className="not-prose my-6 overflow-hidden rounded-xl border border-border">
-      {/* Header: language label + copy button */}
-      <div className="flex items-center justify-between border-b border-border bg-muted/50 px-4 py-2">
-        <span className="text-xs font-mono font-medium text-muted-foreground">{langLabel}</span>
+    <div className="not-prose my-6 overflow-hidden rounded-xl border border-border shadow-sm">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-3 border-b border-border bg-slate-50 px-4 py-2.5 dark:bg-white/[0.04]">
+
+        {/* macOS window dots */}
+        <div className="flex shrink-0 items-center gap-1.5" aria-hidden="true">
+          <span className="block h-3 w-3 rounded-full bg-[#ff5f57]" />
+          <span className="block h-3 w-3 rounded-full bg-[#febc2e]" />
+          <span className="block h-3 w-3 rounded-full bg-[#28c840]" />
+        </div>
+
+        {/* Language — centred */}
+        <span className="flex-1 select-none text-center text-[11px] font-mono font-medium tracking-wider text-muted-foreground/60">
+          {langLabel}
+        </span>
+
+        {/* Copy button */}
         <button
           type="button"
           onClick={copy}
           aria-label={copied ? 'Copied!' : 'Copy code'}
-          className="rounded p-1 text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-transparent px-2 py-1 text-xs font-medium text-muted-foreground/60 transition-all hover:border-border hover:bg-background hover:text-foreground"
         >
-          {copied
-            ? <Check className="h-3.5 w-3.5 text-emerald-500" aria-hidden="true" />
-            : <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-          }
+          {copied ? (
+            <>
+              <Check className="h-3 w-3 text-emerald-500" aria-hidden="true" />
+              <span className="text-emerald-500">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="h-3 w-3" aria-hidden="true" />
+              <span>Copy</span>
+            </>
+          )}
         </button>
       </div>
 
-      {/* Shiki-rendered code — preserve inline style for dual-theme colours */}
+      {/* ── Code ───────────────────────────────────────────────────────────── */}
       <pre
         ref={preRef}
         style={style}
-        className={cn(className, 'overflow-x-auto p-4 text-sm !m-0 !rounded-none')}
+        className={cn(
+          className,
+          'code-block overflow-x-auto px-5 py-5 text-sm leading-relaxed !m-0 !rounded-none',
+        )}
       >
         {children}
       </pre>
