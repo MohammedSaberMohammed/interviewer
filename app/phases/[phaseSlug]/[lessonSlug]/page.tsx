@@ -36,7 +36,6 @@ import {
   CharacterTeach,
   TapToSpot,
   QuestLayout,
-  ReadAsArticleToggle,
 } from '@/components/quest'
 import { AddLessonToBasketButton } from '@/components/basket/AddLessonToBasketButton'
 
@@ -166,7 +165,6 @@ export default async function LessonPage({ params }: Props) {
                     {lesson.readingTime} min read
                   </span>
                 </div>
-                {/* Basket + article mode */}
                 <div className="flex items-center gap-2">
                   {lesson.status === 'published' && (
                     <AddLessonToBasketButton
@@ -179,7 +177,6 @@ export default async function LessonPage({ params }: Props) {
                       summary={lesson.summary}
                     />
                   )}
-                  <ReadAsArticleToggle />
                 </div>
               </div>
               <h1 className="text-3xl font-bold mb-2">{lesson.title}</h1>

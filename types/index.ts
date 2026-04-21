@@ -65,7 +65,6 @@ export type XPLevel = 'novice' | 'apprentice' | 'senior' | 'architect'
 
 /* ─── User preferences ────────────────────────────────────────────────────── */
 export interface UserPreferences {
-  readAsArticle: boolean
   reduceMotion: boolean
   hudDimOnIdle: boolean
 }
@@ -131,7 +130,6 @@ export interface ProgressState {
   checkStreak: () => void
   useStreakFreeze: () => boolean
   unlockBadge: (badgeId: string) => void
-  setReadAsArticle: (on: boolean) => void
   resetDailyCounters: () => void
 
   // ── Selectors ─────────────────────────────────────────────────────────────

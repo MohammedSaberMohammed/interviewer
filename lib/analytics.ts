@@ -40,9 +40,6 @@ export const analytics = {
   badgeUnlocked(badgeId: string) {
     track('badge_unlocked', { badgeId })
   },
-  articleModeToggled(on: boolean) {
-    track('article_mode_toggled', { on })
-  },
   dailyGoalMet(goalCount: number) {
     track('daily_goal_met', { goalCount })
   },

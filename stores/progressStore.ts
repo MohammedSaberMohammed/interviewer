@@ -47,7 +47,6 @@ function levelProgress(xp: number): number {
 /* ─── Default state ─────────────────────────────────────────────────────── */
 
 const DEFAULT_PREFERENCES: UserPreferences = {
-  readAsArticle: false,
   reduceMotion: false,
   hudDimOnIdle: true,
 }
@@ -289,11 +288,6 @@ export const useProgressStore = create<ProgressState>()(
           window.dispatchEvent(new CustomEvent('badge:unlocked', { detail: { badgeId } }))
         }
       },
-
-      setReadAsArticle: (on) =>
-        set((state) => ({
-          preferences: { ...state.preferences, readAsArticle: on },
-        })),
 
       resetDailyCounters: () =>
         set({ lessonsCompletedToday: 0, xpToday: 0, lastDailyReset: todayLocal() }),

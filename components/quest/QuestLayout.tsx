@@ -38,7 +38,6 @@ export function QuestLayout({
   children,
   nextLesson,
 }: QuestLayoutProps) {
-  const readAsArticle = useProgressStore((s) => s.preferences.readAsArticle)
   const awardXP = useProgressStore((s) => s.awardXP)
   const recordLessonComplete = useProgressStore((s) => s.recordLessonComplete)
 
@@ -51,7 +50,7 @@ export function QuestLayout({
   const stepStartTimeRef = useRef(Date.now())
   const lessonStartTimeRef = useRef(Date.now())
 
-  const isQuestActive = questMode && !readAsArticle && stepIds.length > 0
+  const isQuestActive = questMode && stepIds.length > 0
 
   const currentStepIndex = stepIds.indexOf(activeStepId)
 
