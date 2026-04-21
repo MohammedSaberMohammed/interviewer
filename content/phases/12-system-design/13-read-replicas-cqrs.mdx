@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why CQRS Exists
 
@@ -28,6 +28,26 @@ Traditional CRUD applications use the same data model for reading and writing. T
 CQRS (**Command Query Responsibility Segregation**) separates these into two explicit models:
 - **Commands**: Mutations with business logic. Write to the authoritative store.
 - **Queries**: Read projections. Read from a store optimized for query patterns.
+
+<ArchDiagram
+  title="CQRS: Separated Write and Read Models"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client / API', type: 'client' }] },
+    { nodes: [
+      { id: 'cmd', label: 'Command Handler', sublabel: 'writes + domain logic', type: 'service' },
+      { id: 'qry', label: 'Query Handler', sublabel: 'reads + projections', type: 'service' },
+    ]},
+    { nodes: [
+      { id: 'writedb', label: 'Write DB', sublabel: 'normalized, consistent', type: 'database' },
+      { id: 'readdb', label: 'Read Replica / View', sublabel: 'denormalized, fast', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'command or query' },
+    { label: 'writes left, reads right' },
+  ]}
+  caption="Commands (mutations) and Queries (reads) use completely separate models, handlers, and data stores. Read stores can be replicas, materialized views, or even Elasticsearch."
+/>
 
 ---
 

@@ -14,13 +14,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/ef/core/dbcontext-configuration/"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks, ArchDiagram } from '@/components/lesson'
 
 ## The Problem: Data Access Coupled to Business Logic
 
 When business logic directly calls `dbContext.Orders.Where(...).ToList()`, it knows about EF Core, LINQ, and SQL. Changing the database or switching to an API requires modifying business logic. Testing requires a real database.
 
 Repository hides data access behind an interface that looks like a simple collection.
+
+<ArchDiagram
+  title="Repository Pattern: Decoupling Domain from Data Access"
+  layers={[
+    { nodes: [{ id: 'svc', label: 'Application Service', sublabel: 'business logic — knows only interfaces', type: 'service' }] },
+    { nodes: [{ id: 'repo', label: 'IOrderRepository', sublabel: 'interface — defined in Application layer', type: 'gateway' }] },
+    { nodes: [{ id: 'impl', label: 'EfOrderRepository', sublabel: 'EF Core implementation — in Infrastructure', type: 'server' }] },
+    { nodes: [{ id: 'db', label: 'SQL Database', sublabel: 'SQL Server / PostgreSQL', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: 'depends on interface only' },
+    { label: 'implements interface' },
+    { label: 'executes SQL via EF Core' },
+  ]}
+  caption="The service only knows IOrderRepository — never EfOrderRepository. Swapping the database (e.g. SQL → Cosmos DB) requires only a new implementation, not changes to service logic. Testing uses an in-memory fake."
+/>
 
 ---
 

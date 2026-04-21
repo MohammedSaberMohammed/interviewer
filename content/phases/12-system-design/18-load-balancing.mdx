@@ -16,9 +16,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/frontdoor/front-door-overview"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## L4 vs L7 Load Balancing
+
+<ArchDiagram
+  title="Load Balancer Topology"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client', sublabel: 'internet traffic', type: 'client' }] },
+    { nodes: [{ id: 'lb', label: 'Load Balancer', sublabel: 'Azure App Gateway / YARP / NGINX', type: 'lb' }] },
+    { nodes: [
+      { id: 's1', label: 'Server A', sublabel: 'instance 1', type: 'server' },
+      { id: 's2', label: 'Server B', sublabel: 'instance 2', type: 'server' },
+      { id: 's3', label: 'Server C', sublabel: 'instance 3', type: 'server' },
+    ]},
+    { nodes: [{ id: 'db', label: 'Database', sublabel: 'shared data layer', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: 'single entry point' },
+    { label: 'distributes traffic' },
+    { label: 'shared reads/writes' },
+  ]}
+  caption="All traffic enters through one load balancer. Backends are stateless — any server can handle any request. The database is the shared state layer."
+/>
 
 **Layer 4 (Transport)**: Routes based on IP address and port only. Does not inspect HTTP headers or content. Fast and low-latency. Cannot route based on URL path, cookies, or request body.
 

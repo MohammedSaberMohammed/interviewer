@@ -16,7 +16,7 @@ docsLinks:
     url: "https://github.com/jbogard/MediatR/wiki"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## CQRS: The Core Idea
 
@@ -34,6 +34,28 @@ User action
     │
     └─→ Query  ─→ Query Model  ─→ Read DB (denormalized, Dapper/raw SQL)
 ```
+
+<ArchDiagram
+  title="CQRS with MediatR: In-Process Command/Query Bus"
+  layers={[
+    { nodes: [{ id: 'ctrl', label: 'API Controller', sublabel: 'receives HTTP request', type: 'client' }] },
+    { nodes: [{ id: 'med', label: 'IMediator.Send()', sublabel: 'in-process dispatcher', type: 'gateway' }] },
+    { nodes: [
+      { id: 'cmd', label: 'Command Handler', sublabel: 'mutates state, returns unit/ID', type: 'service' },
+      { id: 'qry', label: 'Query Handler', sublabel: 'reads data, returns DTO', type: 'service' },
+    ]},
+    { nodes: [
+      { id: 'wdb', label: 'Write DB', sublabel: 'normalized, full domain model', type: 'database' },
+      { id: 'rdb', label: 'Read DB / View', sublabel: 'denormalized, query-optimized', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'Send(command) or Send(query)' },
+    { label: 'dispatches to registered handler' },
+    { label: 'handlers use appropriate data store' },
+  ]}
+  caption="MediatR decouples the controller from the handler — adding a pipeline behavior (logging, validation, transactions) requires zero changes to controllers or handlers. Commands write to the authoritative store; queries read from an optimized projection."
+/>
 
 ---
 

@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/architecture/"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Core Idea
 
@@ -28,6 +28,23 @@ This single rule, rigorously enforced, gives you a codebase where:
 - Business logic can be tested without a database, web server, or message broker
 - Infrastructure (DB engine, ORMs, cloud APIs) can be swapped without touching the domain
 - The "important stuff" (your domain model) lives at the center, isolated from churn
+
+<ArchDiagram
+  title="Clean Architecture: Inward-Only Dependency Rule"
+  layers={[
+    { label: 'Outermost — can depend on all inner layers', nodes: [
+      { id: 'ui', label: 'Presentation', sublabel: 'Controllers, Razor Pages, Blazor', type: 'client' },
+      { id: 'infra', label: 'Infrastructure', sublabel: 'EF Core, Redis, HTTP clients, email', type: 'server' },
+    ]},
+    { label: '', nodes: [{ id: 'app', label: 'Application', sublabel: 'Use cases, Commands, Queries, DTOs', type: 'service' }] },
+    { label: 'Innermost — no dependencies on outer layers', nodes: [{ id: 'domain', label: 'Domain', sublabel: 'Entities, Value Objects, Domain Events', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: 'depends on →', dashed: true },
+    { label: 'depends on →', dashed: true },
+  ]}
+  caption="Dependencies always point inward. Domain knows nothing about Application, Infrastructure, or Presentation. Application knows only Domain. Infrastructure and Presentation depend on Application interfaces — never the reverse."
+/>
 
 ---
 

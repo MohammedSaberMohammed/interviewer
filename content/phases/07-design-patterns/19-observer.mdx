@@ -16,13 +16,31 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/api/system.componentmodel.inotifypropertychanged"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, DocsLinks, ArchDiagram } from '@/components/lesson'
 
 ## The Problem: Keeping Dependents in Sync
 
 When an order is placed, multiple parts of your system need to react: send a confirmation email, update inventory, notify the shipping system, record an analytics event. Hard-coding calls to all of them from the order service creates tight coupling — adding a new reactor requires modifying the publisher.
 
 Observer decouples publishers from subscribers: publishers emit events, subscribers register and handle them independently.
+
+<ArchDiagram
+  title="Observer Pattern: Event-Driven Notification"
+  layers={[
+    { nodes: [{ id: 'subject', label: 'Subject / EventSource', sublabel: 'raises domain events', type: 'service' }] },
+    { nodes: [{ id: 'bus', label: 'Event Bus / Dispatcher', sublabel: 'IMediator / IEventBus', type: 'gateway' }] },
+    { nodes: [
+      { id: 'h1', label: 'EmailHandler', sublabel: 'sends confirmation', type: 'service' },
+      { id: 'h2', label: 'InventoryHandler', sublabel: 'reserves stock', type: 'service' },
+      { id: 'h3', label: 'AuditHandler', sublabel: 'writes audit log', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'Publish(OrderPlacedEvent)' },
+    { label: 'notify all subscribers' },
+  ]}
+  caption="The subject doesn't know who's listening. Adding a new observer (handler) requires zero changes to the event source. Each handler is independently testable and independently deployable."
+/>
 
 ---
 

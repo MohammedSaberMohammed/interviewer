@@ -16,13 +16,33 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/cosmos-db/change-feed"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## What Is Event Sourcing?
 
 Traditional applications store **current state**: an Order row has `Status = "Shipped"`. To understand what happened, you need audit logs bolted on afterward.
 
 Event sourcing flips this: **state changes are the primary data**. Every mutation is recorded as an immutable event. Current state is derived by replaying events.
+
+<ArchDiagram
+  title="Event Sourcing: Append-Only Store to Multiple Projections"
+  layers={[
+    { nodes: [{ id: 'cmd', label: 'Command Handler', sublabel: 'validates + emits events', type: 'service' }] },
+    { nodes: [{ id: 'store', label: 'Event Store', sublabel: 'Append-only log — EventStoreDB / Cosmos', type: 'database' }] },
+    { nodes: [{ id: 'agg', label: 'Aggregate Reconstitution', sublabel: 'replay events in order → current state', type: 'service' }] },
+    { nodes: [
+      { id: 'proj1', label: 'Order Summary', sublabel: 'Read model — latest state', type: 'cache' },
+      { id: 'proj2', label: 'Audit Log', sublabel: 'Full history view', type: 'cache' },
+      { id: 'proj3', label: 'Analytics', sublabel: 'Aggregates over time', type: 'cache' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'append event (never update/delete)' },
+    { label: 'replay from position 0 (or snapshot)' },
+    { label: 'project into specialized read models' },
+  ]}
+  caption="Events are the only source of truth. Aggregate state is always derived by replay — never stored directly. Multiple independent projections can be built from the same stream and rebuilt at any time by replaying."
+/>
 
 ```
 Traditional (state store):           Event Sourcing (event store):

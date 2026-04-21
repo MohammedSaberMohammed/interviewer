@@ -16,11 +16,31 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-best-practices-development"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
 ## Redis in the .NET Ecosystem
 
 Redis (Remote Dictionary Server) is an in-memory data structure store used as a cache, message broker, and database. In .NET, there are two primary ways to access it:
+
+<ArchDiagram
+  title="Redis in .NET: Connection Architecture"
+  layers={[
+    { nodes: [
+      { id: 'app1', label: 'Web API', sublabel: 'ASP.NET Core', type: 'server' },
+      { id: 'app2', label: 'Worker Service', sublabel: 'Background jobs', type: 'service' },
+    ]},
+    { nodes: [{ id: 'mux', label: 'ConnectionMultiplexer', sublabel: 'Singleton — shared multiplexed pool', type: 'gateway' }] },
+    { nodes: [
+      { id: 'r1', label: 'Redis Primary', sublabel: 'reads + writes', type: 'cache' },
+      { id: 'r2', label: 'Redis Replica', sublabel: 'read scale-out', type: 'cache' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'all share one multiplexer' },
+    { label: 'async replication' },
+  ]}
+  caption="ConnectionMultiplexer is a singleton — never create one per request. It internally manages multiple pipelined connections and can route read commands to replicas automatically."
+/>
 
 1. **`IDistributedCache`** — the ASP.NET Core abstraction (simple, swappable, limited)
 2. **`StackExchange.Redis`** (`IConnectionMultiplexer`) — the full Redis client (powerful, exposes all Redis data types)

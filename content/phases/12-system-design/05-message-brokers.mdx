@@ -16,11 +16,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/compare-messaging-services"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Message Brokers Exist
 
 Message brokers decouple producers from consumers. Instead of Service A calling Service B's HTTP endpoint directly:
+
+<ArchDiagram
+  title="Message Broker: Temporal Decoupling"
+  layers={[
+    { nodes: [{ id: 'producer', label: 'Order Service', sublabel: 'producer', type: 'service' }] },
+    { nodes: [{ id: 'broker', label: 'Message Broker', sublabel: 'Service Bus / Kafka / RabbitMQ', type: 'queue' }] },
+    { nodes: [
+      { id: 'c1', label: 'Inventory Service', sublabel: 'consumer', type: 'service' },
+      { id: 'c2', label: 'Email Service', sublabel: 'consumer', type: 'service' },
+      { id: 'c3', label: 'Analytics', sublabel: 'consumer', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'publish message' },
+    { label: 'consume (independently)' },
+  ]}
+  caption="Producers and consumers are fully decoupled — consumers can be offline and catch up later. One message can fan out to many independent consumers."
+/>
 
 ```
 WITHOUT BROKER:

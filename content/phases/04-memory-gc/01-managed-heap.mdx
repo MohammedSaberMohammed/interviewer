@@ -18,13 +18,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/core/runtime-config/garbage-collector"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Generations Exist
 
 A naive GC would scan every living object on every collection. For a multi-GB heap that would be catastrophic. The .NET GC exploits the **generational hypothesis**: most objects die young.
 
 The heap is split into generations. Short-lived objects live in small, fast-collected spaces. Long-lived objects are promoted and collected rarely. This is why most Gen0 collections take under a millisecond while a full Gen2 collection may pause for tens of milliseconds.
+
+<ArchDiagram
+  title="GC Heap Generations: Object Promotion Path"
+  layers={[
+    { label: 'New objects always start here', nodes: [{ id: 'gen0', label: 'Gen 0', sublabel: '~256 KB — collected most frequently', type: 'cache' }] },
+    { nodes: [{ id: 'gen1', label: 'Gen 1', sublabel: '~2 MB — buffer between Gen 0 and Gen 2', type: 'service' }] },
+    { nodes: [{ id: 'gen2', label: 'Gen 2', sublabel: 'Unbounded — long-lived objects, full GC', type: 'database' }] },
+    { label: 'Large objects skip Gen 0/1', nodes: [{ id: 'loh', label: 'Large Object Heap (LOH)', sublabel: 'Objects ≥ 85 KB — collected with Gen 2', type: 'server' }] },
+  ]}
+  connectors={[
+    { label: 'survives Gen 0 collection → promoted', dashed: true },
+    { label: 'survives Gen 1 collection → promoted', dashed: true },
+    { label: '≥ 85 KB allocated directly here', dashed: true },
+  ]}
+  caption="Gen 0 collections are cheap and frequent. Gen 2 (full GC) pauses the entire process — avoid by keeping long-lived objects out of Gen 2. LOH is not compacted by default, leading to fragmentation."
+/>
 
 ---
 

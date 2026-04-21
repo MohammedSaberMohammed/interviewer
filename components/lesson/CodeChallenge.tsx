@@ -45,6 +45,17 @@ export function CodeChallenge({
 }: CodeChallengeProps) {
   const displayPrompt = prompt ?? description ?? question ?? ''
   const displayTitle = title ?? 'Code Challenge'
+  const [shuffled] = useState(() => {
+    const indexed = options.map((opt, i) => ({ opt, isCorrect: i === correctAnswer }))
+    for (let i = indexed.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[indexed[i], indexed[j]] = [indexed[j]!, indexed[i]!]
+    }
+    return {
+      options: indexed.map(({ opt }) => opt),
+      correctAnswer: indexed.findIndex(({ isCorrect }) => isCorrect),
+    }
+  })
   const [selected, setSelected] = useState<number | null>(null)
   const [submitted, setSubmitted] = useState(false)
   const [hintIndex, setHintIndex] = useState(0)
@@ -71,13 +82,13 @@ export function CodeChallenge({
     addedAt: 0,
   } : null
 
-  const isCorrect = submitted && selected === correctAnswer
+  const isCorrect = submitted && selected === shuffled.correctAnswer
 
   const handleSubmit = () => {
     if (selected === null) return
     setSubmitted(true)
     setShowExplanation(true)
-    recordChallengeAnswer(id, selected, selected === correctAnswer)
+    recordChallengeAnswer(id, selected, selected === shuffled.correctAnswer)
   }
 
   const handleRetry = () => {
@@ -118,9 +129,9 @@ export function CodeChallenge({
 
         {/* Options */}
         <div className="space-y-2" role="radiogroup" aria-label="Answer options">
-          {options.map((option, i) => {
+          {shuffled.options.map((option, i) => {
             const isSelected = selected === i
-            const isCorrectOption = i === correctAnswer
+            const isCorrectOption = i === shuffled.correctAnswer
             let optionClass = 'border-border bg-background hover:bg-accent hover:border-primary/30'
 
             if (submitted) {

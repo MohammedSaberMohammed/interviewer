@@ -16,11 +16,25 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/core/extensions/dependency-injection-guidelines"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, ArchDiagram } from '@/components/lesson'
 
 ## The Three Lifetimes
 
 ASP.NET Core's DI container has three lifetimes. Getting them wrong doesn't always throw — sometimes it silently produces stale data or shared mutable state.
+
+<ArchDiagram
+  title="DI Service Lifetimes: Singleton, Scoped, Transient"
+  layers={[
+    { label: 'Application lifetime (one instance)', nodes: [{ id: 'singleton', label: 'Singleton', sublabel: 'Created once — shared across all requests and users', type: 'server' }] },
+    { label: 'Per-request (one instance per HTTP request)', nodes: [{ id: 'scoped', label: 'Scoped', sublabel: 'Created per request — same instance within one request', type: 'service' }] },
+    { label: 'Per-injection (new instance every time)', nodes: [{ id: 'transient', label: 'Transient', sublabel: 'Created on every Resolve() call — stateless only', type: 'cache' }] },
+  ]}
+  connectors={[
+    { label: 'longer lifetime' },
+    { label: 'shorter lifetime' },
+  ]}
+  caption="The captive dependency problem: a Singleton that depends on a Scoped service captures the first Scoped instance and holds it forever — the Scoped service never gets disposed. The DI container throws at startup if you register this incorrectly."
+/>
 
 <ComparisonTable
   headers={["Lifetime", "Created", "Disposed", "Shared?", "Use for"]}

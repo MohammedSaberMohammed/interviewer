@@ -18,7 +18,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/async-return-types"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## What Is the Task-based Async Pattern?
 
@@ -82,6 +82,25 @@ When you `await` a task:
 1. If the task is already complete, execution continues synchronously (no overhead)
 2. If not complete, the current method is **suspended** — the thread returns to the caller
 3. When the task completes, execution **resumes** after the `await` (on the captured context)
+
+<ArchDiagram
+  title="Async/Await: Thread Pool Freed During I/O Wait"
+  layers={[
+    { nodes: [{ id: 'req', label: 'Incoming Request', sublabel: 'ASP.NET Core thread', type: 'client' }] },
+    { nodes: [{ id: 'handler', label: 'Controller / Handler', sublabel: 'calls await dbContext.ToListAsync()', type: 'service' }] },
+    { nodes: [
+      { id: 'io', label: 'I/O Operation', sublabel: 'Database / HTTP / File', type: 'database' },
+      { id: 'pool', label: 'Thread Pool', sublabel: 'freed thread handles other requests', type: 'server' },
+    ]},
+    { nodes: [{ id: 'resume', label: 'Continuation', sublabel: 'thread resumes when I/O completes', type: 'service' }] },
+  ]}
+  connectors={[
+    { label: 'initiates async operation' },
+    { label: 'thread returned to pool (not blocked)', dashed: true },
+    { label: 'I/O completes → continuation scheduled', dashed: true },
+  ]}
+  caption="await does not block a thread. The thread returns to the pool while the I/O operation runs in the OS. When the I/O completes, a thread from the pool is scheduled to continue. This is why a small number of threads can handle thousands of concurrent requests."
+/>
 
 ---
 

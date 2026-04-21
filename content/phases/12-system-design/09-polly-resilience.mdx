@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Resilience Is Not Optional
 
@@ -33,6 +33,24 @@ Polly (now deeply integrated into .NET 8 via `Microsoft.Extensions.Resilience`) 
 ## Polly v8 Architecture: ResiliencePipeline
 
 Polly v8 (shipped with .NET 8) moved from the old `Policy` API to `ResiliencePipeline`. Strategies are composed in order — each strategy wraps the one inside it.
+
+<ArchDiagram
+  title="Polly Pipeline: Strategy Composition (Outer → Inner)"
+  layers={[
+    { nodes: [{ id: 'call', label: 'Outgoing HTTP Request', sublabel: 'from your service', type: 'client' }] },
+    { nodes: [{ id: 'retry', label: 'Retry Strategy', sublabel: '3 attempts, exponential backoff + jitter', type: 'gateway' }] },
+    { nodes: [{ id: 'cb', label: 'Circuit Breaker', sublabel: 'Opens after 5 failures / 30s — fail fast', type: 'gateway' }] },
+    { nodes: [{ id: 'timeout', label: 'Timeout Strategy', sublabel: '10s deadline per attempt', type: 'gateway' }] },
+    { nodes: [{ id: 'downstream', label: 'Downstream Service', sublabel: 'inventory-svc, payment-svc…', type: 'service' }] },
+  ]}
+  connectors={[
+    { label: 'outermost — retries the whole attempt' },
+    { label: 'checks circuit state before trying' },
+    { label: 'enforces per-attempt deadline' },
+    { label: 'actual network call' },
+  ]}
+  caption="Retry is outermost so it can retry the entire pipeline including the circuit breaker check. Timeout is innermost so each individual attempt has its own deadline — not the total across all retries."
+/>
 
 ```csharp
 // Install: Install-Package Microsoft.Extensions.Http.Resilience

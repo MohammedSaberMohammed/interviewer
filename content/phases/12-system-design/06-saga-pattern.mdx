@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/compensating-transaction"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
 ## The Distributed Transaction Problem
 
@@ -30,6 +30,24 @@ In a microservices system, you often need to coordinate changes across multiple 
 With a monolith and a single database, this is a database transaction. With four separate services and four separate databases, **2PC (two-phase commit) is off the table** — it requires distributed coordination that creates tight coupling, long-held locks, and availability issues.
 
 The **Saga pattern** is the microservices solution: a sequence of local transactions, each publishing an event or message that triggers the next step, with **compensating transactions** to roll back on failure.
+
+<ArchDiagram
+  title="Saga Orchestration: Central State Machine Coordinates All Steps"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client', type: 'client' }] },
+    { nodes: [{ id: 'orch', label: 'Saga Orchestrator', sublabel: 'Durable state machine (MassTransit / Temporal)', type: 'gateway' }] },
+    { nodes: [
+      { id: 'order', label: 'OrderService', sublabel: 'Step 1: reserve order', type: 'service' },
+      { id: 'inv', label: 'InventoryService', sublabel: 'Step 2: reserve stock', type: 'service' },
+      { id: 'pay', label: 'PaymentService', sublabel: 'Step 3: charge card', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'initiate saga' },
+    { label: 'commands + compensations', bidirectional: true },
+  ]}
+  caption="The orchestrator knows the full workflow. On failure at any step, it issues compensating commands in reverse order to undo completed steps. No participant service knows the overall workflow."
+/>
 
 ---
 

@@ -16,11 +16,31 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/overview"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Database per Service?
 
 The **database per service** pattern gives each microservice exclusive ownership of its data. No other service may access that database directly.
+
+<ArchDiagram
+  title="Database per Service: Polyglot Persistence"
+  layers={[
+    { nodes: [
+      { id: 'order', label: 'OrderService', type: 'service' },
+      { id: 'inv', label: 'InventoryService', type: 'service' },
+      { id: 'user', label: 'UserService', type: 'service' },
+    ]},
+    { nodes: [
+      { id: 'sql', label: 'SQL Server', sublabel: 'Orders — relational, ACID', type: 'database' },
+      { id: 'mongo', label: 'MongoDB', sublabel: 'Inventory — flexible schema', type: 'database' },
+      { id: 'cosmos', label: 'Cosmos DB', sublabel: 'Users — global distribution', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'private ownership — no cross-service DB access allowed' },
+  ]}
+  caption="Each service owns its schema and chooses the database technology best suited for its data. Cross-service data access must go through the owning service's API — never via direct SQL joins across service databases."
+/>
 
 ```
 WRONG — Shared database:          CORRECT — Database per service:

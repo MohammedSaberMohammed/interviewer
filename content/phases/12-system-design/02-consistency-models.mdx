@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/read-scale-out"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
 ## The Consistency Spectrum
 
@@ -29,6 +29,24 @@ Strongest ←──────────────────────�
   Linearizability → Sequential → Causal → Session → Eventual
       (Strong)                                        (AP)
 ```
+
+<ArchDiagram
+  title="Consistency Model Spectrum: Strongest to Weakest"
+  layers={[
+    { label: 'Strongest (highest coordination cost)', nodes: [{ id: 'strong', label: 'Strong / Linearizable', sublabel: 'SQL Server, etcd — any read sees the latest write', type: 'database' }] },
+    { nodes: [{ id: 'seq', label: 'Sequential', sublabel: 'Operations appear in per-process order', type: 'database' }] },
+    { nodes: [{ id: 'causal', label: 'Causal', sublabel: 'Causally linked ops ordered; concurrent may diverge', type: 'service' }] },
+    { nodes: [{ id: 'session', label: 'Session (Read-Your-Writes)', sublabel: 'You always see your own writes', type: 'cache' }] },
+    { label: 'Weakest (lowest latency, highest throughput)', nodes: [{ id: 'eventual', label: 'Eventual', sublabel: 'Cassandra, DynamoDB — replicas converge eventually', type: 'cache' }] },
+  ]}
+  connectors={[
+    { label: 'lower latency →' },
+    { label: 'higher availability →' },
+    { label: 'higher throughput →' },
+    {},
+  ]}
+  caption="Moving down the spectrum reduces cross-node coordination round-trips, enabling lower write latency and higher availability during partitions — at the cost of visibility guarantees."
+/>
 
 ---
 

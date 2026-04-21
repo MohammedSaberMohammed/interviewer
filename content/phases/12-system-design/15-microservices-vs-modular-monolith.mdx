@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/container-apps/overview"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Spectrum of Modularity
 
@@ -28,6 +28,27 @@ Monolith           ──► Monolith      ──► Separately    ──► Ind
 (Big Ball of Mud)     (Clean DDD)       (2–5 services)    Microservices
                                                           (20+ services)
 ```
+
+<ArchDiagram
+  title="Architecture Evolution: Strangler Fig Pattern"
+  layers={[
+    { label: 'Start: Modular Monolith', nodes: [{ id: 'mono', label: 'Modular Monolith', sublabel: 'Clean modules, one deployment', type: 'server' }] },
+    { label: 'Transition: Extract One Service', nodes: [
+      { id: 'svc_a', label: 'Payments Service', sublabel: 'First extracted microservice', type: 'service' },
+      { id: 'mono2', label: 'Remaining Monolith', sublabel: 'Shrinks with each extraction', type: 'server' },
+    ]},
+    { label: 'Result: Purpose-Built Services', nodes: [
+      { id: 's1', label: 'OrderService', type: 'service' },
+      { id: 's2', label: 'InventoryService', type: 'service' },
+      { id: 's3', label: 'UserService', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'Strangler Fig: extract when independently needed', step: 1 },
+    { label: 'fully decomposed — independent deployments', step: 2 },
+  ]}
+  caption="Don't start with microservices. Start with a well-structured modular monolith. Extract to a separate service only when a module genuinely needs to deploy, scale, or be developed independently."
+/>
 
 The goal at every level is the same: **high cohesion, low coupling**. The question is whether you achieve this within a single process or across network boundaries.
 

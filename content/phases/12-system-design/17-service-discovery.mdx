@@ -16,11 +16,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/service-fabric/service-fabric-connect-and-communicate-with-services"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Service Discovery Problem
 
 In a static deployment, services have fixed IPs. In dynamic environments (Kubernetes, Azure Container Apps), containers start and stop, IPs change, and multiple instances exist. How does Service A know where Service B is right now?
+
+<ArchDiagram
+  title="Service Discovery: Resolving Dynamic Instance Addresses"
+  layers={[
+    { nodes: [{ id: 'caller', label: 'OrderService', sublabel: 'wants to call InventoryService', type: 'service' }] },
+    { nodes: [{ id: 'registry', label: 'Service Registry', sublabel: 'Kubernetes DNS / Consul / Azure Service Fabric', type: 'database' }] },
+    { nodes: [
+      { id: 'i1', label: 'Inventory Pod 1', sublabel: '10.0.0.5:8080', type: 'server' },
+      { id: 'i2', label: 'Inventory Pod 2', sublabel: '10.0.0.6:8080', type: 'server' },
+      { id: 'i3', label: 'Inventory Pod 3', sublabel: '10.0.0.7:8080', type: 'server' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'lookup: "inventory-svc" → healthy IP list', step: 1 },
+    { label: 'route to one healthy instance', step: 2 },
+  ]}
+  caption="The registry tracks which instances are healthy and their current IPs. Callers resolve the logical name ('inventory-svc') rather than hardcoded IPs that change on every pod restart or scale event."
+/>
 
 ```
 Static (bad for cloud):         Dynamic (cloud-native):

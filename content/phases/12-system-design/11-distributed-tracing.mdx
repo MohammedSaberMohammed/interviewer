@@ -16,11 +16,32 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Problem Tracing Solves
 
 When a request fails or is slow in a microservices system, your logs might show errors in three different services with no obvious connection. Distributed tracing creates a **causal chain** — every operation across every service that participated in handling a single request is linked by a common Trace ID.
+
+<ArchDiagram
+  title="Distributed Trace: W3C Trace Context Propagation"
+  layers={[
+    { nodes: [{ id: 'user', label: 'Browser / Client', type: 'browser' }] },
+    { nodes: [{ id: 'gateway', label: 'API Gateway', sublabel: 'Root span — creates TraceId + SpanId', type: 'gateway' }] },
+    { nodes: [
+      { id: 'order', label: 'OrderService', sublabel: 'Child span — parentSpanId = gateway span', type: 'service' },
+      { id: 'auth', label: 'AuthService', sublabel: 'Child span — parentSpanId = gateway span', type: 'service' },
+    ]},
+    { nodes: [{ id: 'payment', label: 'PaymentService', sublabel: 'Grandchild — parentSpanId = order span', type: 'service' }] },
+    { nodes: [{ id: 'backend', label: 'Jaeger / Application Insights', sublabel: 'Assembles trace tree from all spans', type: 'cloud' }] },
+  ]}
+  connectors={[
+    { label: 'injects traceparent header', step: 1 },
+    { label: 'propagates trace context downstream', step: 2 },
+    { label: 'nested service call', step: 3 },
+    { label: 'all spans exported asynchronously', step: 4 },
+  ]}
+  caption="The W3C traceparent header carries TraceId across every HTTP/gRPC call. Each service records its span with its parent's SpanId. The backend assembles these into a tree showing the full request journey across services."
+/>
 
 ```
 Without tracing:                   With tracing:

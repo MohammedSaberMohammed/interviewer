@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/middleware/#middleware-order"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, ArchDiagram } from '@/components/lesson'
 
 ## What Is Middleware?
 
@@ -33,6 +33,24 @@ Response ← [MW1] ← [MW2] ← [MW3] ←
 ```
 
 The pipeline is built as a chain of `RequestDelegate` functions: `Task(HttpContext)`. Each `Use` call wraps the existing pipeline in a new outer delegate.
+
+<ArchDiagram
+  title="ASP.NET Core Middleware Pipeline"
+  layers={[
+    { nodes: [{ id: 'req', label: 'HTTP Request', sublabel: 'arrives from client', type: 'client' }] },
+    { nodes: [{ id: 'mw1', label: 'Exception Handler', sublabel: 'UseExceptionHandler()', type: 'gateway' }] },
+    { nodes: [{ id: 'mw2', label: 'Authentication', sublabel: 'UseAuthentication()', type: 'gateway' }] },
+    { nodes: [{ id: 'mw3', label: 'Authorization', sublabel: 'UseAuthorization()', type: 'gateway' }] },
+    { nodes: [{ id: 'endpoint', label: 'Endpoint / Controller', sublabel: 'your handler logic', type: 'service' }] },
+  ]}
+  connectors={[
+    { label: 'calls next()' },
+    { label: 'calls next()' },
+    { label: 'calls next()' },
+    { label: 'processes request' },
+  ]}
+  caption="Each middleware calls next() to pass the request deeper, then can act on the response on the way back out. Order matters: exception handler must be outermost (catches errors from all inner middleware). Authentication must come before Authorization."
+/>
 
 ---
 

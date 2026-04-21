@@ -1,3 +1,4 @@
+export { ArchDiagram } from './ArchDiagram'
 export { Callout } from './Callout'
 export { CodeChallenge } from './CodeChallenge'
 export { Quiz } from './Quiz'

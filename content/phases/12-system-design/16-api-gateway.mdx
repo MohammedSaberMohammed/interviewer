@@ -16,11 +16,37 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## What Does an API Gateway Do?
 
 An API gateway is a reverse proxy that sits between clients and your backend services. It centralizes cross-cutting concerns that would otherwise be duplicated in every service:
+
+<ArchDiagram
+  title="BFF Pattern: Purpose-Built Gateway per Client Type"
+  layers={[
+    { nodes: [
+      { id: 'web', label: 'Web App', type: 'browser' },
+      { id: 'mobile', label: 'Mobile App', type: 'user' },
+      { id: 'partner', label: 'Partner API', type: 'client' },
+    ]},
+    { nodes: [
+      { id: 'bff_web', label: 'Web BFF', sublabel: 'SSR, full data, session auth', type: 'gateway' },
+      { id: 'bff_mobile', label: 'Mobile BFF', sublabel: 'Compact payloads, JWT, offline', type: 'gateway' },
+      { id: 'bff_partner', label: 'Partner BFF', sublabel: 'API keys, strict rate limits', type: 'gateway' },
+    ]},
+    { nodes: [
+      { id: 'order', label: 'OrderService', type: 'service' },
+      { id: 'user', label: 'UserService', type: 'service' },
+      { id: 'catalog', label: 'CatalogService', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'each client gets an optimized gateway' },
+    { label: 'fan-out to upstream services' },
+  ]}
+  caption="A generic gateway forces one API shape on every client. BFF gives each client team a gateway they own and optimize. The Web BFF can aggregate 3 service calls into 1 response; the Mobile BFF returns a minimal payload."
+/>
 
 ```
 Clients:               Gateway:                     Services:

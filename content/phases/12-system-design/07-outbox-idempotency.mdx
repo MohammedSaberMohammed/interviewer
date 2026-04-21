@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Dual-Write Problem
 
@@ -37,6 +37,24 @@ public async Task PlaceOrderAsync(CreateOrderCommand cmd)
 ```
 
 The **dual-write problem**: you cannot atomically commit to a database and publish to a message broker simultaneously without distributed transactions (which are expensive and complex).
+
+<ArchDiagram
+  title="Outbox Pattern: Guaranteed Message Delivery"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', sublabel: 'writes business data', type: 'service' }] },
+    { nodes: [{ id: 'db', label: 'Database', sublabel: 'Order table + Outbox table (one ACID transaction)', type: 'database' }] },
+    { nodes: [{ id: 'relay', label: 'Outbox Relay', sublabel: 'Background service — polls unpublished messages', type: 'service' }] },
+    { nodes: [{ id: 'broker', label: 'Message Broker', sublabel: 'Service Bus / RabbitMQ', type: 'queue' }] },
+    { nodes: [{ id: 'consumer', label: 'Consumer', sublabel: 'Deduplicates by message ID (idempotent)', type: 'service' }] },
+  ]}
+  connectors={[
+    { label: 'single ACID commit: data + message', step: 1 },
+    { label: 'poll unpublished rows', step: 2, dashed: true },
+    { label: 'publish to broker', step: 3 },
+    { label: 'at-least-once delivery', step: 4 },
+  ]}
+  caption="If the database transaction commits, the message will eventually be published. If it rolls back, no message is published. No distributed transaction required — atomicity is achieved within one database."
+/>
 
 ---
 

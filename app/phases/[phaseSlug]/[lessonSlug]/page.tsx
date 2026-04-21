@@ -29,6 +29,7 @@ import { ComparisonTable } from '@/components/lesson/ComparisonTable'
 import { MythBuster } from '@/components/lesson/MythBuster'
 import { MemoryVisualizer } from '@/components/lesson/MemoryVisualizer'
 import { CodePlayground } from '@/components/lesson/CodePlayground'
+import { ArchDiagram } from '@/components/lesson/ArchDiagram'
 import { CodeBlock } from '@/components/lesson/CodeBlock'
 import {
   QuestStep,
@@ -44,6 +45,7 @@ interface Props {
 }
 
 const mdxComponents = {
+  ArchDiagram,
   Callout,
   CodeChallenge,
   Quiz,
@@ -153,7 +155,7 @@ export default async function LessonPage({ params }: Props) {
           </aside>
 
           {/* Main content */}
-          <main id="main-content" className="flex-1 min-w-0 max-w-2xl">
+          <main id="main-content" className="flex-1 min-w-0">
             {/* Lesson header */}
             <div className="mb-8">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">

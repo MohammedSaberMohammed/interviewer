@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/web-application-firewall/ag/rate-limiting-overview"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Rate Limiting Matters
 
@@ -27,6 +27,27 @@ Rate limiting protects your service from:
 - **Cost control**: Pay-per-request cloud services (OpenAI, Azure Cognitive Services)
 
 The algorithm you choose determines the smoothness of traffic, the fairness between clients, and the complexity of implementation.
+
+<ArchDiagram
+  title="Rate Limiting: Request Flow Through the Limiter"
+  layers={[
+    { nodes: [
+      { id: 'c1', label: 'Client A', type: 'client' },
+      { id: 'c2', label: 'Client B', type: 'client' },
+      { id: 'c3', label: 'Client C', type: 'client' },
+    ]},
+    { nodes: [{ id: 'rl', label: 'Rate Limiter', sublabel: 'Token Bucket / Sliding Window counter', type: 'gateway' }] },
+    { nodes: [
+      { id: 'allowed', label: 'Request Allowed', sublabel: 'within quota → handler', type: 'service' },
+      { id: 'rejected', label: 'Request Rejected', sublabel: 'HTTP 429 Too Many Requests', type: 'queue' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'all requests enter the limiter' },
+    { label: 'allow or reject per client quota' },
+  ]}
+  caption="The rate limiter checks each client's token bucket (or sliding window counter) before forwarding requests. Rejected requests get HTTP 429 immediately — the handler is never invoked."
+/>
 
 ---
 

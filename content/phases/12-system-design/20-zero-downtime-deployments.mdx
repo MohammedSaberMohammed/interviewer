@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/azure-app-configuration/concept-feature-management"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Zero-Downtime Matters
 
@@ -26,6 +26,25 @@ Downtime during deployments has direct costs:
 - **User trust**: Planned maintenance windows are user experience failures
 
 The goal: deploy new code without users experiencing errors, increased latency, or service unavailability.
+
+<ArchDiagram
+  title="Blue-Green Deployment: Instant Zero-Downtime Cutover"
+  layers={[
+    { nodes: [{ id: 'users', label: 'Users / Traffic', sublabel: 'single DNS entry point', type: 'client' }] },
+    { nodes: [{ id: 'lb', label: 'Load Balancer', sublabel: 'switches routing weight in seconds', type: 'lb' }] },
+    { nodes: [
+      { id: 'blue', label: 'Blue — v1 (live)', sublabel: '100% traffic → then 0%', type: 'server' },
+      { id: 'green', label: 'Green — v2 (staged)', sublabel: '0% traffic → then 100%', type: 'service' },
+    ]},
+    { nodes: [{ id: 'db', label: 'Database', sublabel: 'shared — migrations must be backward-compatible', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: 'single DNS/IP entry' },
+    { label: 'atomic weight switch: Blue → Green' },
+    { label: 'both versions share schema during cutover' },
+  ]}
+  caption="Blue and Green run simultaneously. After validating Green is healthy, the load balancer switches 100% of traffic instantly. Rollback = switch back to Blue. Cost: 2× infrastructure during the deployment window."
+/>
 
 ---
 

@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
 
 ## What Is CAP Theorem?
 
@@ -27,6 +27,23 @@ CAP Theorem, proven by Eric Brewer in 2000, states that a distributed data store
 - **P — Partition Tolerance**: The system continues operating even when network partitions cause message loss between nodes.
 
 The critical insight: **in a real distributed system, network partitions are not optional**. They will happen. This means the real choice is always between **C and A** when a partition occurs.
+
+<ArchDiagram
+  title="CAP Theorem: Partition Forces a Trade-off"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client Request', type: 'client' }] },
+    { nodes: [{ id: 'partition', label: 'Network Partition', sublabel: 'nodes cannot communicate', type: 'gateway' }] },
+    { nodes: [
+      { id: 'cp', label: 'CP System', sublabel: 'Reject writes → strong consistency', type: 'database' },
+      { id: 'ap', label: 'AP System', sublabel: 'Serve stale reads → always available', type: 'cache' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'partition occurs', dashed: true },
+    { label: 'system must choose one' },
+  ]}
+  caption="CP databases (SQL Server, etcd) return an error during a partition. AP databases (Cassandra, DynamoDB) serve potentially stale data. CA (no partition tolerance) only exists in single-node setups."
+/>
 
 ```
 Normal operation:          During a partition:

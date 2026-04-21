@@ -16,11 +16,29 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/dotnet/core/diagnostics/observability-with-otel"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## The Three Pillars of Observability
 
 Observability is the ability to understand the internal state of a system from its external outputs. The three signals are complementary — each answers a different class of question:
+
+<ArchDiagram
+  title="Three Pillars of Observability"
+  layers={[
+    { nodes: [{ id: 'svc', label: 'Your Service', sublabel: 'ASP.NET Core / Worker / gRPC', type: 'service' }] },
+    { nodes: [
+      { id: 'logs', label: 'Structured Logs', sublabel: 'What happened, with context', type: 'database' },
+      { id: 'metrics', label: 'Metrics', sublabel: 'How it performed over time', type: 'cache' },
+      { id: 'traces', label: 'Distributed Traces', sublabel: 'Which path the request took', type: 'service' },
+    ]},
+    { nodes: [{ id: 'backend', label: 'Observability Platform', sublabel: 'Seq / Grafana / Application Insights / Jaeger', type: 'cloud' }] },
+  ]}
+  connectors={[
+    { label: 'emit via OpenTelemetry SDK' },
+    { label: 'export + correlate by TraceId' },
+  ]}
+  caption="All three signals share a TraceId. When an alert fires on a metric, drill into traces for that window, then into logs for specific requests. OpenTelemetry provides a vendor-neutral SDK for all three."
+/>
 
 | Signal | Question It Answers | Granularity |
 |--------|---------------------|-------------|

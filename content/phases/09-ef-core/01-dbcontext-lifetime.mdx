@@ -16,13 +16,31 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/ef/core/performance/advanced-performance-topics#dbcontext-pooling"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Lifetime Matters
 
 `DbContext` is not a lightweight object. It maintains a **change tracker**, an **identity map** (first-level cache), connection state, and pending query state. Sharing it incorrectly between requests or threads produces silent data corruption, stale reads, and hard-to-reproduce concurrency exceptions.
 
 The fundamental rule: **one DbContext per unit of work**.
+
+<ArchDiagram
+  title="EF Core Query Pipeline"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application Code', sublabel: 'LINQ expression: dbCtx.Orders.Where(...)', type: 'client' }] },
+    { nodes: [{ id: 'dbctx', label: 'DbContext', sublabel: 'Unit of Work — tracks changes', type: 'service' }] },
+    { nodes: [{ id: 'trans', label: 'Query Translation', sublabel: 'LINQ → SQL (compiled + cached)', type: 'gateway' }] },
+    { nodes: [{ id: 'db', label: 'SQL Database', sublabel: 'executes query, returns rows', type: 'database' }] },
+    { nodes: [{ id: 'tracker', label: 'Change Tracker', sublabel: 'materializes entities + tracks for SaveChanges()', type: 'cache' }] },
+  ]}
+  connectors={[
+    { label: 'LINQ expression tree', step: 1 },
+    { label: 'translates to SQL', step: 2 },
+    { label: 'ADO.NET executes query', step: 3 },
+    { label: 'materializes + snapshots entities', step: 4 },
+  ]}
+  caption="EF Core compiles LINQ to SQL once and caches the query plan. The Change Tracker snapshots entity state so SaveChanges() can emit only the minimal UPDATE/INSERT/DELETE statements needed."
+/>
 
 ---
 

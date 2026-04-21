@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## Why Caching Strategy Matters
 
@@ -32,6 +32,21 @@ Adding a cache without choosing a strategy is like adding a lock without knowing
 ## Cache-Aside (Lazy Loading)
 
 The application is **responsible for both reads and writes**. The cache sits beside the data store — hence "aside."
+
+<ArchDiagram
+  title="Cache-Aside: Read Path"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', sublabel: 'your service', type: 'service' }] },
+    { nodes: [
+      { id: 'cache', label: 'Redis Cache', sublabel: 'fast, volatile', type: 'cache' },
+      { id: 'db', label: 'Database', sublabel: 'authoritative', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'check cache → on miss, query DB', dashed: false },
+  ]}
+  caption="Cache miss: app queries DB and populates the cache. Cache hit: DB is never touched."
+/>
 
 **Read path**:
 1. Check cache. If hit, return cached value.
@@ -133,6 +148,20 @@ public class ReadThroughCache<TKey, TValue> : ICache<TKey, TValue>
 ## Write-Through
 
 Every write goes to **both the cache and the database synchronously** before returning to the caller.
+
+<ArchDiagram
+  title="Write-Through: Synchronous Write to Both Stores"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', type: 'service' }] },
+    { nodes: [{ id: 'cache', label: 'Redis Cache', sublabel: 'always warm', type: 'cache' }] },
+    { nodes: [{ id: 'db', label: 'Database', sublabel: 'authoritative', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: '1. write (sync)', step: undefined },
+    { label: '2. write (sync)', step: undefined },
+  ]}
+  caption="Both stores are updated synchronously before acknowledging the write. Reads always hit a warm cache."
+/>
 
 ```
 Write: Application → Cache → Database (both, synchronously)

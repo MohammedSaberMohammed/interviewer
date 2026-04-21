@@ -16,7 +16,7 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/claims"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, ArchDiagram } from '@/components/lesson'
 
 ## JWT Structure
 
@@ -45,6 +45,22 @@ SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   <- Signature
 **Signature:** `HMACSHA256(base64url(header) + "." + base64url(payload), secret)`
 
 The signature verifies that the token hasn't been tampered with. The payload is **not encrypted** — it is only Base64-encoded. Never put sensitive data (passwords, PII) in JWT claims.
+
+<ArchDiagram
+  title="JWT Authentication Flow"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client App', sublabel: 'browser / mobile / API consumer', type: 'browser' }] },
+    { nodes: [{ id: 'auth', label: 'Auth Server / Identity Provider', sublabel: 'issues signed JWT tokens', type: 'gateway' }] },
+    { nodes: [{ id: 'api', label: 'Protected API', sublabel: 'validates signature + claims locally', type: 'server' }] },
+    { nodes: [{ id: 'resource', label: 'Protected Resource', sublabel: 'orders, profile, admin data', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: '1. POST /login → receives JWT', step: 1 },
+    { label: '2. Bearer {token} on every request', step: 2 },
+    { label: '3. claims authorize access', step: 3 },
+  ]}
+  caption="The API validates the JWT signature using the auth server's public key — no round-trip to the auth server per request. Stateless: any API instance can validate any token without shared session state."
+/>
 
 ---
 

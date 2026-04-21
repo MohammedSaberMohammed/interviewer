@@ -16,13 +16,32 @@ docsLinks:
     url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/elastic-scale-introduction"
 ---
 
-import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
 
 ## What Is Sharding?
 
 **Sharding** (horizontal partitioning) splits a large dataset across multiple database instances (shards). Each shard holds a subset of the data. The total dataset = union of all shards.
 
 Contrast with vertical scaling (bigger hardware) and read replicas (multiple copies of the same data) — sharding is the only strategy that distributes **writes** across multiple machines.
+
+<ArchDiagram
+  title="Database Sharding: Distributing Writes Across Nodes"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', sublabel: 'uses shard key (e.g. TenantId)', type: 'service' }] },
+    { nodes: [{ id: 'router', label: 'Shard Router', sublabel: 'hash(shardKey) % N → shard index', type: 'gateway' }] },
+    { nodes: [
+      { id: 's0', label: 'Shard 0', sublabel: 'TenantIds 0–24', type: 'database' },
+      { id: 's1', label: 'Shard 1', sublabel: 'TenantIds 25–49', type: 'database' },
+      { id: 's2', label: 'Shard 2', sublabel: 'TenantIds 50–74', type: 'database' },
+      { id: 's3', label: 'Shard 3', sublabel: 'TenantIds 75–99', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'route by shard key' },
+    { label: 'each shard is an independent DB instance' },
+  ]}
+  caption="The shard key determines which database instance owns a record. All reads and writes for a sharded entity go to exactly one shard — cross-shard queries require scatter-gather across all shards and are expensive."
+/>
 
 ```
 Without sharding:                  With sharding (by customer region):
