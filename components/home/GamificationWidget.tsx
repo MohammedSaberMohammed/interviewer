@@ -28,7 +28,7 @@ export function GamificationWidget() {
     <div className="mx-auto mt-8 w-full max-w-sm">
       <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
         <span>Welcome back</span>
-        <span className="font-medium text-[#512BD4] dark:text-violet-400">
+        <span className="font-medium text-[#6366F1] dark:text-indigo-400">
           {levelConfig.label} · {xpTotal.toLocaleString()} XP
         </span>
       </div>

@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { Search, GraduationCap, ShoppingBasket } from 'lucide-react'
+import { Search, Trophy, LayoutTemplate } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from './ThemeToggle'
 import { MobileDrawer } from './MobileDrawer'
@@ -15,7 +15,7 @@ export function Navbar() {
   const { openSearch } = useSearch()
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    <header className="sticky top-0 z-40 w-full border-b border-border/60 bg-background/90 backdrop-blur-md supports-[backdrop-filter]:bg-background/80">
       <div className="container mx-auto flex h-14 items-center gap-4 px-4">
         {/* Mobile drawer */}
         <MobileDrawer />
@@ -23,49 +23,66 @@ export function Navbar() {
         {/* Logo */}
         <Link
           href="/"
-          className="flex items-center gap-2 font-bold text-primary shrink-0"
+          className="flex items-center gap-2.5 shrink-0 group"
           aria-label="Interviewer App home"
         >
-          <GraduationCap className="h-5 w-5" aria-hidden="true" />
-          <span className="hidden sm:block">Interviewer App</span>
+          {/* Gradient logo mark */}
+          <div
+            aria-hidden="true"
+            className="flex h-7 w-7 items-center justify-center rounded-lg shrink-0"
+            style={{ background: 'linear-gradient(135deg, #6366F1, #8B5CF6)' }}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path
+                d="M2 4h10M2 7h6M2 10h8"
+                stroke="white"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+          <span className="hidden sm:block text-sm font-semibold text-foreground">
+            Interviewer App
+          </span>
         </Link>
 
         {/* Desktop nav */}
-        <nav aria-label="Main navigation" className="hidden md:flex items-center gap-1 ml-4">
-          {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                pathname.startsWith(item.href)
-                  ? 'bg-accent text-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-              )}
-            >
-              {item.title}
-            </Link>
-          ))}
+        <nav aria-label="Main navigation" className="hidden md:flex items-center gap-0.5 ml-2">
+          {NAV_ITEMS.map((item) => {
+            const active = pathname.startsWith(item.href)
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'rounded-lg px-3 py-1.5 text-sm font-medium transition-all',
+                  active
+                    ? 'text-white shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                )}
+                style={active ? { background: 'linear-gradient(135deg, #6366F1, #8B5CF6)' } : undefined}
+              >
+                {item.title}
+              </Link>
+            )
+          })}
         </nav>
 
         {/* Right side */}
         <div className="ml-auto flex items-center gap-1">
-          {/* Search */}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="hidden sm:flex items-center gap-2 text-muted-foreground hover:text-foreground w-48 justify-between"
+          {/* Search — wide pill on desktop */}
+          <button
+            type="button"
             onClick={openSearch}
             aria-label="Search lessons"
+            className="hidden sm:flex items-center gap-2.5 rounded-lg border border-border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground w-44"
           >
-            <span className="flex items-center gap-2">
-              <Search className="h-3.5 w-3.5" />
-              <span className="text-xs">Search lessons…</span>
-            </span>
-            <kbd className="pointer-events-none hidden sm:inline-flex h-5 select-none items-center gap-1 rounded border border-border bg-muted px-1.5 text-[10px] font-mono text-muted-foreground">
+            <Search className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="flex-1 text-left">Search…</span>
+            <kbd className="pointer-events-none inline-flex h-4 select-none items-center rounded border border-border bg-background px-1 text-[10px] font-mono text-muted-foreground">
               ⌘K
             </kbd>
-          </Button>
+          </button>
           <Button
             variant="ghost"
             size="icon"
@@ -76,17 +93,26 @@ export function Navbar() {
             <Search className="h-4 w-4" />
           </Button>
 
-          {/* Progress link */}
+          {/* Progress */}
           <Link href="/progress">
-            <Button variant="ghost" size="sm" className="hidden md:flex text-xs text-muted-foreground">
-              Progress
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Progress"
+            >
+              <Trophy className="h-4 w-4" />
             </Button>
           </Link>
 
-          {/* Interview Templates link */}
-          <Link href="/interview-templates">
-            <Button variant="ghost" size="sm" className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
-              <ShoppingBasket className="h-3.5 w-3.5" />
+          {/* Templates */}
+          <Link href="/interview-templates" className="hidden md:block">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
               Templates
             </Button>
           </Link>

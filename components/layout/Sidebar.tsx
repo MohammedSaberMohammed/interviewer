@@ -20,13 +20,11 @@ export function Sidebar({ phaseSlug, phaseTitle, lessons, className }: SidebarPr
 
   return (
     <aside className={cn('w-full', className)} aria-label="Phase lessons">
-      <div className="mb-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {phaseTitle}
-        </p>
-      </div>
+      <p className="mb-3 px-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+        {phaseTitle}
+      </p>
       <nav>
-        <ul className="space-y-0.5">
+        <ul className="space-y-px">
           {lessons.map((lesson) => {
             const href = `/phases/${phaseSlug}/${lesson.slug}`
             const isActive = pathname === href
@@ -39,24 +37,34 @@ export function Sidebar({ phaseSlug, phaseTitle, lessons, className }: SidebarPr
                   href={isPlaceholder ? '#' : href}
                   aria-current={isActive ? 'page' : undefined}
                   aria-disabled={isPlaceholder}
-                  className={cn(
-                    'group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
-                    isActive
-                      ? 'bg-primary/10 text-primary font-medium'
-                      : isPlaceholder
-                        ? 'text-muted-foreground/50 cursor-not-allowed'
-                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                  )}
                   onClick={isPlaceholder ? (e) => e.preventDefault() : undefined}
-                >
-                  {isComplete ? (
-                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-label="Completed" />
-                  ) : isPlaceholder ? (
-                    <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" aria-label="Coming soon" />
-                  ) : (
-                    <Circle className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" aria-label="Not started" />
+                  className={cn(
+                    'group relative flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors',
+                    isActive
+                      ? 'bg-primary/8 text-primary font-medium dark:bg-primary/12'
+                      : isPlaceholder
+                        ? 'text-muted-foreground/40 cursor-not-allowed'
+                        : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
-                  <span className="line-clamp-2 leading-tight">{lesson.title}</span>
+                >
+                  {/* Active indicator */}
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full"
+                      style={{ background: 'linear-gradient(180deg, #6366F1, #8B5CF6)' }}
+                    />
+                  )}
+
+                  {isComplete ? (
+                    <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" aria-label="Completed" />
+                  ) : isPlaceholder ? (
+                    <Lock className="h-3 w-3 shrink-0 text-muted-foreground/30" aria-label="Coming soon" />
+                  ) : (
+                    <Circle className="h-3 w-3 shrink-0 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" aria-label="Not started" />
+                  )}
+
+                  <span className="line-clamp-2 leading-snug">{lesson.title}</span>
                 </Link>
               </li>
             )

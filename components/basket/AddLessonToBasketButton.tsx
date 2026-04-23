@@ -81,7 +81,7 @@ export function AddLessonToBasketButton({
           'flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors shrink-0 text-xs font-medium gap-1',
           inAnyBasket
             ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400'
-            : 'border-border bg-background text-muted-foreground hover:border-[#512BD4]/50 hover:text-[#512BD4] hover:bg-[#512BD4]/5 dark:hover:border-violet-500/40 dark:hover:text-violet-300',
+            : 'border-border bg-background text-muted-foreground hover:border-[#6366F1]/50 hover:text-[#6366F1] hover:bg-[#6366F1]/5 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300',
           className,
         )}
       >
@@ -103,7 +103,7 @@ export function AddLessonToBasketButton({
         'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
         inAnyBasket
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400'
-          : 'border-border text-muted-foreground hover:border-[#512BD4]/40 hover:bg-[#512BD4]/5 hover:text-[#512BD4] dark:hover:border-violet-500/40 dark:hover:text-violet-300',
+          : 'border-border text-muted-foreground hover:border-[#6366F1]/40 hover:bg-[#6366F1]/5 hover:text-[#6366F1] dark:hover:border-indigo-500/40 dark:hover:text-indigo-300',
         className,
       )}
     >

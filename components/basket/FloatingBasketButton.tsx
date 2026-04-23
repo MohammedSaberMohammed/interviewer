@@ -27,11 +27,11 @@ export function FloatingBasketButton() {
           type="button"
           onClick={openCreate}
           aria-label="New interview template"
-          className="flex h-12 w-12 items-center justify-center rounded-full border border-[#512BD4]/30 bg-white shadow-md transition-all hover:scale-105 hover:border-[#512BD4] hover:shadow-lg dark:bg-slate-900 dark:border-violet-500/30 dark:hover:border-violet-400"
+          className="flex h-12 w-12 items-center justify-center rounded-full border border-[#6366F1]/30 bg-white shadow-md transition-all hover:scale-105 hover:border-[#6366F1] hover:shadow-lg dark:bg-slate-900 dark:border-indigo-500/30 dark:hover:border-indigo-400"
         >
-          <ShoppingBasket className="h-5 w-5 text-[#512BD4] dark:text-violet-300" />
+          <ShoppingBasket className="h-5 w-5 text-[#6366F1] dark:text-indigo-300" />
           {totalQuestions > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[#512BD4] text-[10px] font-bold text-white">
+            <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[#6366F1] text-[10px] font-bold text-white">
               {totalQuestions > 99 ? '99+' : totalQuestions}
             </span>
           )}
@@ -47,7 +47,7 @@ export function FloatingBasketButton() {
       {baskets.length > 0 && (
         <Link
           href="/interview-templates"
-          className="rounded-full border border-border bg-white px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:border-[#512BD4]/40 hover:text-[#512BD4] dark:bg-slate-900"
+          className="rounded-full border border-border bg-white px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:border-[#6366F1]/40 hover:text-[#6366F1] dark:bg-slate-900"
         >
           {baskets.length} template{baskets.length !== 1 ? 's' : ''}
         </Link>

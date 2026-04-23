@@ -38,6 +38,7 @@ import {
   QuestLayout,
 } from '@/components/quest'
 import { AddLessonToBasketButton } from '@/components/basket/AddLessonToBasketButton'
+import { IsometricCube } from '@/components/ui/IsometricCube'
 
 interface Props {
   params: Promise<{ phaseSlug: string; lessonSlug: string }>
@@ -155,17 +156,24 @@ export default async function LessonPage({ params }: Props) {
 
           {/* Main content */}
           <main id="main-content" className="flex-1 min-w-0">
-            {/* Lesson header */}
-            <div className="mb-8">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <DifficultyBadge level={lesson.difficulty} />
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Clock className="h-3 w-3" aria-hidden="true" />
-                    {lesson.readingTime} min read
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
+            {/* Lesson header — text left, illustration right */}
+            <div className="mb-8 flex items-start gap-6">
+              {/* Text content */}
+              <div className="flex-1 min-w-0">
+                {/* Meta row */}
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <DifficultyBadge level={lesson.difficulty} />
+                    {lesson.questMode && (
+                      <span className="inline-flex items-center rounded-full bg-indigo-50 dark:bg-indigo-950/50 px-2.5 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
+                        Quest
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3" aria-hidden="true" />
+                      {lesson.readingTime} min read
+                    </span>
+                  </div>
                   {lesson.status === 'published' && (
                     <AddLessonToBasketButton
                       lessonSlug={lessonSlug}
@@ -178,13 +186,20 @@ export default async function LessonPage({ params }: Props) {
                     />
                   )}
                 </div>
+
+                <h1 className="text-3xl font-bold tracking-tight mb-2">{lesson.title}</h1>
+                {lesson.summary && (
+                  <p className="text-muted-foreground text-base leading-relaxed max-w-2xl">{lesson.summary}</p>
+                )}
+
+                <div className="mt-5">
+                  <LessonActions phaseSlug={phaseSlug} lessonSlug={lessonSlug} />
+                </div>
               </div>
-              <h1 className="text-3xl font-bold mb-2">{lesson.title}</h1>
-              {lesson.summary && (
-                <p className="text-muted-foreground text-base leading-relaxed">{lesson.summary}</p>
-              )}
-              <div className="mt-4">
-                <LessonActions phaseSlug={phaseSlug} lessonSlug={lessonSlug} />
+
+              {/* 3D isometric illustration */}
+              <div className="hidden md:block shrink-0">
+                <IsometricCube color={phaseMeta?.color ?? 'indigo'} emoji={phaseMeta?.emoji} size={160} />
               </div>
             </div>
 
@@ -232,7 +247,7 @@ export default async function LessonPage({ params }: Props) {
           {/* Right sidebar — TOC */}
           <aside className="hidden xl:block w-48 shrink-0">
             <div className="sticky top-20">
-              <LessonTOC />
+              <LessonTOC summary={lesson.summary} />
             </div>
           </aside>
         </div>

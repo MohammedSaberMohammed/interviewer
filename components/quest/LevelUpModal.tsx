@@ -35,7 +35,7 @@ export function LevelUpModal() {
   return (
     <Dialog open={true} onOpenChange={() => setEvent(null)}>
       <DialogContent
-        className="max-w-md border-0 bg-gradient-to-b from-[#512BD4] to-[#3b1fa0] text-white shadow-lg"
+        className="max-w-md border-0 bg-gradient-to-b from-[#6366F1] to-[#7C3AED] text-white shadow-lg"
         aria-describedby="levelup-description"
       >
         <DialogHeader className="text-center">
@@ -58,7 +58,7 @@ export function LevelUpModal() {
 
         <button
           onClick={() => setEvent(null)}
-          className="mt-5 w-full rounded-lg bg-white py-2.5 text-sm font-semibold text-[#512BD4] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          className="mt-5 w-full rounded-lg bg-white py-2.5 text-sm font-semibold text-[#6366F1] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
           autoFocus
         >
           Keep going

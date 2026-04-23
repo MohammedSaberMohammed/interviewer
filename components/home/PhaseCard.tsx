@@ -1,8 +1,6 @@
 import Link from 'next/link'
-import { Clock, BookOpen, ChevronRight } from 'lucide-react'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { PhaseProgressBar } from '@/components/progress/PhaseProgressBar'
+import { Clock, BookOpen } from 'lucide-react'
+import { Gem3D } from '@/components/ui/Gem3D'
 import { PHASE_LEVEL_CONFIG } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import type { Phase } from '@/types'
@@ -13,64 +11,87 @@ interface PhaseCardProps {
   className?: string
 }
 
-const COLOR_MAP: Record<string, string> = {
-  blue: 'bg-blue-500',
-  indigo: 'bg-indigo-500',
-  violet: 'bg-violet-500',
-  purple: 'bg-purple-500',
-  amber: 'bg-amber-500',
-  teal: 'bg-teal-500',
-  rose: 'bg-rose-500',
-  cyan: 'bg-cyan-500',
-  green: 'bg-green-500',
-  orange: 'bg-orange-500',
-  slate: 'bg-slate-500',
+/* Tailwind-safe gradient bg tints per phase color for the illustration strip */
+const CARD_TINT: Record<string, string> = {
+  blue:   'from-blue-950 to-blue-900',
+  indigo: 'from-indigo-950 to-indigo-900',
+  violet: 'from-violet-950 to-violet-900',
+  purple: 'from-purple-950 to-purple-900',
+  amber:  'from-amber-950 to-amber-900',
+  teal:   'from-teal-950 to-teal-900',
+  rose:   'from-rose-950 to-rose-900',
+  cyan:   'from-cyan-950 to-cyan-900',
+  green:  'from-green-950 to-green-900',
+  orange: 'from-orange-950 to-orange-900',
+  slate:  'from-slate-900 to-slate-800',
 }
 
 export function PhaseCard({ phase, completedCount = 0, className }: PhaseCardProps) {
   const levelConfig = PHASE_LEVEL_CONFIG[phase.level]
-  const dotColor = COLOR_MAP[phase.color] ?? 'bg-primary'
+  const cardTint = CARD_TINT[phase.color] ?? CARD_TINT.indigo
   const totalLessons = phase.lessons.length
   const isComplete = totalLessons > 0 && completedCount === totalLessons
+  const pct = totalLessons === 0 ? 0 : Math.round((completedCount / totalLessons) * 100)
 
   return (
     <Link href={`/phases/${phase.slug}`} className={cn('group block', className)}>
-      <Card className={cn(
-        'h-full transition-all duration-200',
-        'hover:shadow-lg hover:-translate-y-0.5',
-        'border-border group-hover:border-primary/30'
+      <div className={cn(
+        'relative flex h-full flex-col overflow-hidden rounded-2xl border border-border bg-card',
+        'transition-all duration-200',
+        'hover:-translate-y-1 hover:border-primary/30 hover:shadow-[0_12px_32px_oklch(0_0_0/0.10)]',
+        'dark:hover:border-primary/35 dark:hover:shadow-[0_12px_32px_oklch(0_0_0/0.5)]',
       )}>
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <span
-                className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg', dotColor, 'bg-opacity-15')}
-                aria-hidden="true"
-              >
-                {phase.emoji}
-              </span>
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Phase {phase.number}</p>
-                <h3 className="font-semibold text-sm leading-tight group-hover:text-primary transition-colors">
-                  {phase.title}
-                </h3>
-              </div>
-            </div>
-            <div className="flex items-center gap-1 shrink-0">
-              <Badge variant="secondary" className={cn('text-xs', levelConfig.bgClass, levelConfig.textClass, 'border-0')}>
-                {levelConfig.label}
-              </Badge>
-              {isComplete && (
-                <Badge className="text-xs bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400 border-0">
-                  ✓
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-0 space-y-3">
-          <p className="text-xs text-muted-foreground line-clamp-2">{phase.subtitle}</p>
+        {/* ── Illustration strip (dark gradient + 3D gem) ── */}
+        <div className={cn(
+          'relative flex items-center justify-center py-7 bg-gradient-to-br',
+          cardTint,
+        )}>
+          {/* Subtle grid texture overlay */}
+          <div
+            className="pointer-events-none absolute inset-0 opacity-[0.04]"
+            style={{
+              backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)',
+              backgroundSize: '20px 20px',
+            }}
+          />
 
+          <Gem3D color={phase.color} emoji={phase.emoji} size={90} />
+
+          {/* Phase number pill */}
+          <span className="absolute top-3 left-3 rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white/70 backdrop-blur-sm">
+            Phase {phase.number}
+          </span>
+
+          {/* Level badge */}
+          <span className={cn(
+            'absolute top-3 right-3 rounded-full px-2 py-0.5 text-[10px] font-medium',
+            levelConfig.bgClass,
+            levelConfig.textClass,
+          )}>
+            {levelConfig.label}
+          </span>
+
+          {/* Complete badge */}
+          {isComplete && (
+            <span className="absolute bottom-3 right-3 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-400 ring-1 ring-emerald-500/30">
+              ✓ Done
+            </span>
+          )}
+        </div>
+
+        {/* ── Card body ── */}
+        <div className="flex flex-1 flex-col gap-3 p-4">
+          {/* Title + subtitle */}
+          <div>
+            <h3 className="text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">
+              {phase.title}
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground line-clamp-2 leading-relaxed">
+              {phase.subtitle}
+            </p>
+          </div>
+
+          {/* Meta */}
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">
               <Clock className="h-3 w-3" aria-hidden="true" />
@@ -82,18 +103,32 @@ export function PhaseCard({ phase, completedCount = 0, className }: PhaseCardPro
             </span>
           </div>
 
+          {/* Progress */}
           {totalLessons > 0 && (
-            <PhaseProgressBar completed={completedCount} total={totalLessons} showLabel={false} />
+            <div className="mt-auto space-y-1">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${pct}%`,
+                    background: pct === 100
+                      ? 'oklch(0.72 0.20 145)'
+                      : 'linear-gradient(90deg, #6366F1, #8B5CF6)',
+                  }}
+                  role="progressbar"
+                  aria-valuenow={pct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${pct}% complete`}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {completedCount} / {totalLessons} lessons
+              </p>
+            </div>
           )}
-
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              {completedCount}/{totalLessons} completed
-            </span>
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary transition-colors" aria-hidden="true" />
-          </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </Link>
   )
 }

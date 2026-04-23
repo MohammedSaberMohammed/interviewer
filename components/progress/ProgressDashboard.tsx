@@ -66,7 +66,7 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Level</h3>
-            <span className="rounded-full bg-[#512BD4]/10 px-2.5 py-0.5 text-xs font-semibold text-[#512BD4] dark:bg-violet-950/40 dark:text-violet-300">
+            <span className="rounded-full bg-[#6366F1]/10 px-2.5 py-0.5 text-xs font-semibold text-[#6366F1] dark:bg-indigo-950/40 dark:text-indigo-300">
               {levelConfig.label}
             </span>
           </div>
@@ -77,7 +77,7 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
             <>
               <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-[#512BD4] to-violet-400 transition-all duration-300"
+                  className="h-full rounded-full bg-gradient-to-r from-[#6366F1] to-indigo-400 transition-all duration-300"
                   style={{ width: `${levelProgress}%` }}
                   role="progressbar"
                   aria-valuenow={levelProgress}
@@ -131,7 +131,7 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Target className="h-4 w-4 text-violet-500" /> Challenges Answered
+              <Target className="h-4 w-4 text-indigo-500" /> Challenges Answered
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -152,7 +152,7 @@ export function ProgressDashboard({ phases }: ProgressDashboardProps) {
                 key={badge.id}
                 className={`rounded-xl border p-3 text-center transition-colors ${
                   unlocked
-                    ? 'border-[#512BD4]/30 bg-[#512BD4]/5 dark:border-violet-500/30 dark:bg-violet-950/20'
+                    ? 'border-[#6366F1]/30 bg-[#6366F1]/5 dark:border-indigo-500/30 dark:bg-indigo-950/20'
                     : 'border-slate-200 bg-slate-50 opacity-40 dark:border-slate-800 dark:bg-slate-900/60'
                 }`}
                 title={badge.description}

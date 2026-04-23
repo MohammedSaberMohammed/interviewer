@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface TocItem {
@@ -42,20 +43,22 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
   if (items.length === 0) return null
 
   return (
-    <nav aria-label="Table of contents" className={cn('space-y-1', className)}>
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        On this page
-      </p>
+    <nav aria-label="On this page" className={cn('', className)}>
+      <div className="mb-3 flex items-center gap-1.5">
+        <BookOpen className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+          On This Page
+        </p>
+      </div>
       <ul className="space-y-1">
         {items.map((item) => (
           <li key={item.id}>
             <a
               href={`#${item.id}`}
               className={cn(
-                'block rounded py-0.5 text-sm transition-colors',
-                item.level === 2 && 'pl-0',
-                item.level === 3 && 'pl-3',
-                item.level === 4 && 'pl-6',
+                'flex items-start gap-2 rounded-md py-1 text-xs leading-relaxed transition-colors',
+                item.level === 3 && 'pl-2',
+                item.level === 4 && 'pl-4',
                 activeId === item.id
                   ? 'font-medium text-primary'
                   : 'text-muted-foreground hover:text-foreground'
@@ -65,6 +68,13 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
                 document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth' })
               }}
             >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'mt-1.5 h-1 w-1 shrink-0 rounded-full',
+                  activeId === item.id ? 'bg-primary' : 'bg-muted-foreground/40'
+                )}
+              />
               {item.text}
             </a>
           </li>

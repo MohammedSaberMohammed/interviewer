@@ -26,7 +26,7 @@ export function QuestStepper({ totalSteps, currentStep, className }: QuestSteppe
             i < currentStep
               ? 'bg-emerald-500 dark:bg-emerald-400'
               : i === currentStep
-                ? 'animate-pulse bg-[#512BD4]'
+                ? 'animate-pulse bg-[#6366F1]'
                 : 'bg-slate-200 dark:bg-slate-700',
           )}
         />

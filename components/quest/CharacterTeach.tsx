@@ -19,7 +19,7 @@ export function CharacterTeach({ children, className }: CharacterTeachProps) {
       {/* Avatar */}
       <div
         aria-hidden="true"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#512BD4] text-sm font-semibold text-white select-none"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#6366F1] text-sm font-semibold text-white select-none"
       >
         N
       </div>

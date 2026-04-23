@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Lightbulb } from 'lucide-react'
 import { TableOfContents } from '@/components/layout/TableOfContents'
 
 interface TocItem {
@@ -9,7 +10,11 @@ interface TocItem {
   level: 2 | 3 | 4
 }
 
-export function LessonTOC() {
+interface LessonTOCProps {
+  summary?: string
+}
+
+export function LessonTOC({ summary }: LessonTOCProps) {
   const [items, setItems] = useState<TocItem[]>([])
 
   useEffect(() => {
@@ -40,7 +45,20 @@ export function LessonTOC() {
     setItems(extracted)
   }, [])
 
-  if (items.length === 0) return null
+  return (
+    <div className="space-y-6">
+      {items.length > 0 && <TableOfContents items={items} />}
 
-  return <TableOfContents items={items} />
+      {/* Key Takeaway card */}
+      {summary && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center gap-1.5">
+            <Lightbulb className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" />
+            <p className="text-xs font-semibold text-foreground">Key Takeaway</p>
+          </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">{summary}</p>
+        </div>
+      )}
+    </div>
+  )
 }

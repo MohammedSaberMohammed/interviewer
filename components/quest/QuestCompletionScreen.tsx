@@ -53,7 +53,7 @@ export function QuestCompletionScreen({
         {/* Badges unlocked */}
         {newlyUnlockedBadges.length > 0 && (
           <div className="mt-4">
-            <p className="mb-2 text-xs font-medium text-[#512BD4] dark:text-violet-400">Badges unlocked</p>
+            <p className="mb-2 text-xs font-medium text-[#6366F1] dark:text-indigo-400">Badges unlocked</p>
             <div className="flex justify-center gap-2">
               {newlyUnlockedBadges.map((id) => {
                 const badge = BADGES.find((b) => b.id === id)
@@ -73,14 +73,14 @@ export function QuestCompletionScreen({
         {nextLesson ? (
           <Link
             href={`/phases/${phaseSlug}/${nextLesson.slug}`}
-            className="flex w-full items-center justify-center rounded-lg bg-[#512BD4] px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#512BD4]"
+            className="btn-brand w-full"
           >
             Continue to {nextLesson.title}
           </Link>
         ) : (
           <Link
             href={`/phases/${phaseSlug}`}
-            className="flex w-full items-center justify-center rounded-lg bg-[#512BD4] px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            className="btn-brand w-full"
           >
             Phase complete — back to phase
           </Link>

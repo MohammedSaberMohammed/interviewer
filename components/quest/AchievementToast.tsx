@@ -55,7 +55,7 @@ export function AchievementToastProvider() {
           <button
             key={entry.id}
             onClick={() => router.push('/progress')}
-            className="pointer-events-auto flex items-center gap-3 rounded-xl border border-[#512BD4]/30 bg-white px-4 py-3 shadow-sm dark:border-[#512BD4]/40 dark:bg-slate-900 transition-all duration-220"
+            className="pointer-events-auto flex items-center gap-3 rounded-xl border border-[#6366F1]/30 bg-white px-4 py-3 shadow-sm dark:border-[#6366F1]/40 dark:bg-slate-900 transition-all duration-220"
             style={{
               opacity: entry.visible ? 1 : 0,
               transform: entry.visible ? 'translateY(0)' : 'translateY(8px)',
@@ -64,7 +64,7 @@ export function AchievementToastProvider() {
           >
             <span className="text-2xl" aria-hidden="true">{badge.icon}</span>
             <div className="text-left">
-              <p className="text-xs font-medium text-[#512BD4] dark:text-violet-400">Badge unlocked</p>
+              <p className="text-xs font-medium text-[#6366F1] dark:text-indigo-400">Badge unlocked</p>
               <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{badge.title}</p>
             </div>
           </button>

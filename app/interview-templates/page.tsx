@@ -61,16 +61,16 @@ export default function InterviewTemplatesPage() {
             {baskets.map((basket) => (
               <div
                 key={basket.id}
-                className="group relative flex items-center gap-4 rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-[#512BD4]/30 hover:bg-accent/20"
+                className="group relative flex items-center gap-4 rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-[#6366F1]/30 hover:bg-accent/20"
               >
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#512BD4]/10">
-                  <ShoppingBasket className="h-5 w-5 text-[#512BD4] dark:text-violet-300" />
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#6366F1]/10">
+                  <ShoppingBasket className="h-5 w-5 text-[#6366F1] dark:text-indigo-300" />
                 </div>
 
                 <div className="min-w-0 flex-1">
                   <Link
                     href={`/interview-templates/${basket.id}`}
-                    className="font-semibold text-[15px] hover:text-[#512BD4] transition-colors before:absolute before:inset-0 before:rounded-xl"
+                    className="font-semibold text-[15px] hover:text-[#6366F1] transition-colors before:absolute before:inset-0 before:rounded-xl"
                   >
                     {basket.name}
                   </Link>
@@ -92,7 +92,7 @@ export default function InterviewTemplatesPage() {
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
-                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-[#512BD4]/60 transition-colors" />
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-[#6366F1]/60 transition-colors" />
                 </div>
               </div>
             ))}

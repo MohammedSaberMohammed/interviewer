@@ -35,9 +35,14 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  /* .NET brand + semantic */
-  --color-dotnet: var(--dotnet);
-  --color-dotnet-foreground: var(--dotnet-foreground);
+  /* Brand */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+
+  /* Semantic status */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
 
   /* Callout semantic colors */
   --color-callout-info: var(--callout-info);
@@ -53,12 +58,18 @@
   --color-difficulty-advanced: var(--difficulty-advanced);
   --color-difficulty-expert: var(--difficulty-expert);
 
-  /* Radius */
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
+  /* Shadows */
+  --shadow-soft: 0 1px 2px oklch(0 0 0 / 0.05);
+  --shadow-card: 0 8px 24px oklch(0 0 0 / 0.06);
+  --shadow-hover: 0 12px 32px oklch(0 0 0 / 0.08);
+  --shadow-dark: 0 8px 24px oklch(0 0 0 / 0.40);
+
+  /* Radius — 12px base, 8px grid steps */
+  --radius-sm: calc(var(--radius) * 0.6);    /* ~7px  */
+  --radius-md: calc(var(--radius) * 0.85);   /* ~10px */
+  --radius-lg: var(--radius);                /* 12px  */
+  --radius-xl: calc(var(--radius) * 1.35);   /* ~16px */
+  --radius-2xl: calc(var(--radius) * 1.67);  /* ~20px */
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
 }
@@ -66,44 +77,50 @@
 /* ─── Light mode ────────────────────────────────────────────────────────── */
 :root {
   /* Base */
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.14 0 0);
+  --background: oklch(0.985 0.003 247);           /* #F8FAFC */
+  --foreground: oklch(0.129 0.02 264);            /* #0F172A */
 
   /* Card */
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.14 0 0);
+  --card: oklch(1 0 0);                           /* #FFFFFF */
+  --card-foreground: oklch(0.129 0.02 264);
 
   /* Popover */
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.14 0 0);
+  --popover-foreground: oklch(0.129 0.02 264);
 
-  /* Primary — .NET Purple #512BD4 */
-  --primary: oklch(0.42 0.19 277);
+  /* Primary — Indigo #6366F1 */
+  --primary: oklch(0.585 0.22 264);
   --primary-foreground: oklch(1 0 0);
 
-  /* Secondary */
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.2 0 0);
+  /* Secondary — Slate-100 #F1F5F9 */
+  --secondary: oklch(0.965 0.006 247);
+  --secondary-foreground: oklch(0.44 0.03 261);   /* #475569 */
 
   /* Muted */
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.55 0 0);
+  --muted: oklch(0.965 0.006 247);                /* #F1F5F9 */
+  --muted-foreground: oklch(0.67 0.02 261);       /* #94A3B8 */
 
-  /* Accent */
-  --accent: oklch(0.96 0.02 277);
-  --accent-foreground: oklch(0.42 0.19 277);
+  /* Accent — indigo light tint */
+  --accent: oklch(0.94 0.04 264);
+  --accent-foreground: oklch(0.585 0.22 264);
 
-  /* Destructive */
-  --destructive: oklch(0.58 0.24 27);
+  /* Destructive — Red #EF4444 */
+  --destructive: oklch(0.63 0.22 27);
 
   /* Border / Input / Ring */
-  --border: oklch(0.92 0 0);
-  --input: oklch(0.92 0 0);
-  --ring: oklch(0.42 0.19 277);
+  --border: oklch(0.93 0.01 247);                 /* #E2E8F0 */
+  --input: oklch(0.93 0.01 247);
+  --ring: oklch(0.585 0.22 264);
 
-  /* .NET Brand */
-  --dotnet: oklch(0.42 0.19 277);
-  --dotnet-foreground: oklch(1 0 0);
+  /* Brand — Indigo/Violet gradient identity */
+  --brand: oklch(0.585 0.22 264);                 /* #6366F1 */
+  --brand-foreground: oklch(1 0 0);
+  --gradient-brand: linear-gradient(135deg, #6366F1, #8B5CF6);
+
+  /* Semantic status */
+  --success: oklch(0.72 0.20 145);                /* #22C55E */
+  --warning: oklch(0.78 0.17 72);                 /* #F59E0B */
+  --danger: oklch(0.63 0.22 27);                  /* #EF4444 */
 
   /* Callout backgrounds */
   --callout-info: oklch(0.95 0.03 240);
@@ -111,73 +128,79 @@
   --callout-warning: oklch(0.97 0.06 80);
   --callout-critical: oklch(0.96 0.05 20);
   --callout-trap: oklch(0.95 0.04 290);
-  --callout-senior: oklch(0.95 0.04 260);
+  --callout-senior: oklch(0.95 0.04 264);
 
-  /* Difficulty */
-  --difficulty-foundation: oklch(0.52 0.15 150);
-  --difficulty-intermediate: oklch(0.47 0.16 240);
-  --difficulty-advanced: oklch(0.42 0.19 277);
-  --difficulty-expert: oklch(0.55 0.22 20);
+  /* Difficulty — Junior=green, Mid=blue, Senior=purple, Expert=red */
+  --difficulty-foundation: oklch(0.60 0.17 145);
+  --difficulty-intermediate: oklch(0.55 0.18 250);
+  --difficulty-advanced: oklch(0.55 0.22 290);
+  --difficulty-expert: oklch(0.58 0.22 27);
 
-  /* Radius */
-  --radius: 0.625rem;
+  /* Radius — 12px base */
+  --radius: 0.75rem;
 }
 
 /* ─── Dark mode ─────────────────────────────────────────────────────────── */
 .dark {
   /* Base */
-  --background: oklch(0.13 0.01 277);
-  --foreground: oklch(0.97 0 0);
+  --background: oklch(0.10 0.025 265);            /* #0B1220 */
+  --foreground: oklch(0.926 0.003 264);           /* #E5E7EB */
 
   /* Card */
-  --card: oklch(0.17 0.01 277);
-  --card-foreground: oklch(0.97 0 0);
+  --card: oklch(0.145 0.015 265);                 /* #111827 */
+  --card-foreground: oklch(0.926 0.003 264);
 
   /* Popover */
-  --popover: oklch(0.17 0.01 277);
-  --popover-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.145 0.015 265);
+  --popover-foreground: oklch(0.926 0.003 264);
 
-  /* Primary — lighter purple for dark mode */
-  --primary: oklch(0.68 0.18 277);
-  --primary-foreground: oklch(0.1 0 0);
+  /* Primary — lighter indigo #818CF8 */
+  --primary: oklch(0.71 0.18 264);
+  --primary-foreground: oklch(0.10 0.025 265);
 
   /* Secondary */
-  --secondary: oklch(0.22 0.01 277);
-  --secondary-foreground: oklch(0.97 0 0);
+  --secondary: oklch(0.21 0.01 265);              /* #1F2937 */
+  --secondary-foreground: oklch(0.926 0.003 264);
 
   /* Muted */
-  --muted: oklch(0.22 0.01 277);
-  --muted-foreground: oklch(0.64 0 0);
+  --muted: oklch(0.21 0.01 265);                  /* #1F2937 */
+  --muted-foreground: oklch(0.52 0.008 264);      /* #6B7280 */
 
-  /* Accent */
-  --accent: oklch(0.25 0.04 277);
-  --accent-foreground: oklch(0.8 0.1 277);
+  /* Accent — dark indigo tint */
+  --accent: oklch(0.25 0.04 264);
+  --accent-foreground: oklch(0.71 0.18 264);
 
   /* Destructive */
-  --destructive: oklch(0.70 0.19 22);
+  --destructive: oklch(0.63 0.22 27);             /* #EF4444 */
 
   /* Border / Input / Ring */
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.68 0.18 277);
+  --border: oklch(0.21 0.01 265);                 /* #1F2937 */
+  --input: oklch(0.25 0.01 265);
+  --ring: oklch(0.71 0.18 264);
 
-  /* .NET Brand */
-  --dotnet: oklch(0.68 0.18 277);
-  --dotnet-foreground: oklch(0.1 0 0);
+  /* Brand */
+  --brand: oklch(0.71 0.18 264);                  /* #818CF8 */
+  --brand-foreground: oklch(0.10 0.025 265);
+  --gradient-brand: linear-gradient(135deg, #6366F1, #8B5CF6);
 
-  /* Callout backgrounds — darker tints */
-  --callout-info: oklch(0.22 0.04 240);
-  --callout-tip: oklch(0.22 0.05 150);
-  --callout-warning: oklch(0.22 0.04 80);
-  --callout-critical: oklch(0.22 0.05 20);
-  --callout-trap: oklch(0.22 0.04 290);
-  --callout-senior: oklch(0.22 0.04 260);
+  /* Semantic status */
+  --success: oklch(0.72 0.20 145);
+  --warning: oklch(0.78 0.17 72);
+  --danger: oklch(0.63 0.22 27);
+
+  /* Callout backgrounds — deep tints */
+  --callout-info: oklch(0.18 0.04 240);
+  --callout-tip: oklch(0.18 0.05 150);
+  --callout-warning: oklch(0.18 0.04 80);
+  --callout-critical: oklch(0.18 0.05 20);
+  --callout-trap: oklch(0.18 0.04 290);
+  --callout-senior: oklch(0.18 0.04 264);
 
   /* Difficulty */
-  --difficulty-foundation: oklch(0.65 0.15 150);
-  --difficulty-intermediate: oklch(0.6 0.16 240);
-  --difficulty-advanced: oklch(0.68 0.18 277);
-  --difficulty-expert: oklch(0.65 0.2 20);
+  --difficulty-foundation: oklch(0.72 0.20 145);
+  --difficulty-intermediate: oklch(0.62 0.19 250);
+  --difficulty-advanced: oklch(0.62 0.24 290);
+  --difficulty-expert: oklch(0.63 0.22 27);
 }
 
 /* ─── Base layer ────────────────────────────────────────────────────────── */
@@ -236,6 +259,21 @@
 .code-block::-webkit-scrollbar-track  { background: transparent; }
 .code-block::-webkit-scrollbar-thumb  { background: oklch(0.5 0 0 / 18%); border-radius: 9999px; }
 .code-block::-webkit-scrollbar-thumb:hover { background: oklch(0.5 0 0 / 35%); }
+
+/* ─── Premium card hover ────────────────────────────────────────────────── */
+@layer components {
+  .card-interactive {
+    @apply rounded-xl border border-border bg-card transition-all duration-200;
+    @apply hover:border-primary/20 hover:shadow-[0_8px_24px_oklch(0_0_0/0.06)] hover:-translate-y-0.5;
+    @apply dark:hover:border-primary/30 dark:hover:shadow-[0_8px_24px_oklch(0_0_0/0.35)];
+  }
+
+  /* Gradient primary button (standalone, outside Button component) */
+  .btn-brand {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1];
+    background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  }
+}
 
 /* ─── Prose (MDX lesson content) ────────────────────────────────────────── */
 @layer components {

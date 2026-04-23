@@ -192,7 +192,7 @@ export function QuestLayout({
             <button
               type="button"
               onClick={advanceStep}
-              className="inline-flex items-center gap-2 rounded-lg bg-[#512BD4] px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#512BD4]"
+              className="btn-brand"
             >
               {currentStepIndex >= stepIds.length - 1 ? 'Complete quest' : 'Continue'}
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">

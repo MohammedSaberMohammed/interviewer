@@ -60,7 +60,7 @@ export function DailyQuestCard({ nextQuestHref, nextQuestTitle }: DailyQuestCard
       {nextQuestHref && !goalMet && (
         <Link
           href={nextQuestHref}
-          className="mt-4 flex items-center justify-center rounded-lg bg-[#512BD4] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#512BD4]"
+          className="btn-brand mt-4 w-full"
         >
           {nextQuestTitle ? `Start: ${nextQuestTitle}` : "Start today's quest"}
         </Link>

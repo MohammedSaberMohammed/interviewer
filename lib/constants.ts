@@ -1,7 +1,7 @@
 import type { Difficulty, PhaseLevel, XPLevel, BadgeDefinition } from '@/types'
 
-/* ─── .NET brand color ────────────────────────────────────────────────────── */
-export const DOTNET_PURPLE = '#512BD4'
+/* ─── Brand color ─────────────────────────────────────────────────────────── */
+export const BRAND_INDIGO = '#6366F1'
 
 /* ─── Difficulty config ───────────────────────────────────────────────────── */
 export const DIFFICULTY_CONFIG: Record<

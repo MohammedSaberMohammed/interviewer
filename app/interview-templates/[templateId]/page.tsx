@@ -141,7 +141,7 @@ export default function TemplateDetailPage() {
               <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
                   <div className="flex items-center gap-2 mb-0.5">
-                    <ShoppingBasket className="h-5 w-5 text-[#512BD4] dark:text-violet-300" />
+                    <ShoppingBasket className="h-5 w-5 text-[#6366F1] dark:text-indigo-300" />
                     <h1 className="text-2xl font-bold">{basket.name}</h1>
                   </div>
                   <p className="text-sm text-muted-foreground">
@@ -165,8 +165,8 @@ export default function TemplateDetailPage() {
                     className={cn(
                       'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
                       activeFilter === null
-                        ? 'border-[#512BD4] bg-[#512BD4] text-white'
-                        : 'border-border text-muted-foreground hover:border-[#512BD4]/40 hover:text-[#512BD4]',
+                        ? 'border-[#6366F1] bg-[#6366F1] text-white'
+                        : 'border-border text-muted-foreground hover:border-[#6366F1]/40 hover:text-[#6366F1]',
                     )}
                   >
                     All ({allItems.length})
@@ -243,8 +243,8 @@ export default function TemplateDetailPage() {
                       className={cn(
                         'group relative rounded-xl border bg-card transition-all duration-150',
                         dragIdx === idx && 'opacity-50 scale-[0.98]',
-                        overIdx === idx && dragIdx !== idx && 'border-[#512BD4]/50 ring-2 ring-[#512BD4]/20',
-                        dragIdx === null && 'border-border hover:border-[#512BD4]/20',
+                        overIdx === idx && dragIdx !== idx && 'border-[#6366F1]/50 ring-2 ring-[#6366F1]/20',
+                        dragIdx === null && 'border-border hover:border-[#6366F1]/20',
                       )}
                     >
                       {/* Card header */}
@@ -320,7 +320,7 @@ export default function TemplateDetailPage() {
                             href={`/phases/${q.phaseSlug}/${q.lessonSlug}`}
                             className="flex items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 my-2 hover:border-primary/30 hover:bg-accent transition-all group"
                           >
-                            <BookOpen className="h-4 w-4 shrink-0 text-[#512BD4] dark:text-violet-300 mt-0.5" aria-hidden="true" />
+                            <BookOpen className="h-4 w-4 shrink-0 text-[#6366F1] dark:text-indigo-300 mt-0.5" aria-hidden="true" />
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium group-hover:text-primary transition-colors">{q.lessonTitle}</p>
                               {q.summary && (
