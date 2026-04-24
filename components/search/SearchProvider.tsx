@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useState, useEffect } from 'react'
 import { SearchPalette } from './SearchPalette'
-import type { SearchEntry } from '@/types'
+import type { SearchEntry } from '@/types/search'
 
 interface SearchContextValue {
   openSearch: () => void

@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import { DIFFICULTY_CONFIG } from '@/lib/constants'
-import type { Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
 
 interface DifficultyBadgeProps {
   level: Difficulty

@@ -5,7 +5,7 @@ import { ShoppingBasket, Check } from 'lucide-react'
 import { useBasketStore } from '@/stores/basketStore'
 import { useBasketDialog } from './BasketContext'
 import { cn } from '@/lib/utils'
-import type { BasketQuestion } from '@/types'
+import type { BasketQuestion } from '@/types/basket'
 
 interface AddToBasketButtonProps {
   question: BasketQuestion

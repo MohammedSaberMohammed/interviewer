@@ -9,7 +9,7 @@ import { DifficultyBadge } from './DifficultyBadge'
 import { DocsLink } from './DocsLink'
 import { AddToBasketButton } from '@/components/basket/AddToBasketButton'
 import { useLessonContext } from '@/components/lesson/LessonContext'
-import type { Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
 
 interface CodeChallengeProps {
   id: string

@@ -5,7 +5,8 @@ import { getAllChallenges } from '@/lib/content'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
-import type { ExtractedChallenge, Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
+import type { ExtractedChallenge } from '@/types/challenge'
 
 export const metadata: Metadata = {
   title: 'Challenges',

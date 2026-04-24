@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
-import type { BasketQuestion } from '@/types'
+import type { BasketQuestion } from '@/types/basket'
 
 interface BasketDialogState {
   createOpen: boolean

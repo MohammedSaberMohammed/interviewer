@@ -9,7 +9,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { XP_LEVELS } from '@/lib/constants'
-import type { XPLevel } from '@/types'
+import type { XPLevel } from '@/types/progress'
 
 interface LevelUpEvent {
   from: XPLevel

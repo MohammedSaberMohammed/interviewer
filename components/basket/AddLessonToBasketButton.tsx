@@ -5,7 +5,8 @@ import { ShoppingBasket, Check } from 'lucide-react'
 import { useBasketStore } from '@/stores/basketStore'
 import { useBasketDialog } from './BasketContext'
 import { cn } from '@/lib/utils'
-import type { BasketQuestion, Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
+import type { BasketQuestion } from '@/types/basket'
 
 interface AddLessonToBasketButtonProps {
   lessonSlug: string

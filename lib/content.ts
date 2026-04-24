@@ -1,7 +1,11 @@
 import fs from 'fs'
 import path from 'path'
 import matter from 'gray-matter'
-import type { Phase, PhaseMeta, LessonMeta, Lesson, SearchEntry, ExtractedChallenge, Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
+import type { Phase, PhaseMeta } from '@/types/phase'
+import type { LessonMeta, Lesson } from '@/types/lesson'
+import type { SearchEntry } from '@/types/search'
+import type { ExtractedChallenge } from '@/types/challenge'
 
 const CONTENT_DIR = path.join(process.cwd(), 'content', 'phases')
 

@@ -1,4 +1,6 @@
-import type { Difficulty, PhaseLevel, XPLevel, BadgeDefinition } from '@/types'
+import type { Difficulty } from '@/types/content'
+import type { PhaseLevel } from '@/types/phase'
+import type { XPLevel, BadgeDefinition } from '@/types/progress'
 
 /* ─── .NET brand color ────────────────────────────────────────────────────── */
 export const DOTNET_PURPLE = '#512BD4'
@@ -114,6 +116,7 @@ export const CALLOUT_CONFIG = {
 export const NAV_ITEMS = [
   { title: 'Phases', href: '/phases', description: 'Browse all 13 learning phases' },
   { title: 'Challenges', href: '/challenges', description: 'Practice with code challenges' },
+  { title: 'Code Editor', href: '/code-editor', description: 'Write and run C# code' },
   { title: 'Cheatsheet', href: '/cheatsheet', description: 'Quick reference for interviews' },
   { title: 'Glossary', href: '/glossary', description: '.NET terms A-Z' },
 ] as const

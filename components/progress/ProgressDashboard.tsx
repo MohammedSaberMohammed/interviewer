@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { DailyQuestCard } from '@/components/quest/DailyQuestCard'
 import { BADGES, XP_LEVELS } from '@/lib/constants'
-import type { Phase } from '@/types'
+import type { Phase } from '@/types/phase'
 
 interface ProgressDashboardProps {
   phases: Phase[]

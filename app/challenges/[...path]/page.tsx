@@ -9,7 +9,7 @@ import { CodeChallenge } from '@/components/lesson/CodeChallenge'
 import { Quiz } from '@/components/lesson/Quiz'
 import { LessonContextProvider } from '@/components/lesson/LessonContext'
 import { NavPrevNext } from '@/components/layout/NavPrevNext'
-import type { Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
 
 interface Props {
   params: Promise<{ path: string[] }>

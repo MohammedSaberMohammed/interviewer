@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
-import type { Phase } from '@/types'
+import type { Phase } from '@/types/phase'
 
 interface RoadmapProps {
   phases: Phase[]

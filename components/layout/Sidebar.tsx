@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { CheckCircle2, Circle, Lock } from 'lucide-react'
 import { useProgressStore } from '@/stores/progressStore'
-import type { LessonMeta } from '@/types'
+import type { LessonMeta } from '@/types/lesson'
 
 interface SidebarProps {
   phaseSlug: string

@@ -7,7 +7,7 @@ import { Search, X } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
 import { cn } from '@/lib/utils'
-import type { SearchEntry } from '@/types'
+import type { SearchEntry } from '@/types/search'
 
 interface SearchPaletteProps {
   open: boolean

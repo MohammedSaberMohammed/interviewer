@@ -8,7 +8,8 @@ import {
   MAX_STREAK_FREEZES,
   FREEZE_EARN_INTERVAL,
 } from '@/lib/constants'
-import type { ChallengeAnswer, ProgressState, XPLevel, UserPreferences } from '@/types'
+import type { ChallengeAnswer } from '@/types/challenge'
+import type { ProgressState, XPLevel, UserPreferences } from '@/types/progress'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 

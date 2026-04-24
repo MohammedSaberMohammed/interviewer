@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
 import { cn } from '@/lib/utils'
-import type { LessonMeta } from '@/types'
+import type { LessonMeta } from '@/types/lesson'
 
 interface InterviewLesson extends LessonMeta {
   phaseSlug: string

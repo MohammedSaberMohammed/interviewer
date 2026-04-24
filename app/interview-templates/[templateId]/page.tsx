@@ -22,7 +22,8 @@ import { Button } from '@/components/ui/button'
 import { DifficultyBadge } from '@/components/lesson/DifficultyBadge'
 import { cn } from '@/lib/utils'
 import { DIFFICULTY_ORDER, DIFFICULTY_CONFIG } from '@/lib/constants'
-import type { BasketQuestion, Difficulty } from '@/types'
+import type { Difficulty } from '@/types/content'
+import type { BasketQuestion } from '@/types/basket'
 
 const DIFFICULTIES: Difficulty[] = ['foundation', 'intermediate', 'advanced', 'expert']
 

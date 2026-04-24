@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import { CALLOUT_CONFIG } from '@/lib/constants'
-import type { CalloutType } from '@/types'
+import type { CalloutType } from '@/types/content'
 
 interface CalloutProps {
   type: CalloutType

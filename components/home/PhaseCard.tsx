@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { PhaseProgressBar } from '@/components/progress/PhaseProgressBar'
 import { PHASE_LEVEL_CONFIG } from '@/lib/constants'
 import { cn } from '@/lib/utils'
-import type { Phase } from '@/types'
+import type { Phase } from '@/types/phase'
 
 interface PhaseCardProps {
   phase: Phase

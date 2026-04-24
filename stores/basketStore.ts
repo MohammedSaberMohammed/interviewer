@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import type { Basket, BasketQuestion } from '@/types'
+import type { Basket, BasketQuestion } from '@/types/basket'
 
 const BASKET_STORAGE_KEY = 'interviewer-app-baskets-v1'
 
