@@ -41,6 +41,9 @@ export function getProblemById(id: string): CodeProblem | undefined {
   return PROBLEMS.find((p) => p.id === id)
 }
 
+/* ─── Sentinel that separates user console output from the return value ───── */
+export const RETURN_SENTINEL = '##RETURN##'
+
 /* ─── Code wrapping ──────────────────────────────────────────────────────── */
 export function wrapUserCode(userCode: string, testInput: string): string {
   return `using System;
@@ -57,6 +60,7 @@ public class Program
     {
         var sol = new Solution();
         var result = sol.Sum(${testInput});
+        Console.WriteLine("${RETURN_SENTINEL}");
         Console.WriteLine(result);
     }
 }

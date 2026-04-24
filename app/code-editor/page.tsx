@@ -1,3 +1,4 @@
+import { Navbar } from '@/components/layout/Navbar'
 import { PROBLEMS } from '@/lib/problems'
 import { CodeEditorPage } from '@/components/code-editor/CodeEditorPage'
 
@@ -7,8 +8,12 @@ export const metadata = {
 }
 
 export default function CodeEditorRoute() {
-  // MVP: always show the first (and only) problem
   const problem = PROBLEMS[0]!
 
-  return <CodeEditorPage problem={problem} />
+  return (
+    <>
+      <Navbar />
+      <CodeEditorPage problem={problem} />
+    </>
+  )
 }

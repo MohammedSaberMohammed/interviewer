@@ -35,7 +35,10 @@ export function CodeEditorPage({ problem }: CodeEditorPageProps) {
         passed: false,
         expected: '',
         actual: '',
-        error: 'Network error — could not reach the server.',
+        stdout: '',
+        consoleOutput: '',
+        status: 'Network Error',
+        compileError: 'Could not reach the server.',
       })
     } finally {
       setIsRunning(false)
@@ -72,8 +75,8 @@ export function CodeEditorPage({ problem }: CodeEditorPageProps) {
           </div>
 
           {/* Bottom — output */}
-          <div className="h-44 shrink-0 border-t border-border bg-muted/30">
-            <OutputPanel result={result} isRunning={isRunning} />
+          <div className="h-56 shrink-0 border-t border-border bg-muted/30">
+            <OutputPanel problem={problem} result={result} isRunning={isRunning} />
           </div>
         </div>
       </div>
