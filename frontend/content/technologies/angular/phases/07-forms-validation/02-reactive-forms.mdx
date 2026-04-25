@@ -1,0 +1,253 @@
+---
+title: "Reactive Forms"
+slug: "reactive-forms"
+order: 2
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["Angular", "reactive forms", "FormControl", "FormGroup", "FormBuilder", "typed forms"]
+summary: "Reactive forms define form structure in TypeScript with FormControl and FormGroup. Angular 14+ typed forms add compile-time safety to form values — know both the old and new APIs."
+docsLinks:
+  - label: "Reactive Forms"
+    url: "https://angular.dev/guide/forms/reactive-forms"
+  - label: "Typed Forms"
+    url: "https://angular.dev/guide/forms/typed-forms"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Reactive Forms Philosophy
+
+Reactive forms keep form control definitions in the component class — no directives needed. The form model is explicit TypeScript, testable in isolation, and integrates naturally with RxJS through `valueChanges` and `statusChanges` Observables.
+
+## Basic Reactive Form
+
+```typescript
+import { ReactiveFormsModule, FormControl, FormGroup, Validators } from '@angular/forms';
+
+@Component({
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  template: `
+    <form [formGroup]="loginForm" (ngSubmit)="onSubmit()">
+      <input formControlName="email" type="email" placeholder="Email">
+      @if (email.invalid && email.touched) {
+        <div class="error">
+          @if (email.errors?.['required']) { Email is required }
+          @if (email.errors?.['email']) { Invalid email }
+        </div>
+      }
+
+      <input formControlName="password" type="password" placeholder="Password">
+
+      <button type="submit" [disabled]="loginForm.invalid">Login</button>
+    </form>
+  `
+})
+class LoginComponent {
+  loginForm = new FormGroup({
+    email: new FormControl('', [Validators.required, Validators.email]),
+    password: new FormControl('', [Validators.required, Validators.minLength(8)]),
+  });
+
+  // Convenient getter — avoids loginForm.controls.email everywhere
+  get email() { return this.loginForm.controls.email; }
+
+  onSubmit() {
+    if (this.loginForm.valid) {
+      const { email, password } = this.loginForm.value;
+      // email and password are typed (Angular 14+ typed forms)
+    }
+  }
+}
+```
+
+## Typed Forms (Angular 14+)
+
+Before Angular 14, `form.value` was `any`. Now TypeScript fully types form values:
+
+```typescript
+// TypeScript knows the exact shape of the form value
+const form = new FormGroup({
+  name: new FormControl<string>('', { nonNullable: true }),
+  age: new FormControl<number | null>(null),
+  preferences: new FormGroup({
+    theme: new FormControl<'light' | 'dark'>('light', { nonNullable: true }),
+    notifications: new FormControl(true, { nonNullable: true }),
+  }),
+});
+
+// form.value is fully typed:
+// {
+//   name: string,
+//   age: number | null | undefined,
+//   preferences: { theme: 'light' | 'dark'; notifications: boolean } | undefined
+// }
+
+// TypeScript catches mistakes:
+form.controls.name.setValue(123); // Error! Expected string
+form.controls.age.setValue('not a number'); // Error! Expected number | null
+```
+
+## `nonNullable` — No More Null Juggling
+
+By default, `FormControl.value` includes `null` (when the control is reset). Use `nonNullable: true` or `FormControl<T>` to exclude null:
+
+```typescript
+// Without nonNullable — value can be null when reset
+const nameControl = new FormControl('Alice');
+// nameControl.value: string | null
+
+// With nonNullable — reset() goes back to the initial value, not null
+const nameControl = new FormControl('Alice', { nonNullable: true });
+// nameControl.value: string (never null)
+nameControl.reset(); // Resets to 'Alice', not null
+```
+
+## `FormBuilder` — Cleaner Syntax
+
+`FormBuilder` is a helper service that reduces `new FormControl()` boilerplate:
+
+```typescript
+@Component({ selector: 'app-registration' })
+class RegistrationComponent {
+  private fb = inject(FormBuilder);
+
+  // FormBuilder.group() — the nonNullable option applies to all controls
+  registrationForm = this.fb.nonNullable.group({
+    firstName: ['', Validators.required],
+    lastName: ['', Validators.required],
+    email: ['', [Validators.required, Validators.email]],
+    password: ['', [Validators.required, Validators.minLength(8)]],
+    address: this.fb.nonNullable.group({
+      street: [''],
+      city: [''],
+      country: ['US'],
+    }),
+    agreeToTerms: [false, Validators.requiredTrue],
+  });
+}
+```
+
+## Watching Form Changes with `valueChanges`
+
+```typescript
+@Component({ selector: 'app-search' })
+class SearchComponent implements OnInit {
+  private destroyRef = inject(DestroyRef);
+
+  searchControl = new FormControl('', { nonNullable: true });
+
+  ngOnInit() {
+    // Every reactive form control has valueChanges Observable
+    this.searchControl.valueChanges.pipe(
+      debounceTime(300),
+      distinctUntilChanged(),
+      switchMap(query => this.searchService.search(query)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe(results => this.results = results);
+
+    // Also available on FormGroup
+    this.form.valueChanges.subscribe(formValue => {
+      this.autosave(formValue);
+    });
+
+    // Status changes
+    this.form.statusChanges.subscribe(status => {
+      // 'VALID' | 'INVALID' | 'PENDING' | 'DISABLED'
+      console.log('Form status:', status);
+    });
+  }
+}
+```
+
+<Callout type="tip">
+`valueChanges` only emits when the user types or the code calls `setValue()`/`patchValue()`. It does NOT emit on `reset()` by default. Pass `{ emitEvent: false }` to `setValue()`/`patchValue()` to prevent triggering `valueChanges` for programmatic updates.
+</Callout>
+
+## `setValue` vs `patchValue`
+
+```typescript
+const form = new FormGroup({
+  name: new FormControl(''),
+  email: new FormControl(''),
+  role: new FormControl('user'),
+});
+
+// setValue — must provide ALL controls, throws if any are missing
+form.setValue({ name: 'Alice', email: 'alice@example.com', role: 'admin' }); // ✅
+form.setValue({ name: 'Alice' }); // ❌ Error: Must provide values for all controls
+
+// patchValue — partial updates, missing controls are left unchanged
+form.patchValue({ name: 'Alice' }); // ✅ email and role unchanged
+form.patchValue({ role: 'admin' }); // ✅ Only role changes
+```
+
+## Programmatic Form Control
+
+```typescript
+// Disable/enable controls
+form.controls.email.disable();
+form.controls.email.enable();
+form.disable(); // Disable entire form
+
+// Reset
+form.reset(); // Reset to initial values (empty strings if nonNullable)
+form.reset({ email: 'default@example.com' }); // Reset to specific values
+
+// Mark states
+form.controls.email.markAsTouched(); // Trigger validation display
+form.markAllAsTouched(); // Useful before submit to show all errors
+form.controls.email.markAsPristine();
+```
+
+<CodeChallenge
+  id="reactive-forms-typed"
+  difficulty="intermediate"
+  description="With Angular 14+ typed forms, you define: new FormControl<string | null>(null). What is the TypeScript type of control.value?"
+  options={[
+    "string — FormControl always returns string",
+    "string | null — the explicit generic type",
+    "any — typed forms aren't fully implemented yet",
+    "string | null | undefined — FormControl adds undefined when reset"
+  ]}
+  correctAnswer={1}
+  explanation="The generic type parameter FormControl<T> determines the value type. FormControl<string | null> means value is string | null. Without nonNullable: true, reset() returns null. With nonNullable: true and FormControl<string>, value is always string (never null). The TypeScript inference follows exactly what you declare — this is the power of typed forms."
+/>
+
+## Senior Insight: Form Extraction Pattern
+
+For complex forms, extract form creation to a factory function or class to keep components clean:
+
+```typescript
+// user-form.ts
+export function createUserForm(fb: FormBuilder) {
+  return fb.nonNullable.group({
+    personalInfo: fb.nonNullable.group({
+      firstName: ['', [Validators.required, Validators.maxLength(50)]],
+      lastName: ['', Validators.required],
+      dateOfBirth: [null as Date | null],
+    }),
+    contactInfo: fb.nonNullable.group({
+      email: ['', [Validators.required, Validators.email]],
+      phone: ['', Validators.pattern(/^\+?[\d\s-]+$/)],
+    }),
+    preferences: fb.nonNullable.group({
+      language: ['en'],
+      theme: ['light' as 'light' | 'dark'],
+    }),
+  });
+}
+
+export type UserForm = ReturnType<typeof createUserForm>;
+export type UserFormValue = UserForm['value'];
+
+// Component is clean
+@Component({ selector: 'app-user-form' })
+class UserFormComponent {
+  private fb = inject(FormBuilder);
+  form = createUserForm(this.fb);
+}
+```
+
+This factory is independently testable and shareable between components.

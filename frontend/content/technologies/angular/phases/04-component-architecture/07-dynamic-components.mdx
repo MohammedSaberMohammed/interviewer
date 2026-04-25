@@ -1,0 +1,248 @@
+---
+title: "Dynamic Components"
+slug: "dynamic-components"
+order: 7
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["Angular", "dynamic components", "ViewContainerRef", "createComponent", "portals"]
+summary: "Dynamic components let you create and attach Angular components programmatically at runtime — essential for modals, toasts, dynamic forms, and plugin systems."
+docsLinks:
+  - label: "Dynamic Component Loading"
+    url: "https://angular.dev/guide/components/programmatic-rendering"
+  - label: "ViewContainerRef"
+    url: "https://angular.dev/api/core/ViewContainerRef"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## When You Need Dynamic Components
+
+Static template composition covers most use cases, but some scenarios require creating components at runtime:
+- **Toast/notification system**: Create toast components dynamically when events occur
+- **Modal/dialog service**: Inject any component into a modal container
+- **Dynamic form builders**: Generate form controls based on schema configuration
+- **Plugin architectures**: Load and render third-party component plugins
+
+## `ViewContainerRef` — The Portal
+
+A `ViewContainerRef` represents a position in the DOM where you can dynamically insert views:
+
+```typescript
+import { ViewContainerRef, ComponentRef } from '@angular/core';
+
+@Component({
+  selector: 'app-dynamic-host',
+  standalone: true,
+  template: `
+    <!-- ViewContainerRef points to the position of this element -->
+    <div #dynamicContainer></div>
+  `
+})
+class DynamicHostComponent {
+  @ViewChild('dynamicContainer', { read: ViewContainerRef })
+  container!: ViewContainerRef;
+
+  createToast(message: string): void {
+    // Create the component dynamically
+    const componentRef: ComponentRef<ToastComponent> =
+      this.container.createComponent(ToastComponent);
+
+    // Set inputs programmatically
+    componentRef.instance.message = message;
+    componentRef.instance.type = 'success';
+
+    // Or use setInput() for signal-based inputs
+    componentRef.setInput('message', message);
+
+    // Listen for outputs
+    componentRef.instance.dismissed.subscribe(() => {
+      componentRef.destroy(); // Remove from DOM and clean up
+    });
+
+    // Auto-remove after 3 seconds
+    setTimeout(() => componentRef.destroy(), 3000);
+  }
+}
+```
+
+## A Real Toast Notification Service
+
+The most practical use of dynamic components is a notification service:
+
+```typescript
+// toast.component.ts
+@Component({
+  selector: 'app-toast',
+  standalone: true,
+  template: `
+    <div [class]="'toast toast-' + type()">
+      <span>{{ message() }}</span>
+      <button (click)="dismiss()">✕</button>
+    </div>
+  `,
+  animations: [fadeInOut]
+})
+class ToastComponent {
+  message = input.required<string>();
+  type = input<'success' | 'error' | 'info'>('info');
+  dismissed = output<void>();
+
+  dismiss() { this.dismissed.emit(); }
+}
+
+// toast.service.ts
+@Injectable({ providedIn: 'root' })
+class ToastService {
+  private viewContainerRef?: ViewContainerRef;
+
+  // Called once from AppComponent to register the container
+  setViewContainerRef(vcr: ViewContainerRef) {
+    this.viewContainerRef = vcr;
+  }
+
+  show(message: string, type: 'success' | 'error' | 'info' = 'info') {
+    if (!this.viewContainerRef) {
+      console.warn('ToastService: No ViewContainerRef registered');
+      return;
+    }
+
+    const ref = this.viewContainerRef.createComponent(ToastComponent);
+    ref.setInput('message', message);
+    ref.setInput('type', type);
+
+    const sub = ref.instance.dismissed.subscribe(() => {
+      sub.unsubscribe();
+      ref.destroy();
+    });
+
+    setTimeout(() => ref.destroy(), 5000);
+  }
+
+  success(message: string) { this.show(message, 'success'); }
+  error(message: string) { this.show(message, 'error'); }
+}
+
+// app.component.ts
+@Component({
+  selector: 'app-root',
+  template: `<router-outlet /><ng-container #toastContainer />`
+})
+class AppComponent implements AfterViewInit {
+  @ViewChild('toastContainer', { read: ViewContainerRef }) vcr!: ViewContainerRef;
+  private toastService = inject(ToastService);
+
+  ngAfterViewInit() {
+    this.toastService.setViewContainerRef(this.vcr);
+  }
+}
+```
+
+## Passing Data to Dynamic Components
+
+```typescript
+// Using setInput() — the modern approach (works with signal inputs)
+const ref = vcr.createComponent(ProductCardComponent);
+ref.setInput('product', this.selectedProduct);
+ref.setInput('featured', true);
+
+// Using instance — the legacy approach (works with @Input decorator)
+ref.instance.product = this.selectedProduct;
+ref.instance.featured = true;
+ref.changeDetectorRef.detectChanges(); // Must manually trigger CD with decorator inputs
+```
+
+<Callout type="tip">
+Use `setInput()` for dynamically created components — it properly triggers Angular's input binding pipeline and works with both signal inputs and decorator inputs. Direct `ref.instance.property = value` with `@Input()` decorator requires calling `ref.changeDetectorRef.detectChanges()` or `markForCheck()` manually.
+</Callout>
+
+## Dynamic Components with Lazy Loading
+
+Combine dynamic components with dynamic imports for code splitting:
+
+```typescript
+async function loadDialog(type: 'user' | 'product' | 'order') {
+  // Code is only downloaded when needed
+  const componentMap = {
+    user: () => import('./user-dialog/user-dialog.component'),
+    product: () => import('./product-dialog/product-dialog.component'),
+    order: () => import('./order-dialog/order-dialog.component'),
+  };
+
+  const module = await componentMap[type]();
+  const componentClass = Object.values(module)[0] as Type<any>;
+  return vcr.createComponent(componentClass);
+}
+```
+
+## `ngTemplateOutlet` — Lighter Alternative
+
+For simpler cases where you want to project templates (not components) dynamically:
+
+```typescript
+@Component({
+  selector: 'app-list',
+  template: `
+    @for (item of items; track item.id) {
+      <ng-container
+        [ngTemplateOutlet]="itemTemplate"
+        [ngTemplateOutletContext]="{ $implicit: item, index: $index }">
+      </ng-container>
+    }
+  `
+})
+class ListComponent<T> {
+  @Input() items: T[] = [];
+  @ContentChild('itemTemplate') itemTemplate!: TemplateRef<{ $implicit: T; index: number }>;
+}
+
+// Usage — consumer provides the template
+<app-list [items]="products">
+  <ng-template #itemTemplate let-product let-i="index">
+    <div>{{ i }}. {{ product.name }}</div>
+  </ng-template>
+</app-list>
+```
+
+<CodeChallenge
+  id="dynamic-components-viewcontainerref"
+  difficulty="advanced"
+  description="You create a dynamic component with vcr.createComponent(MyComponent). The component has a signal-based input defined with input.required<string>('). How do you set this input programmatically?"
+  options={[
+    "componentRef.instance.myInput.set('value') — signals can be set from outside",
+    "componentRef.setInput('myInput', 'value') — the setInput() method handles signal inputs",
+    "componentRef.instance.myInput = signal('value') — replace the signal",
+    "You cannot set signal-based inputs on dynamically created components"
+  ]}
+  correctAnswer={1}
+  explanation="componentRef.setInput(name, value) is the correct way to set inputs on dynamically created components, and it works for both @Input() decorator and signal-based input() inputs. You cannot call .set() on a signal input from outside the component — signal inputs are read-only from the outside (that's enforced by TypeScript). Direct instance property assignment works only for @Input() decorator but requires manual change detection."
+/>
+
+## Senior Insight: Angular CDK Portal
+
+For production-grade overlay systems, the Angular CDK Portal module provides a higher-level API:
+
+```typescript
+import { Portal, ComponentPortal, PortalOutlet, DomPortalOutlet } from '@angular/cdk/portal';
+
+// Create a portal for a component
+const portal = new ComponentPortal(DialogComponent);
+
+// Create an outlet in the DOM (e.g., document.body)
+const outlet = new DomPortalOutlet(
+  document.querySelector('#dialog-container')!,
+  this.componentFactoryResolver,
+  this.appRef,
+  this.injector
+);
+
+// Attach — teleports the component to the outlet
+const ref = outlet.attach(portal);
+ref.instance.data = { title: 'Hello' };
+
+// Detach and clean up
+outlet.detach();
+outlet.dispose();
+```
+
+The CDK Portal abstracts the low-level ViewContainerRef API and handles edge cases like focus trapping, z-index stacking, and cleanup. Angular Material's overlay system is built on CDK Portals.

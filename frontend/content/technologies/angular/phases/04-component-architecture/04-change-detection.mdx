@@ -1,0 +1,199 @@
+---
+title: "Change Detection"
+slug: "change-detection"
+order: 4
+difficulty: "advanced"
+readingTime: 13
+status: "published"
+tags: ["Angular", "change detection", "Zone.js", "NgZone", "ChangeDetectorRef"]
+summary: "Angular's change detection system determines when to update the DOM. Understanding Zone.js, the CD cycle, and how to optimize it separates senior Angular developers from the rest."
+docsLinks:
+  - label: "Angular Change Detection"
+    url: "https://angular.dev/guide/components/lifecycle#afterrender-and-aftereveryrender"
+  - label: "Angular Signals"
+    url: "https://angular.dev/guide/signals"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Is Change Detection?
+
+Change detection (CD) is Angular's process of checking if the application state has changed and whether the DOM needs to be updated. Every time something in your app might change (user event, HTTP response, timer), Angular runs a CD cycle that walks the component tree and updates bindings.
+
+## Zone.js — The Trigger Mechanism
+
+Angular uses **Zone.js** to know when to run change detection. Zone.js monkey-patches browser async APIs (setTimeout, setInterval, XHR, Promise, DOM events) to intercept them and notify Angular:
+
+```
+User clicks button
+    → Zone.js intercepts the click event
+    → Runs your (click) handler
+    → Notifies Angular: "something might have changed"
+    → Angular runs change detection from the root
+    → DOM is updated
+```
+
+```typescript
+// Zone.js intercepts these (and many more):
+setTimeout(() => { this.data = 'updated'; }, 1000); // Triggers CD after 1 second
+this.http.get('/api').subscribe(data => this.data = data); // Triggers CD on response
+button.addEventListener('click', () => { this.count++; }); // Triggers CD on click
+
+// These do NOT trigger Zone.js (and thus don't trigger CD by default):
+// - Vanilla JS WebSocket messages (partially patched)
+// - Third-party library callbacks that use their own async mechanisms
+// - requestAnimationFrame (patched but you control timing)
+```
+
+## How the CD Cycle Works
+
+When triggered, Angular performs a **depth-first traversal** of the component tree:
+
+```
+AppComponent (root) → check bindings
+  ├── NavbarComponent → check bindings
+  ├── MainContentComponent → check bindings
+  │     ├── ProductListComponent → check bindings
+  │     │     ├── ProductCardComponent → check bindings (x10)
+  │     └── SidebarComponent → check bindings
+  └── FooterComponent → check bindings
+```
+
+For each component, Angular:
+1. Runs `ngDoCheck()` (if implemented)
+2. Checks `@Input()` bindings for changes
+3. Re-evaluates template expressions
+4. Updates DOM if expressions changed
+5. Recurses into child components
+
+## `ChangeDetectorRef` — Manual Control
+
+```typescript
+import { ChangeDetectorRef } from '@angular/core';
+
+@Component({ selector: 'app-manual-cd' })
+class ManualCDComponent {
+  data = '';
+  private cdr = inject(ChangeDetectorRef);
+
+  // markForCheck(): Mark this component (and ancestors) as needing CD
+  // Used with OnPush when data changes outside Angular's detection
+  updateFromExternalSource(value: string) {
+    this.data = value; // Changed, but CD won't see it without marking
+    this.cdr.markForCheck(); // Tell Angular: "please check this component"
+  }
+
+  // detectChanges(): Immediately run CD for this component and its subtree
+  // Use sparingly — usually markForCheck() is preferred
+  forceUpdate() {
+    this.data = 'forced update';
+    this.cdr.detectChanges();
+  }
+
+  // detach(): Remove component from CD tree (performance optimization)
+  // The component won't be checked until reattach() or detectChanges()
+  ngOnInit() {
+    if (this.isStaticContent) {
+      this.cdr.detach(); // Never changes — skip it in CD
+    }
+  }
+}
+```
+
+## Running Outside Angular Zone
+
+Some operations (frequent animations, non-UI WebSocket streams) shouldn't trigger CD every time:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class AnimationService {
+  private ngZone = inject(NgZone);
+
+  startAnimation(canvas: HTMLCanvasElement) {
+    // Run outside Zone.js — no CD triggered on every frame
+    this.ngZone.runOutsideAngular(() => {
+      const animate = () => {
+        this.drawFrame(canvas);
+        requestAnimationFrame(animate);
+      };
+      requestAnimationFrame(animate);
+    });
+  }
+
+  updateUIFromAnimation(data: ChartData) {
+    // Re-enter Angular zone to trigger CD for a UI update
+    this.ngZone.run(() => {
+      this.chartData = data; // This triggers CD
+    });
+  }
+}
+```
+
+<Callout type="tip">
+Running heavy operations with `ngZone.runOutsideAngular()` and only calling `ngZone.run()` when the UI actually needs to update can dramatically reduce CD cycles. This is the pattern used by high-performance charting libraries and game loops in Angular.
+</Callout>
+
+## The CD Performance Problem
+
+Every CD cycle Angular must check **every component in the tree** (by default). In a large app with hundreds of components, this becomes expensive — especially when triggered 60+ times per second during animations.
+
+```
+A simple button click can trigger CD for:
+- AppComponent (always checked)
+- NavbarComponent (always checked)
+- SidebarComponent (always checked)
+- All 200 ProductCardComponents (always checked)
+- FooterComponent (always checked)
+...even though only one component's data changed!
+```
+
+The solution is **OnPush change detection strategy**.
+
+<CodeChallenge
+  id="change-detection-zone"
+  difficulty="advanced"
+  description="You're using a third-party WebSocket library that doesn't use Angular zone. When data arrives via WebSocket, the component UI doesn't update. What's the fix?"
+  options={[
+    "Inject HttpClient instead — it's Zone.js aware",
+    "Call ngZone.run(() => { this.data = wsData }) to trigger change detection",
+    "Use ChangeDetectorRef.detach() before connecting to WebSocket",
+    "Zone.js automatically patches all WebSocket libraries"
+  ]}
+  correctAnswer={1}
+  explanation="Third-party libraries that create their own WebSocket connections or use non-standard async patterns aren't patched by Zone.js. Angular never learns that data changed, so CD isn't triggered. The fix: inject NgZone and wrap the data assignment in ngZone.run(() => { ... }). This tells Zone.js 'we're back in the Angular zone, please trigger CD'. For RxJS-based WebSocket (webSocket from rxjs/webSocket), Zone.js handles it automatically."
+/>
+
+## Signals: Zone-less Change Detection
+
+Angular Signals (Angular 16+) provide a way to bypass Zone.js entirely:
+
+```typescript
+@Component({
+  template: `<p>Count: {{ count() }}</p>`
+})
+class CounterComponent {
+  count = signal(0); // WritableSignal<number>
+
+  increment() {
+    this.count.update(c => c + 1);
+    // Angular knows count changed — no Zone.js needed
+    // Only this component's binding is updated (fine-grained)
+  }
+}
+```
+
+Signals enable **fine-grained reactivity** — Angular knows exactly which template expressions depend on which signals, so only those specific bindings update when signals change.
+
+## Senior Insight: The CD Optimization Hierarchy
+
+From least to most impactful:
+
+1. **Remove expensive template expressions** → replace method calls with `computed()` or pipes
+2. **Add `trackBy`/`track`** to `*ngFor`/`@for` → avoid recreating DOM nodes
+3. **Use `OnPush`** → skip components when inputs haven't changed
+4. **Use `async` pipe** → auto-unsubscribe and marks-for-check efficiently
+5. **Use Signals** → fine-grained updates, works with zoneless Angular
+6. **Use `ngZone.runOutsideAngular()`** → prevent animation loops from triggering CD
+7. **Use `@defer`** → lazy-load component subtrees entirely
+
+Most applications benefit enormously from steps 3-5 alone.

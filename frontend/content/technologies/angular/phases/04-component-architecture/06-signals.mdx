@@ -1,0 +1,249 @@
+---
+title: "Signals"
+slug: "signals"
+order: 6
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["Angular", "signals", "computed", "effect", "reactive", "WritableSignal"]
+summary: "Angular Signals (Angular 16+) are the reactive primitive that makes fine-grained change detection possible. They're simpler than RxJS for local state and increasingly preferred in Angular 17+ code."
+docsLinks:
+  - label: "Angular Signals"
+    url: "https://angular.dev/guide/signals"
+  - label: "Signal Inputs"
+    url: "https://angular.dev/guide/components/inputs#signal-inputs"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## What Are Signals?
+
+A signal is a reactive value container. When its value changes, Angular knows exactly which templates and computed values depend on it — enabling fine-grained, targeted UI updates without Zone.js polling.
+
+```typescript
+import { signal, computed, effect } from '@angular/core';
+
+// Create a writable signal
+const count = signal(0); // WritableSignal<number>
+
+// Read the value (signals are functions — call them to read)
+console.log(count()); // 0
+
+// Write the value
+count.set(5);          // Set to specific value
+count.update(c => c + 1); // Update based on current value
+
+// Read again
+console.log(count()); // 6
+```
+
+## Signals in Components
+
+```typescript
+@Component({
+  selector: 'app-shopping-cart',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <h2>Cart ({{ itemCount() }} items)</h2>
+    <p>Total: {{ total() | currency }}</p>
+
+    @for (item of items(); track item.id) {
+      <div>
+        {{ item.name }} × {{ item.quantity }}
+        <button (click)="removeItem(item.id)">Remove</button>
+      </div>
+    }
+
+    @if (isEmpty()) {
+      <p>Your cart is empty</p>
+    }
+
+    <button (click)="clearCart()">Clear Cart</button>
+  `
+})
+class ShoppingCartComponent {
+  // State as signals
+  items = signal<CartItem[]>([]);
+
+  // Derived state via computed() — automatically updates when items() changes
+  itemCount = computed(() => this.items().reduce((sum, item) => sum + item.quantity, 0));
+  total = computed(() => this.items().reduce((sum, item) => sum + item.price * item.quantity, 0));
+  isEmpty = computed(() => this.items().length === 0);
+
+  removeItem(id: string) {
+    this.items.update(items => items.filter(item => item.id !== id));
+  }
+
+  clearCart() {
+    this.items.set([]);
+  }
+}
+```
+
+## `computed()` — Derived State
+
+`computed()` creates a **read-only** signal derived from other signals. It's lazy and memoized — it only recomputes when its dependencies change:
+
+```typescript
+const firstName = signal('John');
+const lastName = signal('Doe');
+
+// Computed: runs only when firstName or lastName changes
+const fullName = computed(() => `${firstName()} ${lastName()}`);
+
+console.log(fullName()); // "John Doe"
+firstName.set('Jane');
+console.log(fullName()); // "Jane Doe" — recomputed
+console.log(fullName()); // "Jane Doe" — cached, no recomputation
+
+// Computed signals are read-only
+fullName.set('Test'); // TypeScript error! Signal<string> has no set()
+```
+
+Computed signals track their dependencies automatically — any signal read inside the `computed()` function becomes a dependency.
+
+## `effect()` — Reactive Side Effects
+
+`effect()` runs a side effect whenever its signal dependencies change:
+
+```typescript
+@Component({ selector: 'app-theme' })
+class ThemeComponent {
+  theme = signal<'light' | 'dark'>('light');
+
+  constructor() {
+    // effect() automatically re-runs when theme() changes
+    effect(() => {
+      // Angular tracks: this effect reads theme()
+      document.body.setAttribute('data-theme', this.theme());
+      localStorage.setItem('theme', this.theme());
+    });
+  }
+}
+```
+
+<Callout type="warning">
+`effect()` must be called in an injection context (constructor or field initializer). Effects are automatically cleaned up when the component/service is destroyed. Avoid creating effects in lifecycle hooks like `ngOnInit()` — they won't be automatically cleaned up and can cause memory leaks.
+</Callout>
+
+## `effect()` with Cleanup
+
+```typescript
+effect((onCleanup) => {
+  const subscription = this.ws.connect(this.userId()).subscribe(msg => {
+    this.messages.update(msgs => [...msgs, msg]);
+  });
+
+  // Cleanup runs before the effect re-runs or when the component destroys
+  onCleanup(() => subscription.unsubscribe());
+});
+```
+
+## Signal vs RxJS: When to Use Each
+
+```typescript
+// Signals — simpler, synchronous, component-local state
+count = signal(0);
+doubled = computed(() => this.count() * 2);
+effect(() => console.log('Count:', this.count()));
+
+// RxJS — async, powerful operators, HTTP/WebSocket/complex transformations
+users$ = this.http.get<User[]>('/api/users').pipe(
+  retry(3),
+  catchError(err => throwError(() => err)),
+  shareReplay(1),
+);
+```
+
+<ComparisonTable
+  headers={["", "Signals", "RxJS Observables"]}
+  rows={[
+    ["Complexity", "Simple — get/set/computed", "Powerful but complex operator chains"],
+    ["Synchronous", "Always synchronous", "Can be sync or async"],
+    ["Best for", "UI state, derived state", "HTTP, WebSocket, complex async flows"],
+    ["Template usage", "Call like a function: count()", "Requires async pipe"],
+    ["Angular 17+", "Preferred for local state", "Still preferred for async data"],
+    ["Memory management", "Auto-cleanup", "Must unsubscribe (or use async pipe)"]
+  ]}
+/>
+
+## Interop: Signals and RxJS Together
+
+```typescript
+import { toSignal, toObservable } from '@angular/core/rxjs-interop';
+
+@Component({ selector: 'app-user-list' })
+class UserListComponent {
+  // Convert Observable to Signal (auto-subscribes, auto-unsubscribes)
+  users = toSignal(this.userService.getUsers(), { initialValue: [] });
+
+  // The signal is readonly — changes to users$ flow through automatically
+  userCount = computed(() => this.users().length);
+
+  // Convert Signal to Observable (for use in RxJS pipelines)
+  private filterText = signal('');
+  filterText$ = toObservable(this.filterText);
+
+  filteredUsers$ = this.filterText$.pipe(
+    debounceTime(300),
+    switchMap(query => this.userService.search(query))
+  );
+}
+```
+
+## `toSignal` — The Bridge
+
+`toSignal` is the most commonly used interop function:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class UserService {
+  private http = inject(HttpClient);
+  getUsers() { return this.http.get<User[]>('/api/users'); }
+}
+
+@Component({
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @for (user of users(); track user.id) {
+      <app-user-card [user]="user" />
+    }
+  `
+})
+class UserListComponent {
+  private userService = inject(UserService);
+
+  // One line replaces: Observable, async pipe, subscription management
+  users = toSignal(this.userService.getUsers(), {
+    initialValue: [] as User[],  // Type safety: provide initial value
+    // OR: requireSync: true — for observables that emit synchronously
+    // OR: injector: this.injector — for use outside injection context
+  });
+}
+```
+
+<CodeChallenge
+  id="signals-computed"
+  difficulty="intermediate"
+  description="Given: count = signal(0); doubled = computed(() => count() * 2). You call count.set(5). How many times does the doubled computation run?"
+  options={[
+    "Immediately and on every subsequent read",
+    "Once when count changes, then cached until count changes again",
+    "Only when doubled() is called — it's lazy",
+    "It runs asynchronously in the next microtask"
+  ]}
+  correctAnswer={1}
+  explanation="computed() is both lazy and memoized. It's lazy: it only runs when first read. It's memoized: after running, it caches the result until a dependency (count) changes. When count.set(5), Angular marks doubled as stale but doesn't immediately recompute. The next time doubled() is called (from a template or effect), it recomputes once and caches the new result."
+/>
+
+## Senior Insight: Signals Are the Future of Angular
+
+Angular's roadmap (as stated by the Angular team) is moving toward a signals-first, zoneless architecture:
+- Signal-based inputs (`input()`) are now stable
+- Signal-based queries (`viewChild()`, `contentChild()`) are stable
+- Zoneless change detection is experimental but available
+- Eventually, Zone.js will be optional/removable
+
+Signals are simpler than Zone.js + dirty checking for synchronous state. RxJS remains essential for asynchronous operations, HTTP, and complex event streams. The skill is knowing which to reach for: signals for state, RxJS for events and async data flows.

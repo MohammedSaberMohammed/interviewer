@@ -1,0 +1,229 @@
+---
+title: "Transformation Operators: map, switchMap, mergeMap, concatMap, exhaustMap"
+slug: "transformation-operators"
+order: 3
+difficulty: "intermediate"
+readingTime: 15
+status: "published"
+tags: ["RxJS", "switchMap", "mergeMap", "concatMap", "exhaustMap", "flatMap", "operators"]
+summary: "The four higher-order mapping operators are the most powerful and confusing in RxJS. Choosing the wrong one causes bugs — especially in search typeaheads, form submissions, and HTTP racing conditions."
+docsLinks:
+  - label: "RxJS Transformation Operators"
+    url: "https://rxjs.dev/guide/operators#transformation-operators"
+  - label: "switchMap"
+    url: "https://rxjs.dev/api/operators/switchMap"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## `map()` — Transform Each Value
+
+The simplest transformation: convert each emitted value to something else:
+
+```typescript
+import { map } from 'rxjs/operators';
+
+// Transform values in a stream
+of(1, 2, 3).pipe(
+  map(n => n * 2)
+).subscribe(console.log); // 2, 4, 6
+
+// Transform HTTP response
+this.http.get<ApiResponse<User[]>>('/api/users').pipe(
+  map(response => response.data), // Extract the data array
+  map(users => users.filter(u => u.active)) // Filter active users
+)
+```
+
+## Higher-Order Mapping: The Four Key Operators
+
+When each source value triggers a new Observable (like an HTTP request), you need higher-order mapping operators. They're all similar — the difference is how they handle **concurrent inner Observables**.
+
+## `switchMap()` — Cancel Previous, Use Latest
+
+**Use for: search typeaheads, autocomplete, anything where only the latest result matters.**
+
+When a new value arrives, it **cancels the previous inner Observable** and subscribes to a new one:
+
+```typescript
+// Classic search typeahead
+searchControl.valueChanges.pipe(
+  debounceTime(300),
+  distinctUntilChanged(),
+  switchMap(query => this.searchService.search(query))
+  // If user types 'an', then 'ang', then 'angu':
+  // 'an' → starts HTTP request
+  // 'ang' → CANCELS 'an' request, starts new one
+  // 'angu' → CANCELS 'ang' request, starts new one
+  // Only the latest result matters
+).subscribe(results => this.results = results);
+```
+
+<Callout type="warning">
+`switchMap` is the right choice for search but the WRONG choice for form submissions. If the user clicks "Save" twice quickly, `switchMap` cancels the first save request. Use `exhaustMap` for form submissions instead.
+</Callout>
+
+## `mergeMap()` (alias: `flatMap()`) — Run All Concurrently
+
+**Use for: parallel HTTP requests where order doesn't matter, processing multiple items.**
+
+All inner Observables run concurrently. Results arrive as they complete:
+
+```typescript
+// Upload multiple files in parallel
+selectedFiles$.pipe(
+  mergeMap(file => this.uploadService.upload(file))
+  // All uploads run simultaneously
+  // Results arrive as each completes (order not guaranteed)
+).subscribe(uploadResult => {
+  this.completedUploads.push(uploadResult);
+  this.updateProgress();
+});
+
+// Load data for multiple IDs in parallel
+userIds$.pipe(
+  mergeMap(id => this.userService.getUser(id))
+  // Up to N concurrent requests (use mergeMap(fn, 3) for concurrency limit)
+).subscribe(user => this.usersMap.set(user.id, user));
+```
+
+## `concatMap()` — Sequential, Preserve Order
+
+**Use for: sequential operations where order matters, queuing requests.**
+
+Waits for each inner Observable to complete before starting the next:
+
+```typescript
+// Process form submissions in order (no concurrent saves)
+saveClicks$.pipe(
+  concatMap(() => this.formService.save(this.form.value))
+  // If user clicks save 3 times rapidly:
+  // 1st click → starts save, 2nd click waits, 3rd click waits
+  // Results arrive in exact order: 1st, 2nd, 3rd
+).subscribe(result => this.showSuccess(result));
+
+// Sequential API calls where each depends on previous
+of(1, 2, 3).pipe(
+  concatMap(id => this.http.get(`/api/items/${id}`))
+  // Gets item 1, THEN gets item 2, THEN gets item 3
+  // Total time = sum of all request times
+)
+```
+
+## `exhaustMap()` — Ignore New Until Current Completes
+
+**Use for: form submission buttons, login buttons, anything that should ignore rapid clicks.**
+
+While an inner Observable is active, **ignores all new source values**:
+
+```typescript
+// Login button — ignores multiple clicks while request is in flight
+loginClicks$.pipe(
+  exhaustMap(() => this.authService.login(this.credentials))
+  // User clicks Login button rapidly:
+  // 1st click → starts login request
+  // 2nd click → IGNORED (request still in flight)
+  // 3rd click → IGNORED
+  // Request completes → exhaustMap is now "idle" and will accept next click
+).subscribe(user => this.router.navigate(['/dashboard']));
+```
+
+<ComparisonTable
+  headers={["Operator", "Concurrency", "On New Source Value", "Best For"]}
+  rows={[
+    ["switchMap", "1 (latest only)", "Cancel current, start new", "Search, typeahead, navigation"],
+    ["mergeMap", "Unlimited", "Start immediately alongside others", "Parallel uploads, concurrent fetches"],
+    ["concatMap", "1 (queued)", "Queue until current completes", "Ordered processing, sequential saves"],
+    ["exhaustMap", "1 (ignore extras)", "Ignore until current completes", "Login/submit buttons, prevent double-submit"]
+  ]}
+/>
+
+## Real-World Examples
+
+```typescript
+// ❌ Wrong: switchMap for form submission (cancels in-flight save!)
+saveButton.clicks$.pipe(
+  switchMap(() => this.save(this.form.value))
+).subscribe();
+
+// ✅ Correct: exhaustMap for form submission
+saveButton.clicks$.pipe(
+  exhaustMap(() => this.save(this.form.value))
+).subscribe();
+
+// ❌ Wrong: mergeMap for search (results arrive out of order!)
+searchInput.valueChanges.pipe(
+  mergeMap(q => this.search(q))
+).subscribe(results => this.results = results);
+
+// ✅ Correct: switchMap for search
+searchInput.valueChanges.pipe(
+  switchMap(q => this.search(q))
+).subscribe(results => this.results = results);
+
+// ❌ Wrong: exhaustMap for loading related items (skips some!)
+userIds$.pipe(
+  exhaustMap(id => this.loadUser(id))
+).subscribe();
+
+// ✅ Correct: mergeMap for parallel loading
+userIds$.pipe(
+  mergeMap(id => this.loadUser(id))
+).subscribe();
+```
+
+<CodeChallenge
+  id="higher-order-mapping"
+  difficulty="intermediate"
+  description="A user types in a search box. Each keystroke triggers an HTTP search request. Results from earlier queries sometimes arrive AFTER later queries. Which operator prevents this stale result problem?"
+  options={[
+    "mergeMap — runs all requests concurrently",
+    "concatMap — processes requests in order",
+    "switchMap — cancels the previous request when a new one starts",
+    "exhaustMap — ignores new keystrokes while a request is in flight"
+  ]}
+  correctAnswer={2}
+  explanation="switchMap cancels the previous inner Observable (and thus the previous HTTP request in Angular's HttpClient) when a new value arrives. This prevents stale results from arriving out of order. concatMap would also prevent stale results but would be slow — it waits for each search to complete before starting the next, causing the UI to lag. switchMap is the right choice for typeaheads."
+/>
+
+## The Concurrency Limit of `mergeMap`
+
+```typescript
+// Without limit — all requests run simultaneously (could overwhelm the server)
+fileList$.pipe(
+  mergeMap(file => this.upload(file))
+)
+
+// With concurrency limit — max 3 concurrent uploads
+fileList$.pipe(
+  mergeMap(file => this.upload(file), 3) // Second argument is concurrentCount
+)
+// Like a queue: while 3 are uploading, others wait
+```
+
+## Senior Insight: Visualizing with Marble Diagrams
+
+The best way to internalize these operators is marble diagrams:
+
+```
+// switchMap
+source:  --A---B---C---|
+inner A: ----a1--a2|
+inner B:       ----b1--|
+inner C:            ----c1--|
+result:  --------b1----c1--|
+
+// mergeMap
+source:  --A--B--|
+inner A: ----a1--a2--|
+inner B:      ----b1--|
+result:  ------a1--b1-a2--|
+
+// concatMap
+source:  --A--B--|
+inner A: ----a1--a2--|
+inner B:               ----b1--|
+result:  ------a1--a2------b1--|
+```
+
+The RxJS Marbles playground (rxmarbles.com) lets you interactively explore these differences.

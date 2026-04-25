@@ -1,0 +1,282 @@
+---
+title: "async Pipe Gotchas"
+slug: "async-pipe-gotchas"
+order: 4
+difficulty: "advanced"
+readingTime: 8
+status: "published"
+tags: ["Angular", "traps", "async pipe", "null", "multiple subscriptions", "BehaviorSubject", "subscribe"]
+summary: "The async pipe is powerful but has several gotchas: null before first emission breaks template bindings, using it multiple times creates multiple subscriptions, and it behaves differently with BehaviorSubject vs regular Observables. Knowing these saves debugging hours."
+docsLinks:
+  - label: "async Pipe"
+    url: "https://angular.dev/api/common/AsyncPipe"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Gotcha 1: null Before First Emission
+
+The async pipe returns `null` before the Observable emits:
+
+```html
+<!-- ❌ Dangerous: user is null until data loads -->
+<p>Welcome, {{ (user$ | async).name }}!</p>
+<!-- TypeError: Cannot read properties of null (reading 'name') -->
+
+<!-- ✅ Safe with optional chaining -->
+<p>Welcome, {{ (user$ | async)?.name }}!</p>
+
+<!-- ✅ Safe with @if -->
+@if (user$ | async; as user) {
+  <p>Welcome, {{ user.name }}!</p>
+}
+
+<!-- ✅ Safe with nullish coalescing -->
+<p>Welcome, {{ (user$ | async)?.name ?? 'Guest' }}!</p>
+```
+
+The `@if` approach is the most common — it handles null automatically (the block only renders when the value is truthy) and provides a typed template variable.
+
+## Gotcha 2: Multiple Subscriptions from Multiple Pipes
+
+```html
+<!-- ❌ This creates THREE separate HTTP requests! -->
+<div>
+  <h1>{{ (user$ | async)?.name }}</h1>
+  <p>{{ (user$ | async)?.email }}</p>
+  <img [src]="(user$ | async)?.avatar">
+</div>
+```
+
+Each `async` pipe instance subscribes independently. If `user$` is an HTTP Observable (cold), this means three HTTP requests.
+
+```html
+<!-- ✅ Fix 1: Use @if to create a single subscription -->
+@if (user$ | async; as user) {
+  <h1>{{ user.name }}</h1>
+  <p>{{ user.email }}</p>
+  <img [src]="user.avatar">
+}
+
+<!-- ✅ Fix 2: Use @let (Angular 17+) -->
+@let user = user$ | async;
+@if (user) {
+  <h1>{{ user.name }}</h1>
+  <p>{{ user.email }}</p>
+}
+```
+
+```typescript
+// ✅ Fix 3: Use shareReplay(1) to share the HTTP response
+user$ = this.userService.getUser().pipe(shareReplay(1));
+// Now multiple async pipes share one subscription — one HTTP request
+```
+
+## Gotcha 3: BehaviorSubject and Falsy Initial Values
+
+```typescript
+// BehaviorSubject with false initial value
+isLoading$ = new BehaviorSubject<boolean>(false);
+count$ = new BehaviorSubject<number>(0);
+username$ = new BehaviorSubject<string>('');
+```
+
+```html
+<!-- ❌ @if with falsy values — never shows when value is false/0/'' -->
+@if (isLoading$ | async) {
+  <app-spinner />
+}
+<!-- Works correctly for spinner (false = no spinner needed)
+     But what about: -->
+
+@if (count$ | async) {
+  <span>{{ count$ | async }}</span>
+}
+<!-- ❌ Never shows when count is 0! -->
+
+@if (username$ | async) {
+  <span>{{ username$ | async }}</span>
+}
+<!-- ❌ Never shows when username is empty string! -->
+```
+
+```html
+<!-- ✅ Explicit null check for boolean/number/string Observables -->
+@if (count$ | async; as count) {
+  <!-- Still breaks for 0 and '' (falsy) — use explicit null check -->
+  <span>{{ count }}</span>
+}
+
+<!-- ✅ Best approach for potentially falsy values: -->
+@if ((count$ | async) !== null) {
+  <span>{{ count$ | async }}</span>
+}
+
+<!-- Or: handle in the component -->
+```
+
+```typescript
+// Better: transform to object to avoid falsy issues
+count$ = this.counterService.count$.pipe(
+  map(count => ({ value: count })) // Wrap in object — always truthy
+);
+```
+
+```html
+@if (count$ | async; as state) {
+  <span>{{ state.value }}</span>
+}
+```
+
+## Gotcha 4: Async Pipe with OnPush (The Good Surprise)
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <!-- async pipe calls markForCheck() when Observable emits -->
+    <!-- This is why async pipe works with OnPush without any extra code -->
+    @if (data$ | async; as data) {
+      <p>{{ data.title }}</p>
+    }
+  `
+})
+class OnPushComponent {
+  data$ = this.dataService.getData(); // HTTP Observable
+}
+```
+
+The async pipe works correctly with OnPush because it calls `markForCheck()` internally when the Observable emits. This is one reason to prefer async pipe over manual subscriptions in OnPush components.
+
+## Gotcha 5: Resubscription on ngIf/Reassignment
+
+```typescript
+@Component({
+  template: `
+    <!-- When condition toggles, async pipe unsubscribes and resubscribes -->
+    @if (showData) {
+      <span>{{ data$ | async }}</span>
+    }
+  `
+})
+class ToggleComponent {
+  showData = true;
+  data$ = this.http.get('/api/data');
+
+  toggle() {
+    this.showData = !this.showData;
+    // When showData becomes false → @if destroys span → async pipe unsubscribes
+    // When showData becomes true → @if creates span → async pipe subscribes AGAIN
+    // If data$ is an HTTP observable: NEW HTTP REQUEST on each toggle!
+  }
+}
+```
+
+```typescript
+// ✅ Fix: use shareReplay(1) or keep subscription outside @if
+data$ = this.http.get('/api/data').pipe(shareReplay(1));
+// First subscribe: HTTP request made
+// Unsubscribe: cached, no request cancelled (shareReplay keeps it alive)
+// Re-subscribe: returns cached value immediately, no new HTTP request
+```
+
+## Gotcha 6: Error Handling with async Pipe
+
+```typescript
+// ❌ If the Observable errors, async pipe propagates the error to the component
+// The component may crash with unhandled error
+
+// ✅ Handle errors in the Observable before async pipe
+errorState$ = new Subject<string | null>();
+
+data$ = this.dataService.getData().pipe(
+  catchError(err => {
+    this.errorState$.next(err.message);
+    return EMPTY; // async pipe gets nothing — @if block collapses
+  })
+);
+```
+
+```html
+@if (data$ | async; as data) {
+  <app-data-view [data]="data" />
+} @else if (errorState$ | async; as error) {
+  <p class="error">{{ error }}</p>
+}
+```
+
+<CodeChallenge
+  id="async-pipe-subscriptions"
+  difficulty="advanced"
+  description="A component has an HTTP service call (cold Observable). The template uses the async pipe three times: {{ (user$ | async)?.name }}, {{ (user$ | async)?.email }}, {{ (user$ | async)?.age }}. How many HTTP requests does this make?"
+  options={[
+    "1 — Angular deduplicates async pipe subscriptions to the same Observable",
+    "3 — each async pipe instance creates an independent subscription to the cold Observable",
+    "1 — HTTP caching prevents duplicate requests",
+    "Depends on whether the requests are made in the same change detection cycle"
+  ]}
+  correctAnswer={1}
+  explanation="Each async pipe instance independently subscribes to the Observable. For cold Observables (like HttpClient.get()), each subscription creates a new execution — a new HTTP request. Three async pipe instances on the same Observable = three HTTP GET requests. The fix: (1) Use @if/as to subscribe once and use the local variable, (2) Add shareReplay(1) to the Observable to share one subscription among multiple async pipes, or (3) Store the loaded data in a component property via a single subscription."
+/>
+
+## Best Practices Summary
+
+```typescript
+// ✅ CORRECT PATTERNS:
+
+// 1. Single subscription with @if/as
+@if (user$ | async; as user) {
+  <h1>{{ user.name }}</h1>
+  <p>{{ user.email }}</p>
+}
+
+// 2. Null coalescing for optional values
+{{ (user$ | async)?.name ?? 'Loading...' }}
+
+// 3. shareReplay for multi-subscription scenarios
+userWithSharing$ = this.userService.getUser().pipe(shareReplay(1));
+
+// 4. Error handling before async pipe
+safeData$ = this.getData().pipe(catchError(() => of(null)));
+@if (safeData$ | async; as data) { ... }
+
+// 5. Default value for BehaviorSubject with falsy state
+@if ((count$ | async) !== null; as state) { ... }
+
+// ❌ AVOID:
+// - Multiple async pipes on same cold Observable
+// - Optional property access on result without null check
+// - async pipe in @for without ?? [] fallback
+// - Subscribing manually when async pipe would work
+```
+
+## Senior Insight: When async Pipe Is Wrong
+
+Despite its benefits, async pipe isn't always right:
+
+```typescript
+// Complex reactive logic often needs manual subscription
+// (combining multiple streams, complex error handling, side effects)
+
+data$ = combineLatest([
+  this.userService.user$,
+  this.settingsService.settings$,
+  this.permissionsService.permissions$
+]).pipe(
+  switchMap(([user, settings, perms]) =>
+    this.dataService.getData(user.id, settings, perms)
+  ),
+  retry(3),
+  catchError(err => {
+    this.notificationService.error('Failed to load data');
+    return of([]);
+  }),
+  shareReplay(1)
+);
+
+// Template: @if (data$ | async; as data) { ... }
+// This is perfectly appropriate — the async pipe handles the final display
+// while the reactive pipeline handles the complexity
+```
+
+The ideal pattern: complex reactive logic in the component class, simple async pipe display in the template.

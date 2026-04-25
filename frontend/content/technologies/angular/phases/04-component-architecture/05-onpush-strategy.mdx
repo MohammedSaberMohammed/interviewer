@@ -1,0 +1,236 @@
+---
+title: "OnPush Change Detection Strategy"
+slug: "onpush-strategy"
+order: 5
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["Angular", "OnPush", "change detection", "performance", "immutability"]
+summary: "OnPush is Angular's most powerful performance optimization — it tells Angular to skip a component subtree during change detection unless specific conditions are met. Use it by default for all components."
+docsLinks:
+  - label: "ChangeDetectionStrategy"
+    url: "https://angular.dev/api/core/ChangeDetectionStrategy"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## OnPush: The Performance Foundation
+
+`ChangeDetectionStrategy.OnPush` tells Angular: "Don't check this component during CD unless something I care about actually changed." Without it, Angular checks every component on every CD cycle regardless of whether they could have changed.
+
+```typescript
+@Component({
+  selector: 'app-product-card',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush, // ← The key line
+  template: `
+    <div class="card">
+      <h3>{{ product.name }}</h3>
+      <p>{{ product.price | currency }}</p>
+    </div>
+  `
+})
+class ProductCardComponent {
+  @Input() product!: Product;
+}
+```
+
+## When OnPush Components ARE Checked
+
+An OnPush component is checked (runs change detection) only when:
+
+1. **An `@Input()` reference changes** (not mutation — reference must change)
+2. **An event originates from the component or its descendants** (click, keydown, etc.)
+3. **An Observable or signal is marked** (via `async` pipe, `markForCheck()`, or signal update)
+4. **`cdr.markForCheck()` is called** explicitly
+5. **`cdr.detectChanges()` is called** explicitly
+
+```typescript
+// Parent component
+@Component({
+  template: `
+    <app-product-card [product]="product" />
+    <button (click)="mutateProduct()">Mutate</button>
+    <button (click)="replaceProduct()">Replace</button>
+  `
+})
+class ParentComponent {
+  product: Product = { id: 1, name: 'Widget', price: 9.99 };
+
+  mutateProduct() {
+    this.product.price = 19.99; // ❌ Same reference — OnPush child NOT updated!
+  }
+
+  replaceProduct() {
+    this.product = { ...this.product, price: 19.99 }; // ✅ New reference — child IS updated!
+  }
+}
+```
+
+## The Immutability Contract
+
+OnPush implicitly requires **immutable data patterns**. When you use OnPush, you commit to:
+
+```typescript
+// ❌ Mutations — OnPush won't detect these
+this.users.push(newUser);           // Same array reference
+this.user.name = 'New Name';        // Same object reference
+this.config.featureFlags.dark = true; // Same nested object reference
+
+// ✅ Immutable updates — new references trigger OnPush
+this.users = [...this.users, newUser];           // New array
+this.user = { ...this.user, name: 'New Name' }; // New object
+this.config = {
+  ...this.config,
+  featureFlags: { ...this.config.featureFlags, dark: true }
+};
+```
+
+## OnPush with Observables and `async` Pipe
+
+The `async` pipe automatically calls `markForCheck()` when a new value arrives — perfect for OnPush:
+
+```typescript
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [AsyncPipe],
+  template: `
+    @if (users$ | async; as users) {
+      @for (user of users; track user.id) {
+        <app-user-card [user]="user" />
+      }
+    }
+  `
+})
+class UserListComponent {
+  // Observable — async pipe handles subscription and markForCheck()
+  users$ = inject(UserService).getUsers();
+}
+```
+
+## OnPush with Signals
+
+Signals are the cleanest fit for OnPush — Angular knows exactly when signal values change:
+
+```typescript
+@Component({
+  selector: 'app-counter',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `<p>Count: {{ count() }}</p>`
+})
+class CounterComponent {
+  count = signal(0); // Signal automatically triggers CD when updated
+
+  increment() {
+    this.count.update(c => c + 1); // Angular detects the signal change
+    // markForCheck() is NOT needed for signals
+  }
+}
+```
+
+<Callout type="tip">
+With signals + OnPush, Angular achieves fine-grained reactivity: only the specific DOM node bound to the changed signal updates. This is significantly more efficient than checking the entire component or even the entire application.
+</Callout>
+
+## Common OnPush Gotchas
+
+### 1. Direct property mutation doesn't work
+
+```typescript
+// ❌ OnPush component won't update
+ngOnInit() {
+  setTimeout(() => {
+    this.title = 'Updated'; // Mutating local property outside Angular event
+    // Angular CD doesn't re-check OnPush components for timer callbacks
+    // UNLESS you call markForCheck()
+  }, 1000);
+}
+
+// ✅ Fix: call markForCheck() or use a signal
+ngOnInit() {
+  setTimeout(() => {
+    this.title = 'Updated';
+    this.cdr.markForCheck(); // Tell Angular to check this component
+  }, 1000);
+}
+```
+
+### 2. Mutating service-provided mutable objects
+
+```typescript
+// ❌ Service mutates an object — OnPush component doesn't see it
+@Injectable({ providedIn: 'root' })
+class CartService {
+  cart = { items: [], total: 0 };
+
+  addItem(item: CartItem) {
+    this.cart.items.push(item); // Same cart reference — OnPush won't detect!
+    this.cart.total += item.price;
+  }
+}
+
+// ✅ Fix: use a BehaviorSubject or signal in the service
+@Injectable({ providedIn: 'root' })
+class CartService {
+  private cartSubject = new BehaviorSubject<Cart>({ items: [], total: 0 });
+  cart$ = this.cartSubject.asObservable();
+
+  addItem(item: CartItem) {
+    const current = this.cartSubject.value;
+    this.cartSubject.next({
+      items: [...current.items, item], // New reference
+      total: current.total + item.price
+    });
+  }
+}
+```
+
+### 3. `async` pipe on the same observable twice
+
+```html
+<!-- ❌ Two subscriptions — OnPush checks twice per emission -->
+{{ (user$ | async)?.name }}
+{{ (user$ | async)?.email }}
+
+<!-- ✅ One subscription via 'as' pattern -->
+@if (user$ | async; as user) {
+  {{ user.name }}
+  {{ user.email }}
+}
+```
+
+<CodeChallenge
+  id="onpush-detection"
+  difficulty="advanced"
+  description="An OnPush component receives an @Input() product: Product. The parent calls product.price = 99. Does the OnPush child re-render?"
+  options={[
+    "Yes — any change to data the component uses triggers re-render",
+    "No — the input reference is the same object; OnPush sees no change",
+    "Yes — mutations always trigger OnPush because Angular deep-checks objects",
+    "No — OnPush components only re-render when the user interacts with them"
+  ]}
+  correctAnswer={1}
+  explanation="OnPush checks input references using Object.is() comparison (reference equality). Mutating product.price changes a property of the same object — the reference to the product object hasn't changed. Angular sees the same reference and concludes nothing changed. To trigger re-render, the parent must create a new Product object: this.product = { ...this.product, price: 99 }."
+/>
+
+## Senior Insight: Default to OnPush
+
+The Angular team's recommendation (and the trend in modern Angular) is to use `OnPush` for ALL components by default:
+
+```json
+// angular.json — enforce OnPush as default
+{
+  "schematics": {
+    "@schematics/angular:component": {
+      "changeDetection": "OnPush"
+    }
+  }
+}
+```
+
+When combined with signals and the `async` pipe, OnPush rarely causes problems and provides significant performance benefits — especially in large applications with many components.
+
+The mindset shift: think of OnPush as "this component only updates when I explicitly signal that it should" — which is exactly what you want for predictable, performant apps.

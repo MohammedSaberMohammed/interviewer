@@ -1,0 +1,341 @@
+---
+title: "Advanced Template Patterns"
+slug: "advanced-templates"
+order: 7
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "advanced", "templates", "ng-template", "ngTemplateOutlet", "TemplateRef", "@let", "template variables"]
+summary: "Advanced Angular templates use ng-template, ngTemplateOutlet, and @let for powerful template composition patterns. These techniques enable slot-based component APIs, reusable template fragments, and type-safe template rendering."
+docsLinks:
+  - label: "ng-template"
+    url: "https://angular.dev/api/core/ng-template"
+  - label: "ngTemplateOutlet"
+    url: "https://angular.dev/api/common/NgTemplateOutlet"
+  - label: "@let Syntax"
+    url: "https://angular.dev/guide/templates/let-declarations"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## ng-template: Lazily Rendered Content
+
+`<ng-template>` defines a template fragment that's not rendered by default:
+
+```html
+<!-- This content is NOT in the DOM until something renders the template -->
+<ng-template #myTemplate>
+  <p>I'm only rendered when explicitly instantiated</p>
+</ng-template>
+
+<!-- Nothing visible yet... -->
+
+<!-- Now render it: -->
+<ng-container *ngTemplateOutlet="myTemplate"></ng-container>
+<!-- Or with new control flow: -->
+<ng-template [ngTemplateOutlet]="myTemplate"></ng-template>
+```
+
+Use cases:
+- Reusable template fragments within a component
+- Slot-based component APIs (like Angular Material's table columns)
+- Conditional template selection at runtime
+- Structural directive implementations (internally)
+
+## ngTemplateOutlet with Context
+
+Pass data to a template when rendering it:
+
+```typescript
+@Component({
+  template: `
+    <!-- Define a reusable item template -->
+    <ng-template #userTemplate let-user let-index="rowIndex">
+      <div class="user-row">
+        <span>{{ index + 1 }}</span>
+        <strong>{{ user.name }}</strong>
+        <span>{{ user.email }}</span>
+      </div>
+    </ng-template>
+
+    <!-- Render it with different data in different places -->
+    <section>
+      <h2>Active Users</h2>
+      @for (user of activeUsers; track user.id; let i = $index) {
+        <ng-container *ngTemplateOutlet="userTemplate;
+                                         context: { $implicit: user, rowIndex: i }">
+        </ng-container>
+      }
+    </section>
+
+    <section>
+      <h2>Inactive Users</h2>
+      @for (user of inactiveUsers; track user.id; let i = $index) {
+        <ng-container *ngTemplateOutlet="userTemplate;
+                                         context: { $implicit: user, rowIndex: i }">
+        </ng-container>
+      }
+    </section>
+  `
+})
+class UserListComponent {
+  activeUsers: User[] = [];
+  inactiveUsers: User[] = [];
+}
+```
+
+`let-user` binds to `$implicit` (the default context value). `let-index="rowIndex"` binds to the named `rowIndex` property.
+
+## Template Slots: Content Projection Alternative
+
+Components can accept templates as `@Input()` for maximum flexibility:
+
+```typescript
+@Component({
+  selector: 'app-data-table',
+  template: `
+    <table>
+      <thead>
+        <tr>
+          @for (col of columns; track col.key) {
+            <th>{{ col.label }}</th>
+          }
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of data; track row.id; let i = $index) {
+          <tr>
+            @for (col of columns; track col.key) {
+              <td>
+                @if (col.template) {
+                  <!-- Render custom template if provided -->
+                  <ng-container *ngTemplateOutlet="col.template;
+                                                   context: { $implicit: row, index: i }">
+                  </ng-container>
+                } @else {
+                  <!-- Default: show property value -->
+                  {{ row[col.key] }}
+                }
+              </td>
+            }
+          </tr>
+        }
+      </tbody>
+    </table>
+  `
+})
+class DataTableComponent {
+  @Input() data: any[] = [];
+  @Input() columns: TableColumn[] = [];
+}
+
+interface TableColumn {
+  key: string;
+  label: string;
+  template?: TemplateRef<{ $implicit: any; index: number }>;
+}
+```
+
+```html
+<!-- Usage — some columns use default rendering, others use custom templates -->
+<app-data-table [data]="users" [columns]="[
+  { key: 'name', label: 'Name' },
+  { key: 'email', label: 'Email' },
+  { key: 'status', label: 'Status', template: statusTemplate },
+  { key: 'actions', label: 'Actions', template: actionsTemplate }
+]" />
+
+<ng-template #statusTemplate let-user>
+  <span [class]="'badge badge-' + user.status">{{ user.status }}</span>
+</ng-template>
+
+<ng-template #actionsTemplate let-user let-index="index">
+  <button (click)="edit(user)">Edit</button>
+  <button (click)="delete(user.id)">Delete</button>
+</ng-template>
+```
+
+## @let — Template Variable Declarations (Angular 17+)
+
+```html
+<!-- Declare local variables in templates -->
+@let greeting = 'Hello, ' + user().name + '!';
+<h1>{{ greeting }}</h1>
+
+<!-- Avoid repetition for async values -->
+@let users = users$ | async;
+@if (users) {
+  <p>{{ users.length }} users found</p>
+  @for (user of users; track user.id) {
+    <li>{{ user.name }}</li>
+  }
+}
+
+<!-- Complex derived values -->
+@let stats = {
+  total: items().length,
+  active: items().filter(i => i.active).length,
+  inactive: items().filter(i => !i.active).length
+};
+
+<p>{{ stats.total }} total ({{ stats.active }} active, {{ stats.inactive }} inactive)</p>
+```
+
+<Callout type="tip">
+`@let` variables are scoped to the block they're declared in — they work like `const` in JavaScript. They're recalculated on every change detection cycle, so don't use them for expensive computations. Use `computed()` signals for memoized derivations.
+</Callout>
+
+## Template Reference Variables
+
+```html
+<!-- Reference a DOM element -->
+<input #searchInput type="text">
+<button (click)="search(searchInput.value)">Search</button>
+
+<!-- Reference a component instance -->
+<app-user-form #userForm></app-user-form>
+<button (click)="userForm.submit()">Submit</button>
+
+<!-- Reference a directive -->
+<input #ngModelRef="ngModel" [(ngModel)]="value">
+<span *ngIf="ngModelRef.invalid">Invalid!</span>
+
+<!-- Access in TypeScript -->
+@ViewChild('searchInput') searchInput!: ElementRef<HTMLInputElement>;
+@ViewChild('userForm') userForm!: UserFormComponent;
+```
+
+## Advanced @if with Type Narrowing
+
+```typescript
+// TypeScript union type
+type UserState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; user: User };
+
+@Component({
+  template: `
+    @let state = userState();
+
+    @if (state.status === 'loading') {
+      <app-spinner />
+    } @else if (state.status === 'error') {
+      <!-- TypeScript knows state is { status: 'error'; message: string } here -->
+      <p class="error">{{ state.message }}</p>
+    } @else {
+      <!-- TypeScript knows state is { status: 'success'; user: User } here -->
+      <app-user-profile [user]="state.user" />
+    }
+  `
+})
+class UserDetailComponent {
+  userState = signal<UserState>({ status: 'loading' });
+}
+```
+
+## Template Type Checking
+
+Angular's strict template type checking catches errors at compile time:
+
+```typescript
+// angular.json — enable strict template checking
+{
+  "angularCompilerOptions": {
+    "strictTemplates": true,      // Enable strict mode
+    "strictInputTypes": true,     // Check @Input() types
+    "strictOutputEventTypes": true, // Check @Output() event types
+    "strictDomEventTypes": true   // Check DOM event types
+  }
+}
+```
+
+```html
+<!-- With strictTemplates, this fails compilation: -->
+<app-user-card [user]="selectedUser" />
+<!-- If selectedUser is User | null but @Input() user: User (not nullable) -->
+
+<!-- Type-safe access: -->
+@if (selectedUser) {
+  <app-user-card [user]="selectedUser" />
+  <!-- TypeScript narrowed: selectedUser is User here -->
+}
+```
+
+## Dynamic Component with Inputs (Angular 16+)
+
+```typescript
+@Component({
+  template: `
+    <!-- Create component dynamically and set inputs via template -->
+    <ng-container
+      *ngComponentOutlet="
+        componentToLoad;
+        inputs: componentInputs
+      ">
+    </ng-container>
+  `
+})
+class DynamicHostComponent {
+  componentToLoad = UserCardComponent;
+
+  componentInputs = {
+    user: this.currentUser,
+    editable: true
+  };
+}
+```
+
+<CodeChallenge
+  id="ng-template-context"
+  difficulty="advanced"
+  description={'In *ngTemplateOutlet="myTemplate; context: { $implicit: item, index: i }", a template uses let-data. What value does data have?'}
+  options={[
+    "undefined — 'data' is not a named property in the context object",
+    "The value of $implicit (item) — let-varName without '=key' binds to $implicit",
+    "The entire context object { $implicit: item, index: i }",
+    "null — only let-item and let-index work in this context"
+  ]}
+  correctAnswer={1}
+  explanation={'In ngTemplateOutlet context, let-varName (without = assignment) binds to the $implicit property of the context. So let-data binds to context.$implicit which is item. The variable name "data" in the template is completely arbitrary — it just aliases $implicit. This is how *ngFor uses it internally: *ngFor="let user of users" — "user" is the template variable name, and each array item is $implicit. Named properties need explicit binding: let-idx="index" binds the template variable "idx" to context.index.'}
+/>
+
+## Type-Safe Template Context with ngTemplateContextGuard
+
+```typescript
+// Ensure TypeScript knows the type of the template context
+interface MyTemplateContext {
+  $implicit: User;
+  index: number;
+}
+
+@Directive({ selector: '[appMyDirective]' })
+class MyDirective {
+  // This static method tells TypeScript the shape of the template context
+  static ngTemplateContextGuard<T>(
+    dir: MyDirective,
+    ctx: unknown
+  ): ctx is MyTemplateContext {
+    return true;
+  }
+}
+```
+
+```html
+<!-- TypeScript now knows: user is User, i is number -->
+<ng-template appMyDirective let-user let-i="index">
+  {{ user.name }} <!-- TypeScript knows .name is valid -->
+  {{ i.toFixed() }} <!-- TypeScript knows i is number -->
+</ng-template>
+```
+
+## Senior Insight: Template Patterns for Component Libraries
+
+When building reusable components, the template slot pattern (`@Input() template: TemplateRef`) enables:
+
+1. **Configurable cell renderers** in data tables
+2. **Custom item templates** in lists and dropdowns
+3. **Slot-based layouts** in panels and modals
+4. **Override patterns** where users can replace default rendering
+
+Angular Material uses this extensively — `mat-column`'s `*matCellDef`, `mat-option`'s content, `mat-expansion-panel-header`. Understanding `TemplateRef`, `ngTemplateOutlet`, and context passing is essential for building component libraries at this level of flexibility.

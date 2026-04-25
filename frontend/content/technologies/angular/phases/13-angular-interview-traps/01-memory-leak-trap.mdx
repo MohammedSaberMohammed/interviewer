@@ -1,0 +1,271 @@
+---
+title: "Memory Leak Trap"
+slug: "memory-leak-trap"
+order: 1
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "traps", "memory leaks", "subscriptions", "takeUntilDestroyed", "DestroyRef", "WeakRef"]
+summary: "Observable subscriptions that outlive their component are the #1 source of Angular memory leaks. The component is 'destroyed' but stays in memory because the subscription holds a reference to it. Learn the patterns that prevent this — and the subtle cases that trip up experienced developers."
+docsLinks:
+  - label: "takeUntilDestroyed"
+    url: "https://angular.dev/api/core/rxjs-interop/takeUntilDestroyed"
+  - label: "DestroyRef"
+    url: "https://angular.dev/api/core/DestroyRef"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Memory Leak Mechanism
+
+When a component subscribes to an Observable, the subscription holds a reference back to the component (via the callback function's closure):
+
+```typescript
+@Component({})
+class LeakyComponent implements OnInit {
+  items: Item[] = [];
+
+  ngOnInit() {
+    // ❌ This subscription keeps LeakyComponent alive forever
+    this.itemService.items$.subscribe(items => {
+      this.items = items; // Closure reference to 'this' (the component)
+    });
+  }
+}
+
+// When navigation destroys LeakyComponent:
+// - Angular removes the component from the DOM ✓
+// - Angular calls ngOnDestroy ✓ (no implementation)
+// - But: this.itemService.items$ still has an active subscriber
+// - That subscriber holds a reference to the (now "destroyed") component
+// - Garbage collector cannot collect the component — memory leak!
+// - If you navigate back and forth 10 times: 10 component instances in memory
+```
+
+## The Fix: takeUntilDestroyed (Angular 16+)
+
+```typescript
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+
+@Component({})
+class CleanComponent implements OnInit {
+  // inject DestroyRef — signals when component is destroyed
+  private destroyRef = inject(DestroyRef);
+
+  items: Item[] = [];
+
+  ngOnInit() {
+    this.itemService.items$.pipe(
+      takeUntilDestroyed(this.destroyRef) // Completes when component destroys
+    ).subscribe(items => {
+      this.items = items;
+    });
+  }
+}
+```
+
+Or in the constructor injection context (even cleaner):
+
+```typescript
+@Component({})
+class CleanComponent {
+  items: Item[] = [];
+
+  constructor() {
+    this.itemService.items$.pipe(
+      takeUntilDestroyed() // Automatically uses current injection context
+    ).subscribe(items => {
+      this.items = items;
+    });
+  }
+}
+```
+
+## Classic Pattern: takeUntil + Subject
+
+The traditional approach (still valid, especially in pre-Angular 16 codebases):
+
+```typescript
+@Component({})
+class TraditionalCleanup implements OnDestroy {
+  private destroy$ = new Subject<void>();
+
+  ngOnInit() {
+    this.service.data$.pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(data => { this.data = data; });
+
+    this.service.updates$.pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(update => { this.processUpdate(update); });
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();   // Triggers takeUntil
+    this.destroy$.complete(); // Clean up the subject itself
+  }
+}
+```
+
+## The async Pipe Approach (No Unsubscribe Needed)
+
+```typescript
+@Component({
+  template: `
+    <!-- async pipe unsubscribes automatically on component destroy -->
+    @for (item of items$ | async ?? []; track item.id) {
+      <li>{{ item.name }}</li>
+    }
+  `
+})
+class NoLeakComponent {
+  // No subscription management needed — async pipe handles it
+  items$ = this.itemService.getItems();
+}
+```
+
+## Subtle Leaks: Not Just Observable Subscriptions
+
+### EventEmitter Subscriptions
+
+```typescript
+@Component({})
+class ParentComponent {
+  // ❌ Subscribing to @Output EventEmitter
+  someChildRef?: SomeChildComponent;
+
+  ngAfterViewInit() {
+    // This is unusual but happens — subscribing to the EventEmitter
+    this.someChildRef?.someEvent.subscribe(e => {
+      this.handleEvent(e);
+    });
+    // This subscription leaks if the child is later destroyed but parent isn't
+  }
+}
+```
+
+### RxJS Subject as Service
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class EventBusService {
+  private events$ = new Subject<AppEvent>();
+
+  // ❌ Root service Subjects live forever
+  // Any subscription via this service must be cleaned up
+  on(type: string): Observable<AppEvent> {
+    return this.events$.pipe(
+      filter(e => e.type === type)
+    );
+  }
+}
+
+@Component({})
+class EventListenerComponent implements OnInit {
+  ngOnInit() {
+    // ❌ Root service observable — must use takeUntilDestroyed!
+    this.eventBus.on('user-logged-in').pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(event => { this.handleLogin(event); });
+  }
+}
+```
+
+### Timer and Interval
+
+```typescript
+@Component({})
+class TimerComponent implements OnInit, OnDestroy {
+  private timerSub?: Subscription;
+
+  ngOnInit() {
+    // interval() never completes — must unsubscribe!
+    this.timerSub = interval(1000).subscribe(() => {
+      this.updateClock();
+    });
+
+    // ✅ Or with takeUntilDestroyed:
+    interval(1000).pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(() => this.updateClock());
+  }
+
+  ngOnDestroy() {
+    this.timerSub?.unsubscribe(); // Only needed if not using takeUntilDestroyed
+  }
+}
+```
+
+## Observables That Don't Need Cleanup
+
+Not all Observables need unsubscription:
+
+```typescript
+// These complete automatically — no leak risk:
+this.http.get('/api/data').subscribe(...);  // HttpClient: completes after response
+
+// One-shot Observables from operators:
+of(1, 2, 3).subscribe(...);  // Completes immediately
+from([1, 2, 3]).subscribe(...);  // Completes immediately
+forkJoin([...]).subscribe(...);  // Completes when all complete
+
+// Route params complete when the route is destroyed:
+this.route.params.subscribe(...); // Angular manages this
+
+// BUT: timers, intervals, BehaviorSubjects, WebSocket streams — ALWAYS need cleanup
+```
+
+<Callout type="tip">
+A good rule of thumb: if the Observable source outlives the component (shared service, WebSocket, timer, interval), you need cleanup. If the Observable will naturally complete before or when the component destroys (HTTP, router snapshots), cleanup is optional but not harmful.
+</Callout>
+
+<CodeChallenge
+  id="memory-leak-detection"
+  difficulty="advanced"
+  description="A component subscribes to a BehaviorSubject from a root service without takeUntilDestroyed. The user navigates away and back 5 times. How many active subscriptions exist for this component?"
+  options={[
+    "1 — Angular replaces old subscriptions with new ones",
+    "5 — each navigation creates a new component instance and a new subscription, none are cleaned up",
+    "0 — Angular automatically unsubscribes when the component is destroyed",
+    "Depends on the Change Detection strategy"
+  ]}
+  correctAnswer={1}
+  explanation="Each navigation to the route creates a new component instance. That instance subscribes to the BehaviorSubject. When navigation leaves the route, Angular destroys the component (removes from DOM, calls ngOnDestroy if implemented), BUT the BehaviorSubject still has an active subscriber from that instance. The 'destroyed' component is still in memory, held alive by the subscription. Navigate back and forth 5 times = 5 instances = 5 active subscriptions. Each subscription holds a closure reference to its component instance, preventing garbage collection. This is why takeUntilDestroyed is essential for long-lived Observable sources."
+/>
+
+## Detecting Memory Leaks
+
+```
+Tools for finding leaks:
+1. Chrome DevTools → Memory → Take Heap Snapshot
+   - Navigate to a route, take snapshot
+   - Navigate away, take snapshot
+   - Compare: filter for your component class name
+   - If instances still exist after navigation → leak
+
+2. Chrome DevTools → Performance → Record
+   - Navigate back and forth 10 times
+   - Run GC manually (Chrome DevTools → three dots → Collect garbage)
+   - Check JS Heap size: should return to baseline
+   - Growing baseline → leak
+
+3. Angular DevTools → Component tree
+   - Check for components that persist after they should be destroyed
+```
+
+## Senior Insight: The Real Cost of Leaks
+
+A leaked subscription isn't just a memory issue — it's also a correctness issue:
+
+```typescript
+// Leaked subscription continues to process events
+// After component is "destroyed":
+this.userService.currentUser$.subscribe(user => {
+  this.username = user.name; // Writing to a destroyed component
+  this.cdr.markForCheck();   // Triggering CD on a destroyed view — potential error!
+});
+```
+
+If the subscription calls `markForCheck()`, `detectChanges()`, or modifies component state after destroy, it can throw `ViewDestroyedError` or produce incorrect behavior in the UI (old component instance processing new data).
+
+The `takeUntilDestroyed()` operator is not just memory hygiene — it's correctness hygiene.

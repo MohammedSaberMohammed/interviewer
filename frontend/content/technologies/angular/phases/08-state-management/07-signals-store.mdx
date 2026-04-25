@@ -1,0 +1,236 @@
+---
+title: "NgRx Signals Store"
+slug: "signals-store"
+order: 7
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["NgRx", "signals store", "signalStore", "withEntities", "withMethods"]
+summary: "The @ngrx/signals package brings NgRx patterns to Angular's signal system — a modern alternative to the global store that's simpler, more type-safe, and zoneless-compatible."
+docsLinks:
+  - label: "NgRx Signals"
+    url: "https://ngrx.io/guide/signals"
+  - label: "signalStore"
+    url: "https://ngrx.io/guide/signals/signal-store"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## NgRx Signals: The Modern Approach
+
+`@ngrx/signals` (NgRx 17+) provides a signal-based state management solution that combines NgRx's organizational patterns with Angular's new signal primitives. It's simpler than the traditional NgRx Store while still being structured and testable.
+
+```bash
+npm install @ngrx/signals
+```
+
+## `signalStore` — Basic Usage
+
+```typescript
+import { signalStore, withState, withComputed, withMethods } from '@ngrx/signals';
+import { computed, inject } from '@angular/core';
+
+// Define the store
+export const UserStore = signalStore(
+  // Where to provide the store
+  { providedIn: 'root' },  // or 'component', 'module'
+
+  // State slice — creates signals for each property
+  withState({
+    users: [] as User[],
+    selectedId: null as string | null,
+    loading: false,
+    error: null as string | null,
+  }),
+
+  // Computed signals
+  withComputed(({ users, selectedId }) => ({
+    selectedUser: computed(() =>
+      users().find(u => u.id === selectedId()) ?? null
+    ),
+    userCount: computed(() => users().length),
+    activeUsers: computed(() => users().filter(u => u.active)),
+    hasSelection: computed(() => selectedId() !== null),
+  })),
+
+  // Methods (updaters + effects)
+  withMethods((store, userService = inject(UserService)) => ({
+    // Synchronous updater
+    selectUser(id: string) {
+      patchState(store, { selectedId: id });
+    },
+
+    clearSelection() {
+      patchState(store, { selectedId: null });
+    },
+
+    // Async method (effect)
+    async loadUsers() {
+      patchState(store, { loading: true, error: null });
+      try {
+        const users = await firstValueFrom(userService.getUsers());
+        patchState(store, { users, loading: false });
+      } catch (error: any) {
+        patchState(store, { loading: false, error: error.message });
+      }
+    },
+
+    async deleteUser(id: string) {
+      await firstValueFrom(userService.delete(id));
+      patchState(store, { users: store.users().filter(u => u.id !== id) });
+    },
+  }))
+);
+```
+
+## Using the Signal Store in Components
+
+```typescript
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (store.loading()) { <app-spinner /> }
+
+    @for (user of store.activeUsers(); track user.id) {
+      <app-user-card
+        [user]="user"
+        [selected]="user.id === store.selectedId()"
+        (click)="store.selectUser(user.id)" />
+    }
+
+    <p>{{ store.userCount() }} total, {{ store.activeUsers().length }} active</p>
+  `
+})
+class UserListComponent implements OnInit {
+  store = inject(UserStore);
+
+  ngOnInit() {
+    this.store.loadUsers();
+  }
+}
+```
+
+## `withEntities` — NgRx Entity for Signal Store
+
+```typescript
+import { signalStore, withState, withMethods } from '@ngrx/signals';
+import { withEntities, setAllEntities, addEntity, removeEntity, updateEntity } from '@ngrx/signals/entities';
+import { patchState } from '@ngrx/signals';
+
+export const ProductStore = signalStore(
+  { providedIn: 'root' },
+
+  // Adds EntityState<Product> — ids[], entities{} structure
+  withEntities<Product>(),
+
+  // Additional state alongside entities
+  withState({
+    loading: false,
+    selectedId: null as string | null,
+  }),
+
+  withMethods((store, productService = inject(ProductService)) => ({
+    async loadProducts() {
+      patchState(store, { loading: true });
+      const products = await firstValueFrom(productService.getAll());
+      patchState(store, setAllEntities(products), { loading: false });
+    },
+
+    async addProduct(product: Product) {
+      await firstValueFrom(productService.create(product));
+      patchState(store, addEntity(product));
+    },
+
+    async deleteProduct(id: string) {
+      await firstValueFrom(productService.delete(id));
+      patchState(store, removeEntity(id));
+    },
+
+    async updateProduct(product: Product) {
+      await firstValueFrom(productService.update(product));
+      patchState(store, updateEntity({ id: product.id, changes: product }));
+    },
+  }))
+);
+
+// Signal store with entities provides built-in selectors:
+const store = inject(ProductStore);
+store.entities()  // Product[] — all entities in order
+store.ids()       // string[] — all IDs
+store.entityMap() // Record<string, Product>
+```
+
+<Callout type="tip">
+`withEntities()` can be namespaced for multiple entity types in one store: `withEntities<Product>({ collection: 'products' })` and `withEntities<Category>({ collection: 'categories' })`. Access via `store.productsEntities()` and `store.categoriesEntities()`.
+</Callout>
+
+## RxJS Integration in Signal Store
+
+```typescript
+import { rxMethod } from '@ngrx/signals/rxjs-interop';
+import { tapResponse } from '@ngrx/operators';
+
+export const UserStore = signalStore(
+  { providedIn: 'root' },
+  withState({ users: [] as User[], loading: false }),
+
+  withMethods((store, userService = inject(UserService)) => ({
+    // rxMethod wraps an RxJS pipeline for use as a store method
+    loadUsers: rxMethod<void>(
+      pipe(
+        tap(() => patchState(store, { loading: true })),
+        switchMap(() =>
+          userService.getUsers().pipe(
+            tapResponse({
+              next: (users) => patchState(store, { users, loading: false }),
+              error: (err: Error) => patchState(store, { loading: false }),
+            })
+          )
+        )
+      )
+    ),
+
+    // Search with debounce
+    searchUsers: rxMethod<string>(
+      pipe(
+        debounceTime(300),
+        distinctUntilChanged(),
+        switchMap(query =>
+          userService.search(query).pipe(
+            tapResponse({
+              next: (users) => patchState(store, { users }),
+              error: () => {},
+            })
+          )
+        )
+      )
+    ),
+  }))
+);
+```
+
+<CodeChallenge
+  id="signal-store-vs-ngrx"
+  difficulty="advanced"
+  description="What is the main advantage of @ngrx/signals signalStore over traditional NgRx Store for feature state?"
+  options={[
+    "signalStore supports more CRUD operations than the traditional store",
+    "No actions or reducers needed — state is mutated directly through patchState in methods, reducing boilerplate",
+    "signalStore includes built-in HTTP caching that traditional NgRx lacks",
+    "signalStore works offline by default"
+  ]}
+  correctAnswer={1}
+  explanation="The traditional NgRx Store requires actions (events), reducers (pure state transforms), selectors, and effects for every operation. signalStore combines all of this into a single, concise declaration. Methods directly update state via patchState — no actions dispatched, no reducers to write, no effects service to inject. This dramatically reduces boilerplate while maintaining structure and testability."
+/>
+
+## Senior Insight: The Evolution Path
+
+Angular state management evolution:
+1. **Component state** → simple signals
+2. **Shared service state** → BehaviorSubject or signal services
+3. **Feature state** → ComponentStore or signalStore with `{ providedIn: 'component' }`
+4. **Global app state** → Traditional NgRx Store (still the best for cross-app state, DevTools, time-travel)
+
+`@ngrx/signals` is increasingly occupying the middle ground between service state and full NgRx — especially for feature-scoped state that's more complex than a simple signal service but doesn't need global store infrastructure.

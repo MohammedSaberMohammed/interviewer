@@ -1,0 +1,21 @@
+{
+  "slug": "09-performance-optimization",
+  "number": 9,
+  "title": "Performance & Optimization",
+  "subtitle": "Change detection tuning, virtual scrolling, SSR, and deferrable views",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "⚡",
+  "color": "amber",
+  "description": "Performance optimization in Angular spans change detection tuning, trackBy, virtual scrolling for large lists, SSR with Angular Universal, bundle optimization, and Angular 17's powerful @defer syntax for lazy UI rendering.",
+  "prerequisites": ["04-component-architecture", "06-rxjs-reactive"],
+  "learningOutcomes": [
+    "Profile and optimize change detection with OnPush and markForCheck",
+    "Implement trackBy correctly and explain why it matters for list performance",
+    "Set up CDK virtual scrolling for large lists",
+    "Analyze and reduce bundle sizes with the Angular build analyzer",
+    "Configure Angular Universal for server-side rendering",
+    "Use @defer with @placeholder, @loading, and @error for lazy UI",
+    "Use Angular DevTools profiler to identify performance bottlenecks"
+  ]
+}

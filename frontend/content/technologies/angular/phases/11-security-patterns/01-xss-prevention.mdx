@@ -1,0 +1,253 @@
+---
+title: "XSS Prevention"
+slug: "xss-prevention"
+order: 1
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "security", "XSS", "DomSanitizer", "innerHTML", "bypassSecurityTrust", "Content Security Policy"]
+summary: "Angular's security model auto-escapes all template bindings to prevent XSS. DomSanitizer handles cases where HTML/URL/resource injection is intentional. Understanding when Angular's protection applies — and when it doesn't — is essential for secure Angular applications."
+docsLinks:
+  - label: "Angular Security"
+    url: "https://angular.dev/best-practices/security"
+  - label: "DomSanitizer"
+    url: "https://angular.dev/api/platform-browser/DomSanitizer"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Angular's XSS Defense Model
+
+Cross-Site Scripting (XSS) attacks inject malicious scripts into web pages. Angular's primary defense: **all template bindings are auto-escaped**.
+
+```typescript
+// User-supplied data
+const userInput = '<script>alert("XSS")</script>';
+
+// Angular template binding
+@Component({
+  template: `<div>{{ userInput }}</div>`
+})
+class SafeComponent {
+  userInput = '<script>alert("XSS")</script>';
+}
+
+// Rendered HTML:
+// <div>&lt;script&gt;alert("XSS")&lt;/script&gt;</div>
+// The <script> tag is never executed — it's displayed as text
+```
+
+Angular sanitizes:
+- `{{ }}` interpolation — treated as text, all HTML escaped
+- `[textContent]` — text binding, HTML escaped
+- `[innerHTML]` — sanitized (removes dangerous HTML)
+- `[href]`, `[src]` — sanitized (removes `javascript:` protocols)
+- Style bindings — sanitized
+
+## innerHTML: The Exception
+
+`[innerHTML]` is the most common XSS vector in Angular:
+
+```typescript
+@Component({
+  template: `
+    <!-- ⚠️ Angular sanitizes this — removes scripts but allows safe HTML -->
+    <div [innerHTML]="richContent"></div>
+  `
+})
+class RichTextComponent {
+  richContent = `
+    <p>Hello <strong>World</strong></p>
+    <script>alert('XSS')</script>  <!-- REMOVED by sanitizer -->
+    <img src="x" onerror="alert('XSS')">  <!-- onerror REMOVED -->
+    <a href="javascript:alert('XSS')">Link</a>  <!-- href sanitized to 'unsafe:...' -->
+  `;
+}
+
+// Angular's sanitizer allows safe tags (<p>, <strong>, <a>, <img>)
+// but removes: <script>, event handlers (onload, onerror, onclick)
+// and javascript: URLs
+```
+
+<Callout type="warning">
+Even though Angular sanitizes `[innerHTML]`, treat any user-supplied HTML binding as a high-risk operation. Angular's sanitizer is good but not invulnerable to zero-day browser exploits. Prefer rendering structured data via Angular templates rather than injecting raw HTML.
+</Callout>
+
+## DomSanitizer: Bypassing Security (Carefully)
+
+Sometimes you genuinely need to inject trusted HTML — e.g., from your own rich text editor. `DomSanitizer.bypassSecurityTrust*` methods tell Angular you've verified the content is safe:
+
+```typescript
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
+import { inject } from '@angular/core';
+
+@Component({
+  template: `<div [innerHTML]="safeHtml"></div>`
+})
+class ArticleComponent {
+  private sanitizer = inject(DomSanitizer);
+
+  // Only bypass when content is from a trusted source you control
+  safeHtml: SafeHtml;
+
+  constructor() {
+    // ✅ Content from your own CMS/database — you control it
+    const htmlFromYourCMS = '<p>Article content with <strong>formatting</strong></p>';
+
+    // Mark as trusted — Angular won't sanitize it
+    this.safeHtml = this.sanitizer.bypassSecurityTrustHtml(htmlFromYourCMS);
+  }
+}
+```
+
+The `bypass*` methods:
+```typescript
+sanitizer.bypassSecurityTrustHtml(value)     // For [innerHTML]
+sanitizer.bypassSecurityTrustStyle(value)    // For [style]
+sanitizer.bypassSecurityTrustScript(value)   // For <script> src (rare)
+sanitizer.bypassSecurityTrustUrl(value)      // For [href], [src]
+sanitizer.bypassSecurityTrustResourceUrl(value) // For iframe src, <script> src
+```
+
+### Safe URL Pattern
+
+```typescript
+@Component({
+  template: `<video [src]="safeVideoUrl" controls></video>`
+})
+class VideoComponent {
+  private sanitizer = inject(DomSanitizer);
+
+  safeVideoUrl: SafeResourceUrl;
+
+  constructor() {
+    // A YouTube embed URL — not user-supplied
+    const videoId = 'dQw4w9WgXcQ';
+    const url = `https://www.youtube.com/embed/${videoId}`;
+    this.safeVideoUrl = this.sanitizer.bypassSecurityTrustResourceUrl(url);
+  }
+}
+```
+
+## What Angular Does NOT Protect Against
+
+Understanding the limits of Angular's security is as important as understanding what it provides:
+
+```typescript
+// ❌ 1. Template injection — NEVER build Angular templates from user input
+const template = `<div>${userInput}</div>`; // If userInput contains {{ evil }}, it executes!
+@Component({ template }) // Dynamic templates are XSS vectors
+
+// ❌ 2. Direct DOM manipulation bypasses Angular's sanitizer
+@Component({})
+class UnsafeComponent implements AfterViewInit {
+  @ViewChild('container') container!: ElementRef;
+
+  ngAfterViewInit() {
+    // Directly setting innerHTML bypasses Angular entirely
+    this.container.nativeElement.innerHTML = userSuppliedHtml; // DANGEROUS!
+  }
+}
+
+// ✅ Always go through Angular's binding system
+// Use [innerHTML] instead of nativeElement.innerHTML
+```
+
+```typescript
+// ❌ 3. Server-side rendering with user data in template strings
+// Angular SSR renders on the server — ensure server-side HTML generation
+// also escapes data before embedding in HTML
+
+// ❌ 4. Eval and Function constructor
+eval(userInput); // Never
+new Function(userInput)(); // Never
+```
+
+## Server-Side XSS Considerations
+
+Angular protects the client-side rendering. Your API also needs protection:
+
+```typescript
+// HTTP interceptor that sets security headers
+export function securityHeadersInterceptor(
+  req: HttpRequest<unknown>,
+  next: HttpHandlerFn
+): Observable<HttpEvent<unknown>> {
+  // These headers protect the server's HTML responses
+  const securedReq = req.clone({
+    setHeaders: {
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+    }
+  });
+
+  return next(securedReq);
+}
+```
+
+## Content Security Policy Integration
+
+CSP is the browser-level defense that complements Angular's sanitization:
+
+```html
+<!-- index.html — CSP meta tag (or better: HTTP header) -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'nonce-{RANDOM_NONCE}';
+               style-src 'self' 'unsafe-inline';
+               img-src 'self' data: https:;
+               font-src 'self';
+               connect-src 'self' https://api.yourdomain.com;">
+```
+
+Angular with strict CSP:
+```typescript
+// Disable inline styles (required by strict CSP)
+// Angular Material workaround: use Renderer2 instead of style bindings
+
+// For Angular's development mode warnings about inline styles:
+// Use --no-hmr to avoid CSP violations in dev
+```
+
+<CodeChallenge
+  id="xss-angular-sanitizer"
+  difficulty="advanced"
+  description="A component binds user-submitted content to [innerHTML]. The user submits: '<img src=x onerror=alert(1)>'. What does Angular render?"
+  options={[
+    "<img src=x onerror=alert(1)> — Angular doesn't sanitize innerHTML",
+    "<img src=x> — Angular's sanitizer removes the onerror event handler but keeps the img tag",
+    "The entire string is escaped to text: &lt;img src=x onerror=alert(1)&gt;",
+    "Nothing — Angular blocks all HTML injection completely"
+  ]}
+  correctAnswer={1}
+  explanation="Angular's built-in sanitizer for [innerHTML] uses DOMPurify-like logic: it allows safe HTML elements (<p>, <strong>, <img>, <a>, etc.) but strips dangerous attributes — specifically event handlers (onclick, onerror, onload, etc.) and javascript: protocol URLs. The <img> element is preserved but the onerror attribute is removed. The src='x' causes a broken image (harmless). This is Angular's 'sanitize, don't reject' approach — it tries to preserve the intent (show an image) while removing the dangerous part (the XSS payload). Always use bypassSecurityTrustHtml only for content you fully control."
+/>
+
+## Practical Security Checklist
+
+```typescript
+// ✅ DO
+[innerHTML]="sanitizedContent"  // Angular sanitizes
+{{ userText }}                   // Always safe — text interpolation
+this.sanitizer.bypassSecurityTrustHtml(trustedCmsContent)  // Explicit bypass
+
+// ❌ DON'T
+element.nativeElement.innerHTML = userInput;  // Bypasses Angular entirely
+eval(userExpression);                         // Never eval user input
+new Function(userCode)();                    // Never eval user code
+template: `${dynamicTemplate}`               // Never build templates from user input
+this.sanitizer.bypassSecurityTrustHtml(userInput) // Never bypass for user input
+```
+
+## Senior Insight: Defense in Depth
+
+Angular's sanitization is one layer — not the only layer. A complete XSS defense strategy:
+
+1. **Angular auto-escaping**: Covers all template bindings automatically
+2. **Strict Content Security Policy**: Prevents injected scripts from executing even if sanitizer fails
+3. **HttpOnly cookies**: Prevents stolen session tokens via XSS `document.cookie`
+4. **Server-side output encoding**: API responses encode HTML entities
+5. **Subresource Integrity (SRI)**: Verifies CDN-loaded scripts haven't been tampered with
+6. **Regular dependency audits**: `npm audit` catches known XSS vulnerabilities in dependencies
+
+The goal is that exploiting your app requires defeating ALL layers simultaneously — making attacks impractical even if one layer has a flaw.

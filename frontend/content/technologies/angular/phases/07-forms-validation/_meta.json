@@ -1,0 +1,21 @@
+{
+  "slug": "07-forms-validation",
+  "number": 7,
+  "title": "Forms & Validation",
+  "subtitle": "Template-driven forms, reactive forms, validators, and typed forms",
+  "level": "mid",
+  "estimatedHours": 9,
+  "emoji": "📝",
+  "color": "green",
+  "description": "Angular has two form systems: template-driven (ngModel) and reactive (FormControl/FormGroup/FormBuilder). Master both, understand typed forms (Angular 14+), and know how to write synchronous and asynchronous validators.",
+  "prerequisites": ["02-angular-fundamentals", "06-rxjs-reactive"],
+  "learningOutcomes": [
+    "Compare template-driven and reactive forms and choose the right one",
+    "Build typed reactive forms with FormControl, FormGroup, and FormBuilder",
+    "Write custom synchronous validators as pure functions",
+    "Implement async validators with proper debouncing and pending state",
+    "Manage dynamic form fields with FormArray",
+    "Display validation errors using touched, dirty, and pristine states",
+    "Build form configuration-driven dynamic forms"
+  ]
+}

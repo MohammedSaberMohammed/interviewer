@@ -1,0 +1,263 @@
+---
+title: "Routing Traps"
+slug: "routing-traps"
+order: 6
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "traps", "routing", "ActivatedRoute", "params", "NavigationExtras", "router", "guards"]
+summary: "Angular routing has several common traps: reading route params incorrectly, navigation extras being ignored, guards not working as expected with lazy loading, and the component reuse strategy causing components not to reinitialize. These subtle issues cause real production bugs."
+docsLinks:
+  - label: "Angular Router"
+    url: "https://angular.dev/guide/routing"
+  - label: "ActivatedRoute"
+    url: "https://angular.dev/api/router/ActivatedRoute"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Trap 1: Snapshot vs Observable for Route Params
+
+```typescript
+@Component({})
+class UserDetailComponent implements OnInit {
+  userId: string = '';
+
+  // ❌ snapshot doesn't update when params change
+  // If you navigate from /users/1 to /users/2 while already on UserDetail:
+  ngOnInit() {
+    this.userId = this.route.snapshot.params['id']; // Gets '1', never '2'
+  }
+
+  // ✅ Observable updates on every navigation to the same route
+  ngOnInit() {
+    this.route.paramMap.pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(params => {
+      this.userId = params.get('id') ?? ''; // Updates to '2' when navigating
+      this.loadUser(this.userId);
+    });
+  }
+}
+```
+
+When does this matter? When you have navigation within the same route — a "next user" button, list→detail→list→detail navigation, or breadcrumbs that navigate within the same component.
+
+## Trap 2: Component Not Reinitializing
+
+```typescript
+// Navigate from /products/1 to /products/2
+// Angular reuses the existing ProductDetailComponent instance!
+// ngOnInit does NOT fire again on same component navigation
+
+@Component({})
+class ProductDetailComponent implements OnInit {
+  product: Product | null = null;
+  private route = inject(ActivatedRoute);
+
+  ngOnInit() {
+    // ❌ Only runs once — won't reload when product ID changes
+    const id = this.route.snapshot.params['id'];
+    this.productService.getProduct(id).subscribe(p => this.product = p);
+  }
+}
+```
+
+```typescript
+// ✅ Fix: Use route params Observable to react to navigation
+ngOnInit() {
+  this.route.params.pipe(
+    takeUntilDestroyed(this.destroyRef),
+    switchMap(params => this.productService.getProduct(params['id']))
+  ).subscribe(product => this.product = product);
+}
+```
+
+## Trap 3: withComponentInputBinding — Required Configuration
+
+```typescript
+// Angular 16+ feature: route params → component inputs
+// BUT requires explicit enablement
+
+// ❌ Without configuration, @Input() from params doesn't work
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes), // Missing withComponentInputBinding!
+  ]
+};
+
+// ✅ Correctly configured
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes, withComponentInputBinding()), // Required!
+  ]
+};
+
+// Now this works:
+@Component({})
+class UserDetailComponent {
+  @Input() id!: string; // Auto-populated from route params!
+}
+```
+
+## Trap 4: NavigationExtras Being Lost
+
+```typescript
+// ❌ State passed via NavigationExtras is lost on browser refresh!
+this.router.navigate(['/dashboard'], {
+  state: { message: 'Login successful!' }
+});
+
+@Component({})
+class DashboardComponent implements OnInit {
+  ngOnInit() {
+    // ❌ This works initially but after browser refresh: history.state = {}
+    const message = history.state.message;
+    // → message is undefined after refresh
+  }
+}
+```
+
+```typescript
+// ✅ For persistent data, use query params or storage
+this.router.navigate(['/dashboard'], {
+  queryParams: { message: 'login_success' }
+});
+
+// Or persist the message to sessionStorage:
+sessionStorage.setItem('pendingMessage', 'Login successful!');
+this.router.navigate(['/dashboard']);
+```
+
+## Trap 5: canActivate vs canMatch for Lazy Routes
+
+```typescript
+// ❌ canActivate on lazy route: chunk is downloaded first, then guard runs
+const routes: Routes = [
+  {
+    path: 'admin',
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+    canActivate: [authGuard] // Downloaded, THEN checked
+  }
+];
+
+// ✅ canMatch: guard checked BEFORE downloading the chunk
+const routes: Routes = [
+  {
+    path: 'admin',
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+    canMatch: [authGuard] // Checked FIRST — chunk not downloaded for unauthorized users
+  }
+];
+```
+
+## Trap 6: Async Guards Returning Observables That Don't Complete
+
+```typescript
+// ❌ Guard returns Observable that never completes → navigation hangs forever
+export const myGuard: CanActivateFn = () => {
+  return this.authService.isAuthenticated$; // Subject never completes!
+  // Navigation waits for Observable to complete, but Subject never does
+  // → App appears frozen
+};
+
+// ✅ Use take(1) to ensure the Observable completes
+export const myGuard: CanActivateFn = () => {
+  return inject(AuthService).isAuthenticated$.pipe(
+    take(1) // Takes only the first emission and completes
+  );
+};
+```
+
+## Trap 7: RouterLink vs navigate — Query Param Handling
+
+```typescript
+// ❌ RouterLink and navigate handle existing query params differently
+<a [routerLink]="['/search']" [queryParams]="{ page: 2 }">Next Page</a>
+// This REPLACES all existing query params with { page: 2 }
+// If URL was /search?q=angular&sort=asc
+// After click: /search?page=2 (q and sort are GONE!)
+
+// ✅ Preserve existing query params
+<a [routerLink]="['/search']"
+   [queryParams]="{ page: 2 }"
+   queryParamsHandling="merge">Next Page</a>
+// After click: /search?q=angular&sort=asc&page=2
+
+// In TypeScript:
+this.router.navigate(['/search'], {
+  queryParams: { page: 2 },
+  queryParamsHandling: 'merge' // 'merge' | 'preserve'
+});
+```
+
+## Trap 8: Relative vs Absolute Navigation
+
+```typescript
+// In a child route component:
+// Current URL: /admin/users/123
+
+// ❌ navigate() with relative path — often unexpected
+this.router.navigate(['../']); // Relative to what? Depends on context
+
+// ✅ Use absolute paths to be explicit
+this.router.navigate(['/admin/users']); // Always goes here regardless of current route
+
+// ✅ Or use relativeTo for intentional relative navigation
+this.router.navigate(['..'], { relativeTo: this.route });
+// This navigates to parent route: /admin/users
+```
+
+<CodeChallenge
+  id="routing-param-reuse"
+  difficulty="advanced"
+  description="A user is viewing /products/1. They click a link to /products/2. The ProductDetailComponent uses snapshot.params['id'] in ngOnInit to load the product. What happens?"
+  options={[
+    "Angular creates a new ProductDetailComponent instance for /products/2, ngOnInit runs again with id=2",
+    "Angular reuses the existing instance, ngOnInit does NOT run again, the view still shows product 1",
+    "Angular destroys and recreates the component because the route param changed",
+    "Angular automatically detects the param change and calls ngOnChanges with the new param value"
+  ]}
+  correctAnswer={1}
+  explanation="By default, Angular's router reuses component instances when navigating within the same route pattern (/products/:id → /products/:id). ngOnInit does NOT fire again for the same component class on same-pattern navigation. snapshot.params captures the params at the time it was read (in ngOnInit when id=1) and never updates. The view remains showing product 1's data even though the URL shows /products/2. The fix: subscribe to this.route.paramMap or this.route.params Observables, which emit new values on every navigation and trigger data reloading via switchMap."
+/>
+
+## Trap 9: Router Events Firing Multiple Times
+
+```typescript
+// ❌ Router events fire for every navigation step
+// A single navigation triggers: NavigationStart → GuardsCheckStart → GuardsCheckEnd
+// → ResolveStart → ResolveEnd → NavigationEnd (plus more)
+// If you listen to ALL events, your handler fires 6+ times per navigation
+
+this.router.events.subscribe(event => {
+  this.isLoading = true; // ← Fires 6 times per navigation!
+});
+
+// ✅ Filter to only the events you care about
+this.router.events.pipe(
+  filter(event => event instanceof NavigationStart || event instanceof NavigationEnd)
+).subscribe(event => {
+  this.isLoading = event instanceof NavigationStart;
+});
+```
+
+## Senior Insight: Debugging Router Issues
+
+```typescript
+// Enable router tracing for debugging
+provideRouter(routes, withDebugTracing())
+// Logs every router event to the console — very verbose, dev only
+
+// Check router state programmatically
+const router = inject(Router);
+console.log(router.url);                    // Current URL
+console.log(router.routerState.snapshot);   // Current route tree snapshot
+
+// Common debugging: "why isn't my guard running?"
+// Check:
+// 1. Is canMatch or canActivate correct for lazy vs eager routes?
+// 2. Is the guard actually in the providers array (if class-based)?
+// 3. Is inject() being called correctly in the functional guard?
+// 4. Is the Observable completing? (take(1))
+```

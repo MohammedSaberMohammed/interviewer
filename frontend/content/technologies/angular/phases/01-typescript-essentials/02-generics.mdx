@@ -1,0 +1,239 @@
+---
+title: "Generics"
+slug: "generics"
+order: 2
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["TypeScript", "generics", "type constraints", "utility types"]
+summary: "Generics let you write reusable, type-safe code that works across many types — a cornerstone of Angular's HttpClient, Observables, and forms APIs."
+docsLinks:
+  - label: "TypeScript Handbook: Generics"
+    url: "https://www.typescriptlang.org/docs/handbook/2/generics.html"
+  - label: "Angular HttpClient with Generics"
+    url: "https://angular.dev/guide/http/making-requests"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Generics Matter in Angular
+
+You use generics every day in Angular without thinking about it. `HttpClient.get<User[]>('/api/users')` is a generic call. `Observable<Product>` is a generic type. `FormControl<string>` is a generic class. Understanding how generics work means you can write your own type-safe abstractions rather than falling back to `any`.
+
+## The Problem Without Generics
+
+Imagine a simple cache service:
+
+```typescript
+// Without generics — loses all type information
+class Cache {
+  private data: any;
+
+  set(value: any): void {
+    this.data = value;
+  }
+
+  get(): any {  // Returns any — no type safety
+    return this.data;
+  }
+}
+
+const cache = new Cache();
+cache.set({ id: 1, name: 'Alice' });
+const user = cache.get();
+user.nonExistentProp; // No error! TypeScript can't help you
+```
+
+## Generic Functions
+
+The `T` in `<T>` is a **type parameter** — a placeholder resolved when the function is called:
+
+```typescript
+function identity<T>(value: T): T {
+  return value;
+}
+
+// TypeScript infers T from the argument
+const num = identity(42);          // T = number
+const str = identity('hello');     // T = string
+const user = identity({ id: 1 }); // T = { id: number }
+
+// Or specify T explicitly
+const explicit = identity<string>('hello');
+```
+
+Now the cache with generics:
+
+```typescript
+class Cache<T> {
+  private data: T | null = null;
+
+  set(value: T): void {
+    this.data = value;
+  }
+
+  get(): T | null {
+    return this.data;
+  }
+}
+
+const userCache = new Cache<{ id: number; name: string }>();
+userCache.set({ id: 1, name: 'Alice' });
+const user = userCache.get();
+// user is { id: number; name: string } | null — fully typed!
+user?.nonExistentProp; // TypeScript ERROR — great!
+```
+
+## Generic Constraints with `extends`
+
+Sometimes you need to ensure T has certain properties:
+
+```typescript
+// Constrain T to objects with an 'id' property
+function findById<T extends { id: number }>(items: T[], id: number): T | undefined {
+  return items.find(item => item.id === id);
+}
+
+interface User { id: number; name: string }
+interface Product { id: number; price: number }
+
+const users: User[] = [{ id: 1, name: 'Alice' }];
+const products: Product[] = [{ id: 1, price: 9.99 }];
+
+findById(users, 1);    // Returns User | undefined ✅
+findById(products, 1); // Returns Product | undefined ✅
+findById([{ foo: 'bar' }], 1); // Error: missing 'id' ✅
+```
+
+A real Angular pattern — a generic API service:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class ApiService {
+  constructor(private http: HttpClient) {}
+
+  getOne<T extends { id: string | number }>(endpoint: string, id: T['id']): Observable<T> {
+    return this.http.get<T>(`/api/${endpoint}/${id}`);
+  }
+
+  getAll<T>(endpoint: string): Observable<T[]> {
+    return this.http.get<T[]>(`/api/${endpoint}`);
+  }
+
+  create<T>(endpoint: string, body: Omit<T, 'id'>): Observable<T> {
+    return this.http.post<T>(`/api/${endpoint}`, body);
+  }
+}
+
+// Usage — fully typed
+const user$ = apiService.getOne<User>('users', 1);
+const products$ = apiService.getAll<Product>('products');
+```
+
+## Multiple Type Parameters
+
+Functions can have multiple type parameters:
+
+```typescript
+function merge<T, U>(obj1: T, obj2: U): T & U {
+  return { ...obj1, ...obj2 };
+}
+
+const merged = merge({ name: 'Alice' }, { age: 30 });
+// merged: { name: string } & { age: number }
+
+// Key-value pair
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+const user = { id: 1, name: 'Alice', role: 'admin' as const };
+const name = getProperty(user, 'name'); // type: string
+const role = getProperty(user, 'role'); // type: 'admin'
+getProperty(user, 'missing');            // Error: not a key of user
+```
+
+<Callout type="tip">
+`keyof T` is one of TypeScript's most powerful operators. Combined with generics, `K extends keyof T` means "K must be one of T's property names." This is how Angular's typed reactive forms (`FormGroup<{name: FormControl<string>}>`) achieve compile-time safety.
+</Callout>
+
+## Generic Interfaces and Default Types
+
+```typescript
+// Generic interface
+interface Repository<T, ID = number> {  // ID defaults to number
+  findById(id: ID): Observable<T>;
+  findAll(): Observable<T[]>;
+  save(entity: T): Observable<T>;
+  delete(id: ID): Observable<void>;
+}
+
+// Implementation
+@Injectable()
+class UserRepository implements Repository<User> {
+  constructor(private http: HttpClient) {}
+
+  findById(id: number): Observable<User> {
+    return this.http.get<User>(`/api/users/${id}`);
+  }
+
+  findAll(): Observable<User[]> {
+    return this.http.get<User[]>('/api/users');
+  }
+
+  save(user: User): Observable<User> {
+    return user.id
+      ? this.http.put<User>(`/api/users/${user.id}`, user)
+      : this.http.post<User>('/api/users', user);
+  }
+
+  delete(id: number): Observable<void> {
+    return this.http.delete<void>(`/api/users/${id}`);
+  }
+}
+```
+
+## Generic Type Inference in Practice
+
+TypeScript is often smart enough to infer type parameters:
+
+```typescript
+// Angular signal example
+import { signal, computed } from '@angular/core';
+
+const count = signal(0); // Inferred: WritableSignal<number>
+const double = computed(() => count() * 2); // Inferred: Signal<number>
+
+// Array methods preserve generic types
+const users: User[] = [];
+const names = users.map(u => u.name); // string[] — inferred from User.name
+
+// Observable operators
+const userId$ = new Observable<number>();
+const user$ = userId$.pipe(
+  switchMap(id => this.http.get<User>(`/api/users/${id}`))
+); // Observable<User> — TypeScript follows the generic chain
+```
+
+<CodeChallenge
+  id="generics-constraint"
+  difficulty="intermediate"
+  description="You have a function `function first<T>(arr: T[]): T | undefined`. A colleague wants to add a constraint so T must have a 'createdAt: Date' property to allow sorting. Which signature is correct?"
+  options={[
+    "function first<T: { createdAt: Date }>(arr: T[]): T | undefined",
+    "function first<T extends { createdAt: Date }>(arr: T[]): T | undefined",
+    "function first<T implements { createdAt: Date }>(arr: T[]): T | undefined",
+    "function first<T where T.createdAt = Date>(arr: T[]): T | undefined"
+  ]}
+  correctAnswer={1}
+  explanation="Generic constraints use the 'extends' keyword: T extends { createdAt: Date }. This means T must be assignable to an object with a createdAt Date property — but T can have additional properties. The other syntaxes are not valid TypeScript."
+/>
+
+## Senior Insight: When Not to Use Generics
+
+Generics add complexity. Don't reach for them when:
+1. A function only ever operates on one type — just annotate it directly
+2. The type parameter isn't used in both the input and output — it won't provide type safety
+3. You're tempted to write `<T extends any>` — that's just `<T>` and adds nothing
+
+The test: if removing the generic type parameter and replacing with `unknown` or a concrete type makes the function equally useful and safe, you probably don't need the generic.

@@ -1,0 +1,144 @@
+---
+title: "Content Projection"
+slug: "content-projection"
+order: 3
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "ng-content", "content projection", "slots", "ngTemplateOutlet"]
+summary: "Content projection via ng-content lets you build composable, slot-based components like cards, modals, and tabs. Multi-slot projection and ngTemplateOutlet enable powerful component APIs."
+docsLinks:
+  - label: "Content Projection"
+    url: "https://angular.dev/guide/components/content-projection"
+  - label: "ng-content"
+    url: "https://angular.dev/guide/templates/ng-content"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Is Content Projection?
+
+Content projection lets a component accept and render HTML provided by its parent — similar to how `<slot>` works in web components or `children` props in React. It's what makes reusable layout components (cards, dialogs, accordions, tabs) possible in Angular.
+
+## Basic Single-Slot Projection
+
+```typescript
+// Wrapper/container component
+@Component({
+  selector: 'app-card',
+  standalone: true,
+  template: `
+    <div class="card shadow-md rounded-lg p-4">
+      <ng-content></ng-content>  <!-- Content appears here -->
+    </div>
+  `
+})
+class CardComponent {}
+
+// Parent uses it — any content inside <app-card> is projected
+<app-card>
+  <h3>Card Title</h3>
+  <p>This content is projected into ng-content</p>
+  <button>Action</button>
+</app-card>
+
+// Rendered HTML:
+// <div class="card shadow-md rounded-lg p-4">
+//   <h3>Card Title</h3>
+//   <p>This content is projected into ng-content</p>
+//   <button>Action</button>
+// </div>
+```
+
+## Multi-Slot Projection with `select`
+
+The `select` attribute works like a CSS selector to direct specific content to specific slots:
+
+```typescript
+@Component({
+  selector: 'app-dialog',
+  standalone: true,
+  template: `
+    <div class="dialog-overlay">
+      <div class="dialog">
+        <!-- Each ng-content captures matching elements -->
+        <header class="dialog-header">
+          <ng-content select="[dialog-title]"></ng-content>
+        </header>
+        <main class="dialog-body">
+          <ng-content></ng-content>  <!-- Default slot — catches everything else -->
+        </main>
+        <footer class="dialog-actions">
+          <ng-content select="[dialog-actions]"></ng-content>
+        </footer>
+      </div>
+    </div>
+  `
+})
+class DialogComponent {}
+
+// Usage — attribute-based slot assignment
+<app-dialog>
+  <h2 dialog-title>Confirm Delete</h2>
+
+  <!-- Goes to default ng-content -->
+  <p>Are you sure you want to delete this item? This action cannot be undone.</p>
+
+  <!-- Goes to dialog-actions slot -->
+  <div dialog-actions>
+    <button (click)="cancel()">Cancel</button>
+    <button class="danger" (click)="confirm()">Delete</button>
+  </div>
+</app-dialog>
+```
+
+The `select` attribute supports:
+- Element types: `select="h2"`
+- CSS classes: `select=".btn-primary"`
+- Attributes: `select="[dialog-title]"` ← most common pattern
+- Component selectors: `select="app-tab-panel"`
+
+## `ng-content` with `@if` — Conditional Slots
+
+```typescript
+@Component({
+  selector: 'app-expandable',
+  template: `
+    <div class="expandable-header" (click)="toggle()">
+      <ng-content select="[expandable-header]"></ng-content>
+      <span>{{ expanded ? '▲' : '▼' }}</span>
+    </div>
+    @if (expanded) {
+      <div class="expandable-body">
+        <ng-content></ng-content>
+      </div>
+    }
+  `
+})
+class ExpandableComponent {
+  expanded = false;
+  toggle() { this.expanded = !this.expanded; }
+}
+```
+
+<Callout type="warning">
+Content projection happens at the parent level — the parent creates the projected nodes, and the child just decides where to render them. When you use `@if` around `<ng-content>`, the content is still **created** by the parent even when hidden. Unlike `@if` in regular templates, you can't delay content creation with ng-content. Use `ngTemplateOutlet` if you need lazy content creation.
+</Callout>
+
+## Summary
+
+Content projection via `ng-content` enables composable, slot-based component APIs in Angular. Single-slot projection uses bare `<ng-content>`, multi-slot projection uses `select` to route different content to different slots, and `ngTemplateOutlet` provides template-based lazy projection when you need to delay content creation.
+
+<Quiz
+  id="content-projection-quiz"
+  difficulty="intermediate"
+  question="When a parent component uses `<app-card><p>Content</p></app-card>` and app-card uses `@if (show) { <ng-content /> }`, when is the `<p>` element created?"
+  options={[
+    "When show becomes true — Angular lazily creates projected content",
+    "Immediately when the parent renders — content projection is eager",
+    "Never — @if prevents content creation inside ng-content",
+    "When the child component initializes"
+  ]}
+  correctAnswer={1}
+  explanation="Content projection is always eager — the parent creates projected nodes immediately when it renders. The child's @if only controls where the already-created nodes are inserted into the DOM, not whether they are created. Use ngTemplateOutlet with a TemplateRef for truly lazy content."
+/>

@@ -1,0 +1,231 @@
+---
+title: "Utility Types"
+slug: "utility-types"
+order: 6
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["TypeScript", "utility types", "Partial", "Pick", "Omit", "Record"]
+summary: "TypeScript's built-in utility types eliminate boilerplate and prevent entire categories of bugs. Every Angular developer should have Partial, Pick, Omit, and Record in their toolkit."
+docsLinks:
+  - label: "TypeScript Utility Types"
+    url: "https://www.typescriptlang.org/docs/handbook/utility-types.html"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Stop Writing Duplicate Types
+
+One of TypeScript's greatest productivity boosters is its library of built-in utility types. Instead of creating `UserOptional` by manually marking each field optional, you write `Partial<User>`. Instead of duplicating half an interface, you write `Pick<User, 'id' | 'name'>`. These utilities keep your type definitions DRY and maintainable.
+
+## `Partial<T>` — All Properties Optional
+
+Makes every property in T optional:
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+  preferences: { theme: string; language: string };
+}
+
+// Common use: update/patch operations
+type UserUpdate = Partial<User>;
+// Equivalent to:
+// { id?: number; name?: string; email?: string; ... }
+
+function updateUser(id: number, changes: Partial<User>): Observable<User> {
+  return this.http.patch<User>(`/api/users/${id}`, changes);
+}
+
+// Can update just the role without providing all fields
+updateUser(1, { role: 'admin' });
+```
+
+<Callout type="tip">
+`Partial<T>` is shallow — it only makes top-level properties optional. If you need deep partial types (nested objects also optional), you need a recursive utility type: `type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] }`.
+</Callout>
+
+## `Required<T>` — All Properties Required
+
+The opposite of Partial — makes every optional property required:
+
+```typescript
+interface Config {
+  apiUrl?: string;
+  timeout?: number;
+  retries?: number;
+}
+
+// After validation/defaults are applied, all are guaranteed
+type ValidatedConfig = Required<Config>;
+// { apiUrl: string; timeout: number; retries: number }
+
+function validateConfig(config: Config): ValidatedConfig {
+  return {
+    apiUrl: config.apiUrl ?? 'https://api.default.com',
+    timeout: config.timeout ?? 5000,
+    retries: config.retries ?? 3,
+  };
+}
+```
+
+## `Pick<T, K>` — Select Specific Properties
+
+Creates a type with only the selected keys:
+
+```typescript
+// Only expose safe fields from User
+type PublicUser = Pick<User, 'id' | 'name'>;
+// { id: number; name: string }
+
+// Component inputs often need only a subset of the full model
+type UserCardProps = Pick<User, 'id' | 'name' | 'role'>;
+
+@Component({ selector: 'app-user-card' })
+class UserCardComponent {
+  @Input() user!: UserCardProps; // Only the fields this component needs
+}
+```
+
+## `Omit<T, K>` — Exclude Specific Properties
+
+Creates a type excluding the listed keys — the opposite of Pick:
+
+```typescript
+// Create new entity type (without server-generated fields)
+type CreateUserDto = Omit<User, 'id' | 'createdAt' | 'updatedAt'>;
+// { name: string; email: string; role: 'admin' | 'user'; preferences: ... }
+
+function createUser(dto: CreateUserDto): Observable<User> {
+  return this.http.post<User>('/api/users', dto);
+}
+
+// Can't accidentally pass id in a create call
+createUser({
+  name: 'Alice',
+  email: 'alice@example.com',
+  role: 'user',
+  preferences: { theme: 'dark', language: 'en' }
+});
+```
+
+## `Record<K, V>` — Dictionary/Map Type
+
+Creates an object type with specific key and value types:
+
+```typescript
+// Simple dictionary
+type RolePermissions = Record<'admin' | 'user' | 'guest', string[]>;
+
+const permissions: RolePermissions = {
+  admin: ['read', 'write', 'delete'],
+  user: ['read', 'write'],
+  guest: ['read'],
+};
+// TypeScript enforces all three keys exist
+
+// Generic lookup map
+type EntityMap<T extends { id: number }> = Record<number, T>;
+
+function toMap<T extends { id: number }>(items: T[]): EntityMap<T> {
+  return items.reduce((acc, item) => {
+    acc[item.id] = item;
+    return acc;
+  }, {} as EntityMap<T>);
+}
+```
+
+## `ReturnType<T>` and `Parameters<T>`
+
+Extract types from function signatures — incredibly useful for testing:
+
+```typescript
+function createUserService() {
+  return {
+    getUser: (id: number) => of({ id, name: 'Alice' }),
+    updateUser: (id: number, data: Partial<User>) => of({ ...data, id } as User),
+  };
+}
+
+// Infer the return type without importing the internal type
+type UserService = ReturnType<typeof createUserService>;
+
+// Extract parameter types
+type UpdateUserArgs = Parameters<UserService['updateUser']>;
+// [number, Partial<User>]
+
+// Extremely useful for mocking in tests
+const mockService: jest.Mocked<UserService> = {
+  getUser: jest.fn(),
+  updateUser: jest.fn(),
+};
+```
+
+## `NonNullable<T>`, `Exclude<T, U>`, `Extract<T, U>`
+
+```typescript
+type MaybeUser = User | null | undefined;
+type DefinitelyUser = NonNullable<MaybeUser>; // User
+
+// Exclude members from a union
+type Status = 'loading' | 'success' | 'error' | 'idle';
+type ActiveStatus = Exclude<Status, 'idle'>; // 'loading' | 'success' | 'error'
+
+// Extract matching members from a union
+type ErrorOrSuccess = Extract<Status, 'success' | 'error'>; // 'success' | 'error'
+
+// Practical: filter observable events
+type RouterNavigationEvent = Extract<
+  RouterEvent,
+  NavigationStart | NavigationEnd
+>;
+```
+
+## Combining Utility Types
+
+Real-world types often combine multiple utilities:
+
+```typescript
+// Form value type: all fields optional (form might be partially filled)
+// but excluding server-managed fields
+type UserFormValue = Partial<Omit<User, 'id' | 'createdAt'>>;
+
+// DTO for updating specific user fields
+type PatchUserDto = Required<Pick<User, 'id'>> & Partial<Omit<User, 'id'>>;
+// Must have id, optionally updates other fields
+
+// State type: loading flag added to data
+type WithLoading<T> = T & { loading: boolean; error: string | null };
+type UsersState = WithLoading<{ users: User[]; total: number }>;
+```
+
+<CodeChallenge
+  id="utility-types-pick-omit"
+  difficulty="foundation"
+  description="You have interface Product { id: string; name: string; price: number; internalCost: number; supplierId: string }. You need a type for public API responses that excludes internalCost and supplierId. Which is correct?"
+  options={[
+    "type PublicProduct = Partial<Product>",
+    "type PublicProduct = Pick<Product, 'id' | 'name' | 'price'>",
+    "type PublicProduct = Omit<Product, 'internalCost' | 'supplierId'>",
+    "Both B and C produce the same result"
+  ]}
+  correctAnswer={3}
+  explanation="Both Pick<Product, 'id' | 'name' | 'price'> and Omit<Product, 'internalCost' | 'supplierId'> produce { id: string; name: string; price: number }. For this case they're equivalent. In practice: use Pick when you want to explicitly list what's included (safer when new fields are added — they won't automatically appear); use Omit when it's easier to list what to exclude."
+/>
+
+## Senior Insight: Prefer Omit for Security-Sensitive Fields
+
+When creating public-facing DTOs, `Omit` is safer than `Pick`:
+
+```typescript
+// ❌ With Pick — adding a new safe field to User requires updating every Pick
+type PublicUser = Pick<User, 'id' | 'name' | 'email'>;
+
+// ✅ With Omit — new fields are automatically included (unless explicitly excluded)
+type PublicUser = Omit<User, 'passwordHash' | 'internalNotes' | 'supplierId'>;
+```
+
+The choice depends on your security model. If you're maintaining an allowlist of safe fields, use `Pick`. If you're maintaining a blocklist of dangerous fields, use `Omit`. In security-sensitive contexts, `Pick` (allowlist) is generally safer because it forces you to explicitly include each field.

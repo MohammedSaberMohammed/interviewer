@@ -1,0 +1,236 @@
+---
+title: "Attribute Directives"
+slug: "attribute-directives"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "directives", "ngClass", "ngStyle", "custom directives", "HostListener"]
+summary: "Attribute directives modify the appearance or behavior of an existing element. From built-in ngClass and ngStyle to custom directives with @HostListener and @HostBinding."
+docsLinks:
+  - label: "Angular Attribute Directives"
+    url: "https://angular.dev/guide/directives/attribute-directives"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Are Attribute Directives?
+
+Unlike structural directives that add or remove elements, attribute directives **change the appearance or behavior of an existing element**. They look like HTML attributes applied to elements: `<div ngClass="active">` or `<input appAutofocus>`. Angular's built-in `NgClass`, `NgStyle`, and your own custom directives are all attribute directives.
+
+## Built-in: `ngClass`
+
+`ngClass` dynamically adds or removes CSS classes:
+
+```html
+<!-- Object syntax: { 'class-name': boolean expression } -->
+<div [ngClass]="{
+  'active': isActive,
+  'disabled': isDisabled,
+  'error': hasError,
+  'large': size === 'lg'
+}">Content</div>
+
+<!-- Array syntax -->
+<div [ngClass]="['btn', 'btn-' + variant]">Button</div>
+
+<!-- String syntax (less common) -->
+<div [ngClass]="'btn btn-primary'">Button</div>
+```
+
+For simple cases, the `[class.name]` binding is cleaner:
+
+```html
+<!-- Single class toggle — prefer this over ngClass for one class -->
+<div [class.active]="isActive">Content</div>
+
+<!-- Multiple — then ngClass makes sense -->
+<div [ngClass]="buttonClasses">Content</div>
+```
+
+```typescript
+get buttonClasses() {
+  return {
+    'btn': true,
+    [`btn-${this.variant}`]: true,
+    'btn-loading': this.loading,
+    'btn-disabled': this.disabled,
+  };
+}
+```
+
+## Built-in: `ngStyle`
+
+`ngStyle` dynamically applies inline styles:
+
+```html
+<!-- Object syntax -->
+<div [ngStyle]="{
+  'color': textColor,
+  'font-size': fontSize + 'px',
+  'background-color': isActive ? '#e0f2fe' : 'transparent'
+}">Content</div>
+```
+
+Prefer the `[style.property]` binding for single styles:
+
+```html
+<!-- Single style binding — cleaner -->
+<div [style.color]="textColor" [style.font-size.px]="fontSize">Content</div>
+```
+
+<Callout type="tip">
+The `.px` suffix in `[style.font-size.px]="16"` tells Angular to automatically append the unit. You can use `.%`, `.em`, `.rem` etc. This avoids string concatenation in the template.
+</Callout>
+
+## Creating a Custom Attribute Directive
+
+The real power is building your own directives. A custom directive class is decorated with `@Directive`:
+
+```typescript
+import { Directive, ElementRef, HostListener, Input, OnInit } from '@angular/core';
+
+@Directive({
+  selector: '[appHighlight]', // Applied as an attribute: <p appHighlight>
+  standalone: true,
+})
+export class HighlightDirective implements OnInit {
+  @Input() appHighlight = 'yellow'; // Input with same name as selector
+  @Input() defaultColor = 'transparent';
+
+  private originalColor = '';
+
+  constructor(private el: ElementRef<HTMLElement>) {}
+
+  ngOnInit() {
+    this.originalColor = this.el.nativeElement.style.backgroundColor;
+  }
+
+  @HostListener('mouseenter')
+  onMouseEnter() {
+    this.highlight(this.appHighlight || 'yellow');
+  }
+
+  @HostListener('mouseleave')
+  onMouseLeave() {
+    this.highlight(this.defaultColor);
+  }
+
+  private highlight(color: string) {
+    this.el.nativeElement.style.backgroundColor = color;
+  }
+}
+```
+
+Usage in a template:
+
+```html
+<p appHighlight="lightyellow">Hover over me!</p>
+<p appHighlight defaultColor="#f0f0f0">Custom default color</p>
+<p [appHighlight]="userPreferredColor">Dynamic color</p>
+```
+
+## `@HostBinding` — Binding to Host Element Properties
+
+Instead of using `ElementRef` to manually modify the host, `@HostBinding` declaratively binds directive state to host element properties:
+
+```typescript
+@Directive({
+  selector: '[appBadge]',
+  standalone: true,
+})
+export class BadgeDirective {
+  @Input() count = 0;
+
+  @HostBinding('class.has-badge') get hasBadge() {
+    return this.count > 0;
+  }
+
+  @HostBinding('attr.data-count') get badgeCount() {
+    return this.count;
+  }
+
+  @HostBinding('style.position') readonly position = 'relative';
+}
+```
+
+## `@HostListener` — Responding to Host Element Events
+
+`@HostListener` subscribes to events on the directive's host element:
+
+```typescript
+@Directive({
+  selector: '[appClickOutside]',
+  standalone: true,
+})
+export class ClickOutsideDirective {
+  @Output() clickOutside = new EventEmitter<void>();
+
+  constructor(private el: ElementRef) {}
+
+  // Listen to click events on the entire document
+  @HostListener('document:click', ['$event'])
+  onDocumentClick(event: MouseEvent) {
+    if (!this.el.nativeElement.contains(event.target)) {
+      this.clickOutside.emit();
+    }
+  }
+}
+```
+
+```html
+<div appClickOutside (clickOutside)="closeDropdown()">
+  <!-- Dropdown content -->
+</div>
+```
+
+## A More Complex Example: Auto-Focus Directive
+
+```typescript
+@Directive({
+  selector: '[appAutofocus]',
+  standalone: true,
+})
+export class AutofocusDirective implements AfterViewInit {
+  @Input() appAutofocus = true; // Can be disabled: [appAutofocus]="false"
+
+  constructor(
+    private el: ElementRef<HTMLElement>,
+    private renderer: Renderer2 // Use Renderer2, not el.nativeElement directly
+  ) {}
+
+  ngAfterViewInit() {
+    if (this.appAutofocus) {
+      // Deferred to avoid ExpressionChangedAfterItHasBeenCheckedError
+      setTimeout(() => this.el.nativeElement.focus(), 0);
+    }
+  }
+}
+```
+
+<Callout type="warning">
+Prefer `Renderer2` over directly accessing `element.nativeElement` for DOM manipulation. `Renderer2` works with server-side rendering (Angular Universal) and web workers where direct DOM access isn't available. `ElementRef` exposes the native element but bypasses Angular's security and SSR compatibility.
+</Callout>
+
+<CodeChallenge
+  id="attribute-directive-hostlistener"
+  difficulty="intermediate"
+  description="In a custom directive with @HostListener('document:click', ['$event']), what does 'document:' prefix mean?"
+  options={[
+    "It only works in document-type components",
+    "The event listener is attached to the document, not the host element",
+    "It requires the Document token to be injected",
+    "It fires only for programmatic clicks, not user clicks"
+  ]}
+  correctAnswer={1}
+  explanation="The 'document:' prefix in @HostListener('document:click') attaches the event listener to document rather than the directive's host element. This is used for global events like 'click outside' detection. Similarly, 'window:resize' listens on the window object. Angular automatically cleans up these listeners when the directive is destroyed."
+/>
+
+## Senior Insight: Directives vs Components
+
+A directive without a template is still a component without a view. Use directives when:
+- You want to add **behavior** to an existing element
+- You need to **reuse the same behavior** across multiple different element types
+- You don't need to render new HTML structure
+
+Use components when you need to render new HTML. The rule: if it adds `<template>`, make it a component; if it modifies an existing element, make it a directive.

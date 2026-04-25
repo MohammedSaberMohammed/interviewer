@@ -1,0 +1,315 @@
+---
+title: "Testing Guards and Resolvers"
+slug: "testing-guards"
+order: 6
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "testing", "guards", "resolvers", "CanActivateFn", "ResolveFn", "RouterTestingHarness"]
+summary: "Functional guards and resolvers are plain functions — they can often be tested directly without Angular's testing infrastructure. For integration-level tests, RouterTestingHarness provides a real router environment."
+docsLinks:
+  - label: "Testing Guards"
+    url: "https://angular.dev/guide/testing/routing"
+  - label: "RouterTestingHarness"
+    url: "https://angular.dev/api/router/testing/RouterTestingHarness"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Modern Guards Are Just Functions
+
+Angular 14+ functional guards are plain functions that return `boolean | UrlTree | Observable<boolean | UrlTree>`. This makes them trivially testable:
+
+```typescript
+// The guard
+export const authGuard: CanActivateFn = (route, state) => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated()) {
+    return true;
+  }
+
+  return router.createUrlTree(['/login'], {
+    queryParams: { returnUrl: state.url }
+  });
+};
+```
+
+```typescript
+// Testing the guard
+describe('authGuard', () => {
+  let mockAuthService: { isAuthenticated: jasmine.Spy };
+  let mockRouter: { createUrlTree: jasmine.Spy };
+
+  beforeEach(() => {
+    mockAuthService = { isAuthenticated: jasmine.createSpy().and.returnValue(false) };
+    mockRouter = { createUrlTree: jasmine.createSpy().and.returnValue('/login') };
+
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: AuthService, useValue: mockAuthService },
+        { provide: Router, useValue: mockRouter },
+      ]
+    });
+  });
+
+  it('should return true for authenticated users', () => {
+    mockAuthService.isAuthenticated.and.returnValue(true);
+
+    const result = TestBed.runInInjectionContext(() =>
+      authGuard({} as any, {} as any)
+    );
+
+    expect(result).toBe(true);
+  });
+
+  it('should redirect to login for unauthenticated users', () => {
+    mockAuthService.isAuthenticated.and.returnValue(false);
+
+    TestBed.runInInjectionContext(() =>
+      authGuard({} as any, { url: '/dashboard' } as any)
+    );
+
+    expect(mockRouter.createUrlTree).toHaveBeenCalledWith(
+      ['/login'],
+      { queryParams: { returnUrl: '/dashboard' } }
+    );
+  });
+});
+```
+
+<Callout type="tip">
+`TestBed.runInInjectionContext()` runs a function within Angular's injection context — required for functions that use `inject()`. This is the key to testing functional guards, resolvers, and any standalone function that calls `inject()`.
+</Callout>
+
+## Testing Guards with Observable Returns
+
+```typescript
+export const canLoadFeatureGuard: CanActivateFn = () => {
+  const featureService = inject(FeatureService);
+  return featureService.isFeatureEnabled('beta').pipe(
+    map(enabled => enabled || new UrlTree())
+  );
+};
+
+describe('canLoadFeatureGuard', () => {
+  let featureService: jasmine.SpyObj<FeatureService>;
+
+  beforeEach(() => {
+    featureService = jasmine.createSpyObj('FeatureService', ['isFeatureEnabled']);
+
+    TestBed.configureTestingModule({
+      providers: [{ provide: FeatureService, useValue: featureService }]
+    });
+  });
+
+  it('should allow access when feature is enabled', (done) => {
+    featureService.isFeatureEnabled.and.returnValue(of(true));
+
+    const result = TestBed.runInInjectionContext(() =>
+      canLoadFeatureGuard({} as any, {} as any)
+    ) as Observable<boolean | UrlTree>;
+
+    result.subscribe(value => {
+      expect(value).toBe(true);
+      done();
+    });
+  });
+
+  it('should redirect when feature is disabled', (done) => {
+    featureService.isFeatureEnabled.and.returnValue(of(false));
+
+    const result = TestBed.runInInjectionContext(() =>
+      canLoadFeatureGuard({} as any, {} as any)
+    ) as Observable<boolean | UrlTree>;
+
+    result.subscribe(value => {
+      expect(value instanceof UrlTree).toBeTrue();
+      done();
+    });
+  });
+});
+```
+
+## Testing CanDeactivate Guards
+
+```typescript
+export const unsavedChangesGuard: CanDeactivateFn<FormComponent> = (component) => {
+  if (!component.hasUnsavedChanges()) {
+    return true;
+  }
+  return confirm('You have unsaved changes. Leave anyway?');
+};
+
+describe('unsavedChangesGuard', () => {
+  it('should allow deactivation when no changes', () => {
+    const mockComponent = { hasUnsavedChanges: () => false };
+
+    const result = TestBed.runInInjectionContext(() =>
+      unsavedChangesGuard(mockComponent as any, {} as any, {} as any, {} as any)
+    );
+
+    expect(result).toBe(true);
+  });
+
+  it('should show confirm dialog when there are changes', () => {
+    const mockComponent = { hasUnsavedChanges: () => true };
+    spyOn(window, 'confirm').and.returnValue(false);
+
+    const result = TestBed.runInInjectionContext(() =>
+      unsavedChangesGuard(mockComponent as any, {} as any, {} as any, {} as any)
+    );
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(result).toBe(false);
+  });
+});
+```
+
+## Testing Resolvers
+
+```typescript
+export const userResolver: ResolveFn<User> = (route) => {
+  const userService = inject(UserService);
+  const router = inject(Router);
+
+  return userService.getUser(route.params['id']).pipe(
+    catchError(() => {
+      router.navigate(['/not-found']);
+      return EMPTY;
+    })
+  );
+};
+
+describe('userResolver', () => {
+  let userService: jasmine.SpyObj<UserService>;
+  let router: jasmine.SpyObj<Router>;
+
+  beforeEach(() => {
+    userService = jasmine.createSpyObj('UserService', ['getUser']);
+    router = jasmine.createSpyObj('Router', ['navigate']);
+
+    TestBed.configureTestingModule({
+      providers: [
+        { provide: UserService, useValue: userService },
+        { provide: Router, useValue: router },
+      ]
+    });
+  });
+
+  it('should resolve user data', (done) => {
+    const mockUser = { id: '123', name: 'Alice' };
+    userService.getUser.and.returnValue(of(mockUser));
+
+    const mockRoute = { params: { id: '123' } } as any;
+    const result = TestBed.runInInjectionContext(() =>
+      userResolver(mockRoute, {} as any)
+    ) as Observable<User>;
+
+    result.subscribe(user => {
+      expect(user).toEqual(mockUser);
+      expect(userService.getUser).toHaveBeenCalledWith('123');
+      done();
+    });
+  });
+
+  it('should navigate to not-found on error', fakeAsync(() => {
+    userService.getUser.and.returnValue(throwError(() => new Error('Not found')));
+
+    const mockRoute = { params: { id: '999' } } as any;
+    const result = TestBed.runInInjectionContext(() =>
+      userResolver(mockRoute, {} as any)
+    ) as Observable<User>;
+
+    // EMPTY completes without emitting
+    let emitted = false;
+    result.subscribe({
+      next: () => emitted = true,
+      complete: () => {
+        expect(emitted).toBeFalse();
+        expect(router.navigate).toHaveBeenCalledWith(['/not-found']);
+      }
+    });
+
+    tick();
+  }));
+});
+```
+
+## Integration Testing with RouterTestingHarness
+
+For testing the full routing flow (guard evaluated, resolver runs, component loaded):
+
+```typescript
+import { RouterTestingHarness } from '@angular/router/testing';
+
+describe('User detail route integration', () => {
+  let harness: RouterTestingHarness;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      providers: [
+        provideRouter([
+          {
+            path: 'users/:id',
+            component: UserDetailComponent,
+            canActivate: [authGuard],
+            resolve: { user: userResolver }
+          },
+          { path: 'login', component: LoginComponent }
+        ]),
+        { provide: AuthService, useValue: { isAuthenticated: () => true } },
+        {
+          provide: UserService,
+          useValue: { getUser: () => of({ id: '1', name: 'Alice' }) }
+        }
+      ]
+    }).compileComponents();
+
+    harness = await RouterTestingHarness.create();
+  });
+
+  it('should load user and render component', async () => {
+    const component = await harness.navigateByUrl(
+      '/users/1',
+      UserDetailComponent // Expected component type
+    );
+
+    // Guard ran, resolver ran, component instantiated
+    expect(component).toBeInstanceOf(UserDetailComponent);
+    expect(harness.routeDebugElement?.nativeElement.textContent)
+      .toContain('Alice');
+  });
+});
+```
+
+<CodeChallenge
+  id="guard-testing-inject"
+  difficulty="advanced"
+  description="A functional guard uses inject(AuthService). You try to call the guard function directly in a test without TestBed.runInInjectionContext(). What error do you get?"
+  options={[
+    "TypeError: AuthService is not a constructor",
+    "Error: inject() must be called from an injection context such as a constructor, a factory function, a field initializer, or a function used with runInInjectionContext",
+    "NullInjectorError: No provider for AuthService",
+    "The test passes because inject() returns null outside injection context"
+  ]}
+  correctAnswer={1}
+  explanation="Angular's inject() function can only be called within an injection context — during component/service construction, in factory functions, or inside runInInjectionContext(). Calling a guard function that uses inject() outside of this context throws: 'inject() must be called from an injection context'. This is why TestBed.runInInjectionContext(() => guardFn(route, state)) is required when testing functional guards. It establishes the injection context so inject() can resolve dependencies from the configured test providers."
+/>
+
+## Senior Insight: Guard Test Coverage
+
+What to test in guards:
+1. **Happy path**: Authorized user gets `true`
+2. **Redirect path**: Unauthorized user gets `UrlTree` with correct URL and query params
+3. **Role-based paths**: Each role combination
+4. **Async resolution**: Observable-returning guards emit correct values
+5. **Error cases**: What happens if the guard's service throws?
+
+What NOT to test in guard unit tests:
+- Router integration (that's for RouterTestingHarness integration tests)
+- That the redirect actually navigates (test that `createUrlTree` is called with right args)
+- Authentication logic itself (that belongs in AuthService tests)
+
+The guard's responsibility is just: "given this auth state, return true OR this UrlTree". Keep guards thin and test the underlying services separately.

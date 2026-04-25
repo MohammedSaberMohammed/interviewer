@@ -1,0 +1,232 @@
+---
+title: "Subjects"
+slug: "subjects"
+order: 6
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["RxJS", "Subject", "BehaviorSubject", "ReplaySubject", "AsyncSubject", "multicasting"]
+summary: "Subjects are both Observables and Observers — they let you imperatively push values into a stream. BehaviorSubject is the most common state management tool in Angular services."
+docsLinks:
+  - label: "RxJS Subject"
+    url: "https://rxjs.dev/guide/subject"
+  - label: "BehaviorSubject"
+    url: "https://rxjs.dev/api/index/class/BehaviorSubject"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## What Is a Subject?
+
+A Subject is both an **Observable** (you can subscribe to it) and an **Observer** (you can push values into it). It's the bridge between imperative code and the reactive Observable world:
+
+```typescript
+import { Subject } from 'rxjs';
+
+const subject = new Subject<number>();
+
+// It's an Observable — subscribe to it
+subject.subscribe(value => console.log('Sub 1:', value));
+subject.subscribe(value => console.log('Sub 2:', value));
+
+// It's also an Observer — push values to all subscribers
+subject.next(1); // Both subs log: 1
+subject.next(2); // Both subs log: 2
+subject.complete();
+```
+
+Unlike a cold Observable, Subjects are **hot** — they multicast to all subscribers simultaneously.
+
+## `BehaviorSubject` — Current Value + Future Updates
+
+The most commonly used Subject in Angular. It:
+1. Requires an initial value
+2. Emits the **current value** to new subscribers immediately
+3. Always has a `.value` property with the latest value
+
+```typescript
+import { BehaviorSubject } from 'rxjs';
+
+@Injectable({ providedIn: 'root' })
+class CartService {
+  // State stored as BehaviorSubject
+  private cartItems = new BehaviorSubject<CartItem[]>([]);
+
+  // Expose as Observable to prevent external .next() calls
+  readonly cartItems$ = this.cartItems.asObservable();
+
+  // Read current value synchronously
+  get currentItems(): CartItem[] {
+    return this.cartItems.value; // Always the latest
+  }
+
+  addItem(item: CartItem): void {
+    const current = this.cartItems.value;
+    this.cartItems.next([...current, item]); // Immutable update
+  }
+
+  removeItem(id: string): void {
+    this.cartItems.next(
+      this.cartItems.value.filter(item => item.id !== id)
+    );
+  }
+
+  clearCart(): void {
+    this.cartItems.next([]);
+  }
+}
+
+// Component — receives current value immediately on subscribe
+@Component({ standalone: true, imports: [AsyncPipe] })
+class CartComponent {
+  items$ = inject(CartService).cartItems$;
+  // New subscribers immediately get current cart items
+}
+```
+
+<Callout type="tip">
+Always expose BehaviorSubject as `asObservable()` from services. This prevents components from calling `mySubject.next()` directly — keeping the service as the single source of truth and the only place that can modify state.
+</Callout>
+
+## `ReplaySubject` — Replay History
+
+`ReplaySubject` buffers N previous values and replays them to new subscribers:
+
+```typescript
+import { ReplaySubject } from 'rxjs';
+
+// Buffer last 3 values
+const history$ = new ReplaySubject<string>(3);
+
+history$.next('First');
+history$.next('Second');
+history$.next('Third');
+history$.next('Fourth');
+
+// Late subscriber gets the last 3 (not the first)
+history$.subscribe(v => console.log('Late subscriber:', v));
+// Logs: 'Second', 'Third', 'Fourth' — not 'First' (beyond buffer)
+
+// Real use case: audit log or message history
+@Injectable()
+class NotificationService {
+  private notifications$ = new ReplaySubject<Notification>(10); // Keep last 10
+
+  send(notification: Notification) {
+    this.notifications$.next(notification);
+  }
+
+  // Components that load after notifications were sent still see recent history
+  getNotifications() {
+    return this.notifications$.asObservable();
+  }
+}
+```
+
+## `AsyncSubject` — Emit Only on Completion
+
+Emits only the **last value** when the Subject completes. Until it completes, nothing is emitted:
+
+```typescript
+import { AsyncSubject } from 'rxjs';
+
+const async$ = new AsyncSubject<number>();
+
+async$.subscribe(v => console.log('Sub 1:', v)); // Nothing yet
+
+async$.next(1); // Queued internally
+async$.next(2); // Replaces 1
+async$.next(3); // Replaces 2
+
+async$.complete(); // NOW emits: 3 (only the last value!)
+// Sub 1 logs: 3
+
+// Late subscribers also get 3
+async$.subscribe(v => console.log('Sub 2:', v)); // 3
+
+// Use case: computation that should only deliver the final result
+// (rare in practice — forkJoin or a Promise might be clearer)
+```
+
+## Comparing Subjects
+
+<ComparisonTable
+  headers={["Subject Type", "Emits to new subscriber?", "Buffer", "Best For"]}
+  rows={[
+    ["Subject", "Nothing (misses past values)", "None", "Event bus, action dispatcher"],
+    ["BehaviorSubject", "Current/latest value immediately", "1 value (current)", "State management in services"],
+    ["ReplaySubject(N)", "Last N values immediately", "N values", "Message history, late subscribers"],
+    ["AsyncSubject", "Last value on completion", "1 value (last)", "One-time async computation result"]
+  ]}
+/>
+
+## Subject as Event Bus
+
+```typescript
+// Simple event bus for cross-component communication
+@Injectable({ providedIn: 'root' })
+class EventBusService {
+  private eventSubject = new Subject<AppEvent>();
+  events$ = this.eventSubject.asObservable();
+
+  emit(event: AppEvent): void {
+    this.eventSubject.next(event);
+  }
+}
+
+// Component emits an event
+class ProductComponent {
+  private eventBus = inject(EventBusService);
+
+  onProductAdded(product: Product) {
+    this.eventBus.emit({ type: 'PRODUCT_ADDED', payload: product });
+  }
+}
+
+// Another component reacts to the event
+class CartComponent {
+  constructor(eventBus: EventBusService) {
+    eventBus.events$.pipe(
+      filter(e => e.type === 'PRODUCT_ADDED'),
+      takeUntilDestroyed(),
+    ).subscribe(event => this.addToCart(event.payload));
+  }
+}
+```
+
+<CodeChallenge
+  id="behavior-subject-late-subscriber"
+  difficulty="intermediate"
+  description="A BehaviorSubject<User | null> is initialized with null. User logs in and the subject emits a User object. A new component mounts and subscribes. What does it receive first?"
+  options={[
+    "null — the initial value",
+    "The current User object — BehaviorSubject replays latest to new subscribers",
+    "Nothing — it has to wait for the next emission",
+    "An error — BehaviorSubject can't hold null"
+  ]}
+  correctAnswer={1}
+  explanation="BehaviorSubject always emits its CURRENT value (the latest, not the initial) to new subscribers immediately upon subscription. After the user logged in and the subject emitted a User object, that User object IS the current value. New components subscribing after login immediately get the User object. This is exactly what makes BehaviorSubject perfect for auth state — any component mounting after login already has the user."
+/>
+
+## Senior Insight: Prefer Signals for Simple State
+
+In Angular 17+, `BehaviorSubject` for simple component or service state can often be replaced by signals:
+
+```typescript
+// BehaviorSubject approach — more code, async subscription needed
+private cartItems = new BehaviorSubject<CartItem[]>([]);
+cartItems$ = this.cartItems.asObservable();
+
+// Signal approach — simpler, synchronous, works great with OnPush
+cartItems = signal<CartItem[]>([]);
+
+// In templates:
+// BehaviorSubject: {{ cartItems$ | async }}
+// Signal: {{ cartItems() }}
+```
+
+Keep BehaviorSubject for:
+- Complex async flows that need RxJS operators
+- Exposing state to code that expects Observables
+- Integration with NgRx or existing RxJS-based state management
+- Shared state that needs `combineLatest` with other Observables

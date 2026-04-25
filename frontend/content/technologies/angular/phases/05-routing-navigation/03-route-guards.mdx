@@ -1,0 +1,215 @@
+---
+title: "Route Guards"
+slug: "route-guards"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["Angular", "route guards", "canActivate", "canDeactivate", "canMatch", "functional guards"]
+summary: "Route guards protect routes from unauthorized access, prevent unsaved form loss, and control route matching. The modern functional guard syntax (Angular 15+) replaces class-based guards."
+docsLinks:
+  - label: "Route Guards"
+    url: "https://angular.dev/guide/routing/common-router-tasks#preventing-unauthorized-access"
+  - label: "CanActivateFn"
+    url: "https://angular.dev/api/router/CanActivateFn"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## What Guards Do
+
+Guards are functions that run before a navigation completes. They can allow the navigation, cancel it, or redirect to another route. Angular 15+ introduced **functional guards** that replace the verbose class-based approach.
+
+## `canActivate` — Access Control
+
+The most common guard — determines if a route can be activated:
+
+```typescript
+// Modern: functional guard (Angular 15+)
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from './auth.service';
+import { map } from 'rxjs';
+
+export const authGuard: CanActivateFn = (route, state) => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  // Can return: boolean | UrlTree | Observable<boolean|UrlTree> | Promise<boolean|UrlTree>
+  return authService.isAuthenticated$.pipe(
+    map(isAuth => {
+      if (isAuth) return true;
+      // Return UrlTree to redirect (preferred over router.navigate())
+      return router.createUrlTree(['/login'], {
+        queryParams: { returnUrl: state.url }
+      });
+    })
+  );
+};
+
+// Apply to routes
+const routes: Routes = [
+  {
+    path: 'dashboard',
+    component: DashboardComponent,
+    canActivate: [authGuard]
+  },
+  {
+    path: 'admin',
+    component: AdminComponent,
+    canActivate: [authGuard, adminRoleGuard] // Multiple guards — all must pass
+  }
+];
+```
+
+## Role-Based Guard
+
+```typescript
+export const roleGuard = (requiredRole: string): CanActivateFn => {
+  return (route, state) => {
+    const authService = inject(AuthService);
+    const router = inject(Router);
+
+    return authService.currentUser$.pipe(
+      map(user => {
+        if (!user) return router.createUrlTree(['/login']);
+        if (!user.roles.includes(requiredRole)) {
+          return router.createUrlTree(['/unauthorized']);
+        }
+        return true;
+      })
+    );
+  };
+};
+
+// In routes — guard factory creates a configured guard
+{
+  path: 'admin',
+  canActivate: [roleGuard('admin')],
+  component: AdminComponent,
+}
+```
+
+## `canDeactivate` — Prevent Unsaved Loss
+
+Runs when the user tries to navigate AWAY from a route — useful for form dirty-check:
+
+```typescript
+export interface CanComponentDeactivate {
+  canDeactivate(): boolean | Observable<boolean>;
+}
+
+export const unsavedChangesGuard: CanDeactivateFn<CanComponentDeactivate> = (component) => {
+  return component.canDeactivate();
+};
+
+// In the form component
+@Component({ selector: 'app-edit-user' })
+class EditUserComponent implements CanComponentDeactivate {
+  form = this.fb.group({ name: [''], email: [''] });
+
+  canDeactivate(): boolean | Observable<boolean> {
+    if (!this.form.dirty) return true;
+
+    // Confirm with the user
+    return confirm('You have unsaved changes. Leave anyway?');
+  }
+}
+
+// Apply to route
+{
+  path: 'users/:id/edit',
+  component: EditUserComponent,
+  canDeactivate: [unsavedChangesGuard]
+}
+```
+
+## `canMatch` — Route Matching Control
+
+`canMatch` determines if a route can even be **matched** by the router. Unlike `canActivate`, if it returns false, the router tries the next matching route:
+
+```typescript
+export const featureFlagGuard: CanMatchFn = (route, segments) => {
+  const featureFlags = inject(FeatureFlagService);
+  return featureFlags.isEnabled(route.data?.['flag']);
+};
+
+// Routes — canMatch decides which component variant to load
+const routes: Routes = [
+  {
+    path: 'dashboard',
+    component: NewDashboardComponent,
+    canMatch: [featureFlagGuard],
+    data: { flag: 'new-dashboard' }
+  },
+  {
+    path: 'dashboard',
+    component: OldDashboardComponent // Fallback if canMatch returns false
+  }
+];
+```
+
+<Callout type="tip">
+`canMatch` vs `canActivate`: Use `canMatch` when you want to show a different route (fallback) if the guard fails. Use `canActivate` when you want to either allow navigation or redirect to a completely different page (like login). `canActivate` guards ALL navigation to the route; `canMatch` lets the router try other routes if it fails.
+</Callout>
+
+## Legacy Class-Based Guards (for reference)
+
+You'll encounter these in existing codebases:
+
+```typescript
+// Class-based guard — injectable but verbose
+@Injectable({ providedIn: 'root' })
+class AuthGuard implements CanActivate {
+  constructor(private authService: AuthService, private router: Router) {}
+
+  canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot) {
+    return this.authService.isAuthenticated$.pipe(
+      map(isAuth => isAuth || this.router.createUrlTree(['/login']))
+    );
+  }
+}
+
+// In routes — reference the class
+{ path: 'dashboard', canActivate: [AuthGuard], component: DashboardComponent }
+```
+
+Angular 15+ deprecated class-based guards in favor of functional ones. Migrate using:
+```bash
+ng generate @angular/core:route-lazy-loading
+```
+
+<ComparisonTable
+  headers={["Guard Type", "Runs When?", "Return false means..."]}
+  rows={[
+    ["canActivate", "Before entering route", "Redirect or block navigation"],
+    ["canActivateChild", "Before entering child routes", "Block all children"],
+    ["canDeactivate", "Before leaving route", "Stay on current route"],
+    ["canMatch", "During route matching", "Try next matching route"],
+    ["resolve", "Before route renders", "Fetch data (not a guard)"]
+  ]}
+/>
+
+<CodeChallenge
+  id="route-guards-cantivate"
+  difficulty="intermediate"
+  description="A guard returns router.createUrlTree(['/login']) instead of just returning false. What is the difference?"
+  options={[
+    "No difference — both prevent navigation to the guarded route",
+    "Returning UrlTree redirects to /login; returning false simply cancels navigation with no redirect",
+    "UrlTree is for programmatic navigation; false is for template-based navigation",
+    "UrlTree only works with canMatch, not canActivate"
+  ]}
+  correctAnswer={1}
+  explanation="Returning false simply cancels the navigation — the user stays where they were (or the navigation fails silently). Returning a UrlTree actively redirects to a new route. For auth guards, you almost always want a redirect to /login rather than just blocking — so return router.createUrlTree(['/login', { queryParams: { returnUrl: state.url } }]). The UrlTree approach is also the only way to pass state through the redirect."
+/>
+
+## Senior Insight: Guards Are Functions Now
+
+The Angular team's functional guard direction solves several class-based pain points:
+1. No need for `@Injectable()` — guards are plain functions
+2. Use `inject()` instead of constructor injection
+3. Easier composition — create guard factories with closures
+4. Better tree-shaking — classes aren't as easily tree-shaken as functions
+
+The one remaining class-based use case: when you need complex shared state between guard instances. In that case, inject a service (which CAN be a class) from within the functional guard.

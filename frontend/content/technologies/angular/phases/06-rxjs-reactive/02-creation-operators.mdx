@@ -1,0 +1,196 @@
+---
+title: "Creation Operators"
+slug: "creation-operators"
+order: 2
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["RxJS", "operators", "of", "from", "fromEvent", "interval", "timer"]
+summary: "Creation operators are the starting point of every RxJS pipeline. Master of, from, fromEvent, interval, timer, and when to use each."
+docsLinks:
+  - label: "RxJS Creation Operators"
+    url: "https://rxjs.dev/guide/operators#creation-operators-1"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Creation Operators: Starting the Stream
+
+Creation operators produce Observables from scratch — they're the source at the beginning of every pipeline. Understanding which creation operator to use in each scenario is foundational RxJS knowledge.
+
+## `of()` — Emit Static Values
+
+```typescript
+import { of } from 'rxjs';
+
+// Emit each argument, then complete
+of(1, 2, 3).subscribe(console.log); // 1, 2, 3, complete
+
+// Emit a single value (common for mocks and defaults)
+of({ id: 1, name: 'Alice' }).subscribe(user => console.log(user));
+
+// Empty of() — equivalent to EMPTY
+of().subscribe({
+  next: v => console.log(v),      // Never called
+  complete: () => console.log('Complete'), // Called immediately
+});
+
+// Common use: default value in pipe
+this.userService.getUser(id).pipe(
+  catchError(() => of(null)) // Return null on error instead of throwing
+)
+```
+
+## `from()` — Convert to Observable
+
+```typescript
+import { from } from 'rxjs';
+
+// Array — emits each element
+from([1, 2, 3]).subscribe(console.log); // 1, 2, 3
+
+// Promise — wraps as single-value observable
+from(fetch('/api/data'))
+  .subscribe(response => console.log(response));
+
+// Generator function — lazy emission
+function* range(start: number, end: number) {
+  for (let i = start; i <= end; i++) yield i;
+}
+from(range(1, 5)).subscribe(console.log); // 1, 2, 3, 4, 5
+
+// String — emits each character
+from('hello').subscribe(console.log); // 'h', 'e', 'l', 'l', 'o'
+
+// Iterable — any iterable
+from(new Set([1, 2, 3])).subscribe(console.log);
+```
+
+## `fromEvent()` — DOM Events as Observable
+
+```typescript
+import { fromEvent } from 'rxjs';
+import { debounceTime, map, distinctUntilChanged } from 'rxjs/operators';
+
+// Search input with debouncing
+const searchInput = document.getElementById('search') as HTMLInputElement;
+fromEvent(searchInput, 'input').pipe(
+  map(event => (event.target as HTMLInputElement).value),
+  debounceTime(300),
+  distinctUntilChanged()
+).subscribe(query => this.search(query));
+
+// In Angular — use fromEvent with ViewChild
+@Component({
+  template: `<input #search type="text">`
+})
+class SearchComponent implements AfterViewInit {
+  @ViewChild('search') searchEl!: ElementRef<HTMLInputElement>;
+
+  ngAfterViewInit() {
+    fromEvent<InputEvent>(this.searchEl.nativeElement, 'input').pipe(
+      map(e => (e.target as HTMLInputElement).value),
+      debounceTime(300),
+      distinctUntilChanged(),
+      switchMap(query => this.searchService.search(query)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe(results => this.results = results);
+  }
+}
+```
+
+<Callout type="tip">
+In Angular, prefer using reactive forms' `valueChanges` Observable over `fromEvent` for form inputs. `valueChanges` is already an Observable, handles validation state, and integrates with Angular's form model. Use `fromEvent` for DOM events that Angular doesn't expose through its APIs.
+</Callout>
+
+## `interval()` and `timer()` — Time-Based Streams
+
+```typescript
+import { interval, timer } from 'rxjs';
+
+// interval — emits 0, 1, 2, 3... every N milliseconds (no initial delay)
+interval(1000).pipe(
+  take(5) // Take only 5 values: 0, 1, 2, 3, 4
+).subscribe(console.log);
+
+// timer — emits after a delay (and optionally repeats)
+timer(2000).subscribe(() => console.log('2 seconds later'));
+// Completes after emitting once
+
+// timer with period — like interval but with initial delay
+timer(3000, 1000).pipe( // Wait 3s, then emit every 1s
+  take(5)
+).subscribe(console.log);
+
+// Real-world: auto-refresh
+timer(0, 30000).pipe( // Emit immediately, then every 30s
+  switchMap(() => this.dataService.getLatestData()),
+  takeUntilDestroyed(this.destroyRef),
+).subscribe(data => this.data = data);
+```
+
+## `ajax()` — HTTP via RxJS (vs HttpClient)
+
+```typescript
+import { ajax } from 'rxjs/ajax';
+
+// Lower-level than Angular's HttpClient — use HttpClient in Angular apps
+ajax.getJSON<User[]>('/api/users').subscribe(users => console.log(users));
+
+// Useful outside Angular (in plain RxJS) or for WebSocket-adjacent work
+ajax({
+  url: '/api/users',
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: { name: 'Alice' }
+}).subscribe(response => console.log(response.status));
+```
+
+## `defer()` — Lazy Observable Factory
+
+`defer()` creates an Observable lazily — the factory function runs at subscribe time:
+
+```typescript
+import { defer } from 'rxjs';
+
+// Without defer — service reference captured at creation time
+const users$ = this.userService.getUsers(); // Called NOW
+
+// With defer — factory function called at subscribe time
+const users$ = defer(() => this.userService.getUsers()); // Called on subscribe
+
+// Use case: ensure fresh token is used each time
+const apiCall$ = defer(() => {
+  const token = this.authService.getToken(); // Fresh token on each subscribe
+  return this.http.get('/api/data', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+});
+```
+
+<CodeChallenge
+  id="creation-operator-choice"
+  difficulty="foundation"
+  description="You want to watch a DOM button click event and search after 500ms of inactivity. Which creation operator do you start with?"
+  options={[
+    "of(buttonElement) — convert element to Observable",
+    "from(buttonElement.addEventListener) — convert addEventListener to Observable",
+    "fromEvent(buttonElement, 'click') — creates an Observable from DOM events",
+    "interval(500) — emit every 500ms"
+  ]}
+  correctAnswer={2}
+  explanation="fromEvent(element, eventName) is the dedicated RxJS operator for DOM event streams. It creates an Observable that emits every time the event fires and automatically removes the event listener when unsubscribed. After fromEvent, you'd pipe through debounceTime(500) to wait 500ms after the last click before emitting."
+/>
+
+## Senior Insight: Prefer Angular's Abstractions
+
+In Angular applications, you'll rarely write `fromEvent` or `interval` directly:
+
+| Instead of... | Use Angular's... |
+|---------------|-----------------|
+| `fromEvent(input, 'input')` | `formControl.valueChanges` |
+| `fromEvent(document, 'click')` | `(click)` binding or `@HostListener` |
+| `interval(1000)` in component | `timer()` inside a service |
+| `ajax.getJSON(url)` | `HttpClient.get<T>(url)` |
+
+Angular's abstractions integrate with the DI system, work with testing utilities, and handle Zone.js integration automatically.

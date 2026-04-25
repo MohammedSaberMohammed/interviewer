@@ -1,0 +1,271 @@
+---
+title: "Zoneless Angular"
+slug: "zoneless-angular"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "advanced", "zoneless", "Zone.js", "provideExperimentalZonelessChangeDetection", "signals", "performance"]
+summary: "Zoneless Angular removes Zone.js entirely — eliminating a 75KB dependency and significantly improving startup time. Without Zone.js, Angular relies on signals and explicit markForCheck() for change detection. This is the future direction of Angular."
+docsLinks:
+  - label: "Zoneless Change Detection"
+    url: "https://angular.dev/guide/experimental/zoneless"
+  - label: "Angular Signals"
+    url: "https://angular.dev/guide/signals"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What is Zone.js?
+
+Zone.js monkey-patches nearly every async browser API to intercept when async work completes:
+
+```javascript
+// Zone.js intercepts these (and many more):
+setTimeout, setInterval, clearTimeout, clearInterval
+Promise.then, Promise.catch, Promise.finally
+addEventListener, removeEventListener
+XMLHttpRequest.send, XMLHttpRequest.onload
+requestAnimationFrame
+MutationObserver
+```
+
+When any of these complete, Zone.js notifies Angular: "something async just finished — run change detection". This is how Angular knows to check for UI updates after:
+- A click event handler runs
+- An HTTP request completes
+- A setTimeout fires
+
+## The Zone.js Problems
+
+```
+Zone.js costs:
+- 75KB (compressed) added to initial bundle
+- Monkey-patching 50+ browser APIs at startup (~10-30ms)
+- Every async operation triggers full change detection tree check
+- Incompatible with some third-party libraries
+- Makes debugging confusing (zone traces in stack traces)
+```
+
+## Enabling Zoneless Angular (Experimental)
+
+```typescript
+// app.config.ts
+import { provideExperimentalZonelessChangeDetection } from '@angular/core';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideExperimentalZonelessChangeDetection(), // Use this
+    // NOT: provideZoneChangeDetection() (traditional)
+    provideRouter(routes),
+    provideHttpClient(withFetch()),
+  ]
+};
+```
+
+```json
+// angular.json — remove Zone.js polyfill
+{
+  "projects": {
+    "my-app": {
+      "architect": {
+        "build": {
+          "options": {
+            "polyfills": [] // Remove "zone.js" from here!
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## What Replaces Zone.js?
+
+Without Zone.js, Angular can't detect when to run CD automatically. You must tell Angular explicitly:
+
+### 1. Signals (Primary Mechanism)
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <p>Count: {{ count() }}</p>
+    <button (click)="increment()">+</button>
+  `
+})
+class CounterComponent {
+  count = signal(0);
+
+  increment() {
+    this.count.update(c => c + 1);
+    // Signal change → Angular schedules CD automatically
+    // No Zone.js needed!
+  }
+}
+```
+
+When a signal in a component's template changes, Angular schedules a view update — this works without Zone.js because Angular's signal reactivity tracks dependencies internally.
+
+### 2. markForCheck() for Non-Signal State
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class WebSocketComponent implements OnInit {
+  messages: string[] = [];
+  private cdr = inject(ChangeDetectorRef);
+
+  ngOnInit() {
+    this.webSocketService.messages$.subscribe(msg => {
+      this.messages.push(msg);
+      // Without Zone.js, subscribe callback is not in Angular's zone
+      // You must explicitly tell Angular to check this component
+      this.cdr.markForCheck();
+    });
+  }
+}
+```
+
+### 3. async Pipe Still Works
+
+```typescript
+@Component({
+  template: `
+    @for (item of items$ | async; track item.id) {
+      <li>{{ item.name }}</li>
+    }
+  `
+})
+class ListComponent {
+  // async pipe calls markForCheck() internally when Observable emits
+  items$ = this.service.getItems();
+}
+```
+
+## Zoneless Compatibility Checklist
+
+Before going zoneless, audit your codebase:
+
+```typescript
+// ✅ COMPATIBLE — Uses signals
+count = signal(0);
+doubled = computed(() => this.count() * 2);
+
+// ✅ COMPATIBLE — Uses async pipe
+items$ = this.http.get<Item[]>('/api/items');
+
+// ✅ COMPATIBLE — Uses markForCheck
+this.cdr.markForCheck(); // After external data arrives
+
+// ❌ INCOMPATIBLE — Relies on Zone.js for CD trigger
+setTimeout(() => {
+  this.title = 'Updated'; // No Zone.js, no markForCheck — view won't update!
+}, 1000);
+
+// Fix:
+setTimeout(() => {
+  this.title = signal('Updated'); // Use signal
+  // OR
+  this.cdr.markForCheck(); // Explicitly mark
+}, 1000);
+```
+
+<Callout type="warning">
+Zoneless Angular is marked `Experimental` as of Angular 18. The API may change before stabilization. However, signals are stable and the direction of travel is clear — every new Angular app should use signals, which positions it well for eventual zoneless migration.
+</Callout>
+
+## Third-Party Library Compatibility
+
+Some libraries rely on Zone.js behavior:
+
+```typescript
+// Libraries that may have zoneless issues:
+// - Some older NgRx effects (use Zone.js timing)
+// - ag-Grid (may need explicit change detection)
+// - Highcharts Angular wrapper
+// - Some CKEditor integrations
+
+// Libraries that work fine zoneless:
+// - Angular Material (uses ChangeDetectorRef internally)
+// - NgRx 17+ (signals-compatible)
+// - @angular/cdk (designed for signals)
+// - RxJS (uses markForCheck via async pipe)
+```
+
+## Migration Path to Zoneless
+
+```
+Step 1: Enable OnPush on all components (no behavior change with signals)
+Step 2: Migrate component state to signals
+Step 3: Replace method calls in templates with computed signals
+Step 4: Add markForCheck() to any non-signal async callbacks
+Step 5: Enable provideExperimentalZonelessChangeDetection()
+Step 6: Run the test suite — failures reveal missing markForCheck() calls
+Step 7: Remove zone.js from polyfills
+```
+
+## Performance Impact
+
+```
+Before (with Zone.js):
+- Bundle: +75KB (Zone.js)
+- Startup: +10-30ms (Zone.js patching)
+- CD trigger: every setTimeout, click, XHR completes
+
+After (zoneless with signals):
+- Bundle: -75KB
+- Startup: -10-30ms
+- CD trigger: only when signal/markForCheck called
+- Change detection: only affected components update
+```
+
+Real-world benchmarks show 20-40% improvement in Time to Interactive for large applications.
+
+<CodeChallenge
+  id="zoneless-trigger"
+  difficulty="advanced"
+  description="In a zoneless Angular app, a component receives data from a WebSocket message. The callback updates this.data = newValue but doesn't call markForCheck(). What happens?"
+  options={[
+    "The template updates automatically — Angular's change detection still runs on data assignment",
+    "The template never updates — without Zone.js, data assignment alone doesn't schedule change detection",
+    "Angular throws an error: cannot update component outside injection context",
+    "The update is batched and applied on the next user interaction"
+  ]}
+  correctAnswer={1}
+  explanation="Without Zone.js, Angular has no way to know that a property assignment happened in a WebSocket callback. Zone.js worked by intercepting the callback call itself — when it completes, Zone.js triggers CD. Without that interception, `this.data = newValue` is just a JavaScript property assignment that Angular is completely unaware of. The view stays stale indefinitely. To fix: either (1) use a signal — `this.data.set(newValue)` — which Angular's signal system tracks, or (2) call `this.cdr.markForCheck()` after the assignment to explicitly schedule a view update."
+/>
+
+## Zoneless Testing
+
+```typescript
+// Tests also need configuration for zoneless
+TestBed.configureTestingModule({
+  providers: [
+    provideExperimentalZonelessChangeDetection(),
+    // ...
+  ]
+});
+
+// Tests with signals work naturally
+it('should update when signal changes', async () => {
+  component.count.set(5);
+  // Wait for scheduled update
+  await fixture.whenStable();
+  fixture.detectChanges();
+
+  expect(fixture.nativeElement.textContent).toContain('5');
+});
+```
+
+## Senior Insight: Zoneless is the Future
+
+The Angular team has stated that zoneless is the long-term direction:
+- Angular 14: Signals RFC
+- Angular 17: Signals stable, `provideExperimentalZonelessChangeDetection` added
+- Angular 18+: Ongoing stabilization, full Signal APIs
+- Future: Zoneless becomes the default
+
+In interviews, demonstrating awareness of this trajectory — and being able to explain WHY Zone.js exists and why removing it improves performance — shows you understand Angular at a fundamental level, not just surface-level API usage.
+
+The transition from Zone.js to signals-driven reactivity is Angular's largest architectural shift since Angular 2's introduction. Understanding it positions you as someone who follows the framework's evolution closely.

@@ -1,0 +1,211 @@
+---
+title: "Preloading Strategies"
+slug: "preloading-strategies"
+order: 6
+difficulty: "intermediate"
+readingTime: 9
+status: "published"
+tags: ["Angular", "preloading", "PreloadAllModules", "custom preloading", "performance"]
+summary: "Preloading downloads lazy route bundles in the background after initial render — combining the fast startup of lazy loading with the instant navigation of eager loading. Custom strategies let you control exactly which routes preload."
+docsLinks:
+  - label: "Preloading Strategy"
+    url: "https://angular.dev/api/router/PreloadingStrategy"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Tradeoff: Lazy Loading vs Instant Navigation
+
+Lazy loading optimizes initial load time but introduces a delay on first navigation to each route. Preloading is the middle ground: load lazily (small initial bundle), then download other chunks in the background while the user is reading the current page.
+
+## Built-in Strategies
+
+### `NoPreloading` (default)
+
+Routes load only when navigated to — maximum initial load performance, slight navigation delay:
+
+```typescript
+import { NoPreloading } from '@angular/router';
+
+provideRouter(routes, withPreloading(NoPreloading))
+// Or just: provideRouter(routes) — NoPreloading is the default
+```
+
+### `PreloadAllModules`
+
+After initial render, downloads all lazy route bundles in the background:
+
+```typescript
+import { PreloadAllModules } from '@angular/router';
+
+provideRouter(routes, withPreloading(PreloadAllModules))
+// Good for: small-medium apps where all features are commonly used
+// Bad for: large apps where most routes are rarely visited
+```
+
+## Custom Preloading Strategy
+
+When you need fine-grained control — preload some routes but not others:
+
+```typescript
+// 1. Mark routes with data.preload flag
+const routes: Routes = [
+  {
+    path: 'dashboard',
+    loadComponent: () => import('./dashboard/dashboard.component').then(m => m.DashboardComponent),
+    data: { preload: true }  // Preload this route
+  },
+  {
+    path: 'reports',
+    loadComponent: () => import('./reports/reports.component').then(m => m.ReportsComponent),
+    data: { preload: true }  // Also preload
+  },
+  {
+    path: 'admin',
+    loadComponent: () => import('./admin/admin.component').then(m => m.AdminComponent),
+    // No data.preload — won't be preloaded
+  }
+];
+
+// 2. Create the custom strategy
+import { PreloadingStrategy, Route } from '@angular/router';
+import { Observable, of } from 'rxjs';
+
+@Injectable({ providedIn: 'root' })
+class SelectivePreloadingStrategy implements PreloadingStrategy {
+  preload(route: Route, load: () => Observable<any>): Observable<any> {
+    // preload() is called for every lazy route
+    // Return load() to preload, or of(null) to skip
+    return route.data?.['preload'] ? load() : of(null);
+  }
+}
+
+// 3. Configure it
+provideRouter(routes, withPreloading(SelectivePreloadingStrategy))
+```
+
+<Callout type="tip">
+Custom preloading strategies are the key to predictive preloading — you can base preloading decisions on user role, device type, network speed, or any other signal.
+</Callout>
+
+## Network-Aware Preloading
+
+Preloading on fast connections, skip on slow:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class NetworkAwarePreloadingStrategy implements PreloadingStrategy {
+  preload(route: Route, load: () => Observable<any>): Observable<any> {
+    // Network Information API (not supported in all browsers)
+    const connection = (navigator as any).connection;
+
+    if (connection) {
+      // Don't preload on slow connections or save-data mode
+      if (connection.saveData) return of(null);
+      if (['slow-2g', '2g', '3g'].includes(connection.effectiveType)) return of(null);
+    }
+
+    return route.data?.['preload'] ? load() : of(null);
+  }
+}
+```
+
+## User-Behavior-Based Preloading
+
+Preload routes the user is likely to visit next:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class PredictivePreloadingStrategy implements PreloadingStrategy {
+  private router = inject(Router);
+  private preloadQueue = new Set<string>();
+
+  // Call this when user hovers over a nav link
+  addToQueue(routePath: string) {
+    this.preloadQueue.add(routePath);
+  }
+
+  preload(route: Route, load: () => Observable<any>): Observable<any> {
+    const shouldPreload =
+      route.data?.['preload'] ||
+      (route.path && this.preloadQueue.has(route.path));
+
+    return shouldPreload ? load() : of(null);
+  }
+}
+
+// In navbar — preload on hover
+@Component({ selector: 'app-nav' })
+class NavComponent {
+  private preloadStrategy = inject(PredictivePreloadingStrategy);
+
+  onNavHover(route: string) {
+    this.preloadStrategy.addToQueue(route);
+  }
+}
+```
+
+## Quicklink-Style Preloading
+
+Preload routes whose links are visible in the viewport:
+
+```typescript
+// Using IntersectionObserver to detect visible links
+@Injectable({ providedIn: 'root' })
+class ViewportPreloadingStrategy implements PreloadingStrategy {
+  private visibleRoutes = new Set<string>();
+
+  constructor() {
+    // Observe all routerLink elements that become visible
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const link = entry.target.getAttribute('routerLink') || '';
+          this.visibleRoutes.add(link);
+        }
+      });
+    });
+
+    // Observe after DOM is ready...
+  }
+
+  preload(route: Route, load: () => Observable<any>): Observable<any> {
+    const routePath = '/' + (route.path ?? '');
+    return this.visibleRoutes.has(routePath) ? load() : of(null);
+  }
+}
+```
+
+<CodeChallenge
+  id="preloading-strategies"
+  difficulty="intermediate"
+  description="You enable PreloadAllModules. A user navigates to the app. When exactly does Angular download the lazy route bundles?"
+  options={[
+    "During the initial page load — before the app renders",
+    "When the user hovers over nav links pointing to lazy routes",
+    "After the initial navigation completes and the app is rendered",
+    "Simultaneously with the initial bundle download"
+  ]}
+  correctAnswer={2}
+  explanation="PreloadAllModules downloads lazy bundles AFTER the initial navigation completes — after the app has rendered and is interactive. Angular prioritizes getting the app working first, then uses idle time to download the remaining chunks. This gives you fast initial load (only the main bundle) AND fast subsequent navigation (other bundles are already downloaded)."
+/>
+
+## Senior Insight: The Modern Approach
+
+With Angular's `@defer` blocks (Angular 17+), you have a third option for deferred loading that works at the component level within a page — not just at the route level:
+
+```html
+<!-- Defer a heavy component until the browser is idle -->
+@defer (on idle) {
+  <app-heavy-chart [data]="chartData" />
+} @loading {
+  <app-skeleton />
+} @placeholder {
+  <div class="chart-placeholder">Chart</div>
+}
+```
+
+The modern performance toolkit combines:
+- **Lazy routes**: For initial load reduction
+- **Selective preloading**: For instant navigation to common routes
+- **`@defer` blocks**: For component-level lazy rendering within pages

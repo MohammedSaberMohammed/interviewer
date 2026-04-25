@@ -1,0 +1,222 @@
+---
+title: "trackBy and @for Track"
+slug: "trackby"
+order: 2
+difficulty: "intermediate"
+readingTime: 8
+status: "published"
+tags: ["Angular", "performance", "trackBy", "@for", "track", "NgFor", "DOM recycling"]
+summary: "trackBy in *ngFor and track in @for tell Angular how to identify list items, preventing full DOM destruction and recreation on list updates. This is one of the most impactful and easiest performance wins in Angular."
+docsLinks:
+  - label: "@for control flow"
+    url: "https://angular.dev/guide/templates/control-flow"
+  - label: "NgFor trackBy"
+    url: "https://angular.dev/api/common/NgFor"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Problem: Full List Re-renders
+
+When Angular re-renders an `*ngFor` list, it needs to know which DOM nodes correspond to which items. Without tracking, Angular can't identify items by identity — it destroys and recreates every DOM node when the array reference changes.
+
+```typescript
+// Fetching fresh data from server
+this.users = await this.userService.getAll(); // New array reference!
+```
+
+```html
+<!-- Without trackBy — ALL 50 user rows destroyed and recreated -->
+<tr *ngFor="let user of users">
+  <td>{{ user.name }}</td>
+  <td>{{ user.email }}</td>
+</tr>
+```
+
+Even if only one user changed, Angular destroys all 50 rows and recreates them. This means:
+- Lost focus on inputs within rows
+- Scroll position may shift
+- Animations reset
+- Expensive DOM operations × N items
+- Any child components re-initialized
+
+## The Solution: `trackBy` in *ngFor
+
+```typescript
+@Component({
+  template: `
+    <tr *ngFor="let user of users; trackBy: trackById">
+      <td>{{ user.name }}</td>
+    </tr>
+  `
+})
+class UserTableComponent {
+  users: User[] = [];
+
+  // trackBy function receives index and item, returns a unique identifier
+  trackById(index: number, user: User): string {
+    return user.id; // Angular uses this to identify items across renders
+  }
+}
+```
+
+With `trackBy: trackById`, Angular:
+1. Matches existing DOM nodes to items by ID
+2. Only destroys nodes for items no longer in the array
+3. Only creates nodes for genuinely new items
+4. Moves existing nodes if order changed (no recreation)
+5. Updates only changed properties on retained nodes
+
+## `track` in @for (Angular 17+)
+
+The new `@for` control flow syntax requires `track` — it's not optional:
+
+```html
+<!-- @for syntax — track is REQUIRED (compiler enforces it) -->
+@for (user of users; track user.id) {
+  <tr>
+    <td>{{ user.name }}</td>
+    <td>{{ user.email }}</td>
+  </tr>
+}
+```
+
+Angular made `track` mandatory in `@for` because skipping it is almost always a mistake. The compiler will error if you omit it.
+
+### track Expressions
+
+```html
+<!-- Track by object property (most common) -->
+@for (user of users; track user.id) { ... }
+
+<!-- Track by index (use only when items have no stable ID) -->
+@for (item of temporaryItems; track $index) { ... }
+
+<!-- Track by composite key (multiple properties) -->
+@for (item of items; track item.type + '-' + item.id) { ... }
+
+<!-- Track by the item itself (reference equality) — for primitives -->
+@for (tag of tags; track tag) { ... }
+```
+
+<Callout type="warning">
+Using `track $index` disables the optimization benefit for reordering and item replacement. Angular can't tell if item at index 3 is the same item as before — it just knows the position. Use `track $index` only for static lists or lists that only ever append/truncate (never reorder or replace middle items).
+</Callout>
+
+## Identity Tracking vs Value Tracking
+
+```typescript
+// Same data, different array reference
+const before = [{ id: '1', name: 'Alice' }, { id: '2', name: 'Bob' }];
+const after  = [{ id: '1', name: 'Alice Updated' }, { id: '3', name: 'Carol' }];
+
+// With trackBy id:
+// - Item id:'1' → KEPT, bindings updated (name changes)
+// - Item id:'2' → REMOVED (no longer in array)
+// - Item id:'3' → CREATED (new item)
+// Result: 1 update, 1 destroy, 1 create
+
+// Without trackBy:
+// All 2 previous items destroyed, all 2 new items created
+// Result: 2 destroys, 2 creates
+```
+
+For large lists, this difference is dramatic. A 1000-item list where 1 item changes: 2 DOM operations with trackBy vs 2000 DOM operations without.
+
+## Real-World Pattern: Server-Fetched Collections
+
+```typescript
+@Component({
+  selector: 'app-product-list',
+  standalone: true,
+  imports: [NgFor, AsyncPipe],
+  template: `
+    <!-- Old syntax -->
+    <div *ngFor="let product of products$ | async; trackBy: trackById"
+         class="product-card">
+      <h3>{{ product.name }}</h3>
+      <p>{{ product.price | currency }}</p>
+    </div>
+
+    <!-- New @for syntax (preferred) -->
+    @for (product of products$ | async ?? []; track product.id) {
+      <div class="product-card">
+        <h3>{{ product.name }}</h3>
+        <p>{{ product.price | currency }}</p>
+      </div>
+    }
+  `
+})
+class ProductListComponent {
+  products$ = this.productService.getAll();
+
+  // Still needed for *ngFor on older codebases
+  trackById(_: number, product: Product) {
+    return product.id;
+  }
+}
+```
+
+## Nested Lists
+
+Both levels need tracking:
+
+```html
+@for (category of categories; track category.id) {
+  <section>
+    <h2>{{ category.name }}</h2>
+
+    @for (product of category.products; track product.id) {
+      <article>{{ product.name }}</article>
+    }
+  </section>
+}
+```
+
+Without tracking on both levels, updating one product in one category recreates all category sections AND all product rows.
+
+## When trackBy Matters Most
+
+| Scenario | Impact of Missing trackBy |
+|----------|--------------------------|
+| Polling endpoint every 5 seconds | Full DOM recreation every poll |
+| Search results updating | Jarring visual flash, lost focus |
+| Drag-and-drop reordering | Items recreated instead of moved |
+| Infinite scroll loading | New items cause re-render of existing |
+| Rows with input fields | User loses focus on every update |
+| Rows with animations | Animations restart on every update |
+| Large lists (100+ items) | Significant frame drops |
+
+<CodeChallenge
+  id="trackby-behavior"
+  difficulty="intermediate"
+  description="A component displays a list of 100 users with *ngFor and trackBy: trackById. The server returns the same 100 users but in a different sort order. What does Angular do?"
+  options={[
+    "Destroys and recreates all 100 DOM nodes since the array reference changed",
+    "Moves existing DOM nodes to match the new order — no destruction or creation",
+    "Does nothing — trackBy prevents any updates when data changes",
+    "Updates only the first and last items that moved positions"
+  ]}
+  correctAnswer={1}
+  explanation="With trackBy, Angular identifies each DOM node by its track value (user.id). When the same 100 IDs are present but in a different order, Angular moves the existing DOM nodes into the new positions — no nodes are destroyed or created. The DOM is reused entirely, just repositioned. This is orders of magnitude cheaper than recreating all 100 rows. Without trackBy, a new array reference causes all 100 nodes to be destroyed and recreated."
+/>
+
+## Senior Insight: The @for Mandate
+
+The Angular team made `track` mandatory in `@for` for good reason — omitting trackBy in `*ngFor` was one of the most common Angular performance mistakes. In older codebases, you'll see hundreds of `*ngFor` without `trackBy`. The migration path:
+
+```typescript
+// 1. Audit existing *ngFor directives
+// Angular ESLint has a rule: @angular-eslint/template/use-track-by-function
+
+// 2. Add to ESLint config to enforce it:
+// "@angular-eslint/template/use-track-by-function": "error"
+
+// 3. For entities with IDs, use a simple pattern:
+trackById = (_: number, item: { id: string | number }) => item.id;
+
+// 4. For server-sent data without IDs, consider adding a tracking field:
+users = response.map((u, i) => ({ ...u, _trackKey: `${u.name}-${i}` }));
+```
+
+Adding `trackBy` to every `*ngFor` in an existing app is one of the highest-ROI performance improvements available — it requires no architectural changes and provides immediate rendering improvements for all data updates.

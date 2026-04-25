@@ -1,0 +1,265 @@
+---
+title: "Decorators"
+slug: "decorators"
+order: 5
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["TypeScript", "decorators", "metadata", "Angular decorators"]
+summary: "Decorators are the secret sauce behind @Component, @Injectable, @Input, and every other Angular annotation. Understanding how they work demystifies Angular's 'magic'."
+docsLinks:
+  - label: "TypeScript Decorators"
+    url: "https://www.typescriptlang.org/docs/handbook/decorators.html"
+  - label: "Angular Decorators"
+    url: "https://angular.dev/guide/components"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Decorators: Angular's Secret Ingredient
+
+Every Angular file you've written uses decorators: `@Component`, `@Injectable`, `@NgModule`, `@Input`, `@Output`, `@ViewChild`. Without decorators, none of these would work. Yet most Angular developers treat them as black-box magic. Understanding how decorators work will help you debug Angular issues, write custom decorators, and answer questions about Angular's architecture.
+
+## What Is a Decorator?
+
+A decorator is a function that is called at class definition time (not at instantiation time). It receives information about the decorated target and can modify or annotate it.
+
+```typescript
+// This is a decorator factory — a function that returns a decorator
+function Log(prefix: string) {
+  // This is the actual decorator — receives the class constructor
+  return function(constructor: Function) {
+    console.log(`${prefix}: ${constructor.name} was defined`);
+  };
+}
+
+@Log('DEBUG')
+class UserService {
+  // At module load time, this logs: "DEBUG: UserService was defined"
+}
+```
+
+## Class Decorators
+
+Class decorators receive the constructor and can return a new (modified) constructor:
+
+```typescript
+// Simple class decorator that adds metadata
+function Serializable(constructor: Function) {
+  constructor.prototype.serialize = function() {
+    return JSON.stringify(this);
+  };
+}
+
+// Decorator factory with configuration
+function Injectable(options?: { providedIn: 'root' | 'any' }) {
+  return function(constructor: Function) {
+    // Attach metadata — Angular reads this via Reflect API
+    Reflect.defineMetadata('providedIn', options?.providedIn ?? 'root', constructor);
+  };
+}
+
+@Injectable({ providedIn: 'root' })
+class MyService {}
+```
+
+This is essentially how `@Injectable` works internally — it attaches metadata that Angular's DI system reads to configure providers.
+
+## Method Decorators
+
+Method decorators receive the prototype, method name, and property descriptor:
+
+```typescript
+function Memoize() {
+  return function(
+    target: any,
+    propertyKey: string,
+    descriptor: PropertyDescriptor
+  ) {
+    const originalMethod = descriptor.value;
+    const cache = new Map<string, any>();
+
+    descriptor.value = function(...args: any[]) {
+      const key = JSON.stringify(args);
+      if (cache.has(key)) {
+        return cache.get(key);
+      }
+      const result = originalMethod.apply(this, args);
+      cache.set(key, result);
+      return result;
+    };
+
+    return descriptor;
+  };
+}
+
+class CalculationService {
+  @Memoize()
+  expensiveCalc(n: number): number {
+    console.log('Computing...');
+    return n * n; // Expensive computation here
+  }
+}
+
+const svc = new CalculationService();
+svc.expensiveCalc(5); // Logs "Computing..."
+svc.expensiveCalc(5); // Returns cached result — no log
+```
+
+## Property Decorators
+
+Property decorators are used extensively in Angular for `@Input()` and `@Output()`:
+
+```typescript
+// Simplified @Input() implementation
+function Input(alias?: string) {
+  return function(target: any, propertyKey: string) {
+    // Store mapping: property name -> input alias
+    const inputs = Reflect.getMetadata('inputs', target.constructor) || [];
+    inputs.push({ propName: propertyKey, templateName: alias ?? propertyKey });
+    Reflect.defineMetadata('inputs', inputs, target.constructor);
+  };
+}
+
+// Parameter decorators — used by Angular's DI
+function Inject(token: any) {
+  return function(target: any, propertyKey: undefined, parameterIndex: number) {
+    const params = Reflect.getMetadata('design:paramtypes', target) || [];
+    Reflect.defineMetadata(`inject:${parameterIndex}`, token, target);
+  };
+}
+```
+
+<Callout type="tip">
+Angular uses the `reflect-metadata` polyfill to attach and read metadata. When you see `emitDecoratorMetadata: true` in `tsconfig.json`, TypeScript automatically emits type information that Angular reads to know which services to inject into a constructor — without you writing explicit `@Inject` decorators.
+</Callout>
+
+## Decorator Execution Order
+
+Understanding order prevents subtle bugs:
+
+```typescript
+function First() {
+  console.log('First factory');
+  return (target: any) => console.log('First decorator');
+}
+
+function Second() {
+  console.log('Second factory');
+  return (target: any) => console.log('Second decorator');
+}
+
+@First()
+@Second()
+class Example {}
+
+// Output:
+// "First factory"   — factories evaluate top-to-bottom
+// "Second factory"
+// "Second decorator" — decorators apply bottom-to-top
+// "First decorator"
+```
+
+**Order rules:**
+- Decorator factories evaluate **top to bottom**
+- Decorators apply **bottom to top** (innermost first)
+- Within a class: parameter → method → property → class decorators
+
+## Angular's Built-in Decorators
+
+Understanding what each Angular decorator does internally:
+
+```typescript
+@Component({
+  selector: 'app-user',
+  template: '<div>{{user.name}}</div>',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class UserComponent {
+  @Input() user!: User;
+  @Output() userClick = new EventEmitter<User>();
+  @ViewChild('container') container!: ElementRef;
+}
+
+// Angular reads the @Component metadata to:
+// 1. Register 'app-user' as a selector
+// 2. Compile the template
+// 3. Set up the change detection strategy
+
+// @Input() metadata tells the compiler:
+// When the parent sets [user]="...", write to this.user
+
+// @Output() registers an event binding target
+
+// @ViewChild() sets up post-view-init property injection
+```
+
+## TypeScript 5 Decorators (Stage 3)
+
+Angular 17+ supports the new TC39 Stage 3 decorator standard (different from the legacy experimental decorators):
+
+```typescript
+// New standard decorators — enabled without experimentalDecorators
+// Angular uses these for the new signal-based APIs
+
+// Example of a standard class decorator (conceptual)
+function sealed(target: typeof MyClass, context: ClassDecoratorContext) {
+  Object.seal(target);
+  Object.seal(target.prototype);
+}
+
+@sealed
+class MyClass {
+  greet() { return 'hello'; }
+}
+```
+
+<Callout type="warning">
+As of Angular 17-18, there are **two** decorator systems: the legacy `experimentalDecorators` (used for `@Component`, `@Injectable` etc.) and the new TC39 standard decorators. Angular's signal-based inputs (`input()`, `output()`, `viewChild()`) are functions, not decorators, deliberately moving away from the old system.
+</Callout>
+
+<CodeChallenge
+  id="decorator-execution-order"
+  difficulty="advanced"
+  description="Given: @A() @B() class Foo {}, in what order do the decorator FUNCTIONS (not factories) execute?"
+  options={[
+    "A then B — top to bottom",
+    "B then A — bottom to top",
+    "Simultaneously — order is undefined",
+    "A only — B is ignored when stacked"
+  ]}
+  correctAnswer={1}
+  explanation="Decorator factories (the functions that return decorators) evaluate top-to-bottom: A's factory runs, then B's factory. But the returned decorator functions apply bottom-to-top: B's decorator runs first (closest to the class), then A's decorator. This mirrors function composition: A(B(Foo))."
+/>
+
+## Senior Insight: Custom Angular-Style Decorators
+
+You can write decorators that work similarly to Angular's own:
+
+```typescript
+// Track which methods are called and how long they take
+function TrackPerformance(label: string) {
+  return function(target: any, key: string, descriptor: PropertyDescriptor) {
+    const original = descriptor.value;
+    descriptor.value = function(...args: any[]) {
+      const start = performance.now();
+      const result = original.apply(this, args);
+      const duration = performance.now() - start;
+      console.log(`[${label}.${key}] took ${duration.toFixed(2)}ms`);
+      return result;
+    };
+    return descriptor;
+  };
+}
+
+@Injectable({ providedIn: 'root' })
+class ReportService {
+  @TrackPerformance('ReportService')
+  generateReport(data: any[]): Report {
+    // Heavy computation...
+    return report;
+  }
+}
+```
+
+This kind of decorator is useful during development for performance profiling without modifying business logic.

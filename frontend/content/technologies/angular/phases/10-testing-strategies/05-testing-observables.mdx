@@ -1,0 +1,319 @@
+---
+title: "Testing Observables"
+slug: "testing-observables"
+order: 5
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["Angular", "testing", "RxJS", "marble testing", "TestScheduler", "fakeAsync", "cold observable", "hot observable"]
+summary: "Testing RxJS Observables requires controlling time. Marble testing with TestScheduler lets you describe Observable behavior with ASCII diagrams, while fakeAsync/tick handles most common async testing needs."
+docsLinks:
+  - label: "RxJS Testing"
+    url: "https://rxjs.dev/guide/testing/marble-testing"
+  - label: "Angular fakeAsync"
+    url: "https://angular.dev/api/core/testing/fakeAsync"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Observable Testing Is Different
+
+Observables introduce time as a dimension. A simple function returns a value synchronously — an Observable might emit values:
+- Immediately (synchronous)
+- After a delay (debounce, timer)
+- At intervals (interval, polling)
+- When another event occurs (combineLatest, withLatestFrom)
+- Multiple times (stream)
+- With errors at any point
+
+Testing all of these correctly requires controlling the passage of time.
+
+## Simple Observable Testing (Synchronous)
+
+For synchronous Observables, testing is straightforward:
+
+```typescript
+import { of, from } from 'rxjs';
+import { map, filter } from 'rxjs';
+
+describe('sync Observable operations', () => {
+  it('should transform values with map', () => {
+    const results: number[] = [];
+
+    of(1, 2, 3).pipe(
+      map(x => x * 2)
+    ).subscribe(v => results.push(v));
+
+    expect(results).toEqual([2, 4, 6]); // All values emitted synchronously
+  });
+
+  it('should filter values correctly', () => {
+    const results: number[] = [];
+
+    from([1, 2, 3, 4, 5]).pipe(
+      filter(x => x % 2 === 0)
+    ).subscribe(v => results.push(v));
+
+    expect(results).toEqual([2, 4]);
+  });
+});
+```
+
+## Testing with Subscriptions Directly
+
+For Observable-based services:
+
+```typescript
+describe('CounterService', () => {
+  let service: CounterService;
+
+  beforeEach(() => service = new CounterService());
+
+  it('should emit current value immediately on subscribe', () => {
+    let value: number | undefined;
+    service.count$.subscribe(v => value = v);
+    expect(value).toBe(0); // BehaviorSubject emits immediately
+  });
+
+  it('should emit new value after increment', () => {
+    const values: number[] = [];
+    service.count$.subscribe(v => values.push(v));
+    service.increment();
+    service.increment();
+    expect(values).toEqual([0, 1, 2]); // Initial + 2 emissions
+  });
+});
+```
+
+## fakeAsync for Time-Based Observables
+
+`fakeAsync` + `tick()` is the most practical approach for most time-based Observable testing:
+
+```typescript
+import { fakeAsync, tick } from '@angular/core/testing';
+import { debounceTime, distinctUntilChanged } from 'rxjs';
+
+describe('search service', () => {
+  it('should debounce search queries', fakeAsync(() => {
+    const service = new SearchService();
+    const queries: string[] = [];
+
+    service.search$.subscribe(q => queries.push(q));
+
+    service.query('A');     // Emits after 300ms debounce
+    tick(100);              // 100ms elapsed — no emission yet
+    service.query('An');    // Resets debounce timer
+    tick(100);              // 200ms total — still no emission
+    service.query('Ang');   // Resets debounce timer again
+    tick(300);              // 300ms since last input — EMITS!
+
+    expect(queries).toEqual(['Ang']); // Only the final query after debounce
+  }));
+
+  it('should not emit duplicate consecutive queries', fakeAsync(() => {
+    const service = new SearchService();
+    const queries: string[] = [];
+
+    service.search$.subscribe(q => queries.push(q));
+
+    service.query('Angular');
+    tick(300);
+    service.query('Angular'); // Same as before
+    tick(300);
+    service.query('Angular');
+    tick(300);
+
+    expect(queries).toEqual(['Angular']); // distinctUntilChanged filters duplicates
+  }));
+});
+```
+
+## Marble Testing with TestScheduler
+
+Marble testing uses ASCII diagrams to describe Observable behavior. This is the most expressive way to test complex RxJS pipelines:
+
+### Marble Syntax
+
+```
+-  = 10ms (one frame)
+a  = emit value 'a' at this point
+|  = complete
+#  = error
+( ) = synchronous emissions (same frame)
+^  = subscription point (cold observables)
+!  = unsubscription point
+```
+
+### Basic Marble Test
+
+```typescript
+import { TestScheduler } from 'rxjs/testing';
+import { map, delay } from 'rxjs';
+
+describe('Marble testing', () => {
+  let scheduler: TestScheduler;
+
+  beforeEach(() => {
+    scheduler = new TestScheduler((actual, expected) => {
+      expect(actual).toEqual(expected);
+    });
+  });
+
+  it('should delay emissions by 2 frames', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      const source = cold('  a-b-c|');
+      const expected =    '--a-b-c|'; // 2 frames later
+
+      expectObservable(source.pipe(delay(20, scheduler))).toBe(expected);
+    });
+  });
+
+  it('should map values', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      const source = cold('a-b-c|', { a: 1, b: 2, c: 3 });
+      const expected =    'a-b-c|'; // same timing
+
+      expectObservable(source.pipe(map(x => x * 10))).toBe(
+        expected,
+        { a: 10, b: 20, c: 30 } // expected values
+      );
+    });
+  });
+});
+```
+
+### Testing switchMap Cancellation
+
+```typescript
+it('should cancel previous request on new emission (switchMap)', () => {
+  scheduler.run(({ cold, hot, expectObservable }) => {
+    // Source emits queries at frames 10 and 40
+    const query$    = hot('  --a---b-----|');
+    // HTTP responses take 50ms each
+    const response1 = cold('-----r|');  // 'a' response (would take 50ms)
+    const response2 = cold('-----r|');  // 'b' response
+
+    // Mock the HTTP call
+    let callCount = 0;
+    const mockHttp = () => {
+      return callCount++ === 0 ? response1 : response2;
+    };
+
+    const result = query$.pipe(switchMap(mockHttp));
+
+    // 'a' response cancelled when 'b' arrives; only 'b' response completes
+    expectObservable(result).toBe('----------r-|', { r: 'r' });
+  });
+});
+```
+
+<Callout type="tip">
+Marble testing has a learning curve but pays off for testing complex operator compositions — especially when you need to verify timing, cancellation behavior, or race conditions. For simple Observable transformations, `fakeAsync` + `tick` is usually simpler.
+</Callout>
+
+## Testing Error Scenarios in Observables
+
+```typescript
+it('should handle errors with catchError', fakeAsync(() => {
+  const service = new DataService();
+  let result: any;
+  let error: any;
+
+  service.getData().subscribe({
+    next: v => result = v,
+    error: e => error = e
+  });
+
+  tick(); // Resolve async
+
+  expect(result).toEqual({ fallback: true }); // catchError returns fallback
+  expect(error).toBeUndefined(); // Error was caught, not propagated
+}));
+
+it('should retry 3 times before failing', fakeAsync(() => {
+  let callCount = 0;
+  const failingApi = new Observable(subscriber => {
+    callCount++;
+    subscriber.error(new Error('Server Error'));
+  });
+
+  const withRetry = failingApi.pipe(retry(3));
+
+  withRetry.subscribe({ error: () => {} });
+  tick();
+
+  expect(callCount).toBe(4); // Original + 3 retries
+}));
+```
+
+## Testing takeUntilDestroyed
+
+```typescript
+describe('cleanup with DestroyRef', () => {
+  it('should unsubscribe on component destroy', () => {
+    const fixture = TestBed.createComponent(MyComponent);
+    fixture.detectChanges();
+
+    const spy = spyOn(interval(1000), 'subscribe').and.callThrough();
+
+    fixture.detectChanges();
+    expect(spy).toHaveBeenCalled();
+
+    // Destroy the component
+    fixture.destroy();
+
+    // Verify no more emissions after destroy
+    // (implementation-specific to your component's teardown logic)
+  });
+});
+```
+
+## Testing with Subjects
+
+```typescript
+describe('real-time updates', () => {
+  it('should process messages as they arrive', () => {
+    const messages$ = new Subject<Message>();
+    const service = new ChatService(messages$);
+    const received: Message[] = [];
+
+    service.processedMessages$.subscribe(m => received.push(m));
+
+    messages$.next({ text: 'Hello', from: 'Alice' });
+    messages$.next({ text: 'World', from: 'Bob' });
+    messages$.complete();
+
+    expect(received.length).toBe(2);
+    expect(received[0].from).toBe('Alice');
+  });
+});
+```
+
+<CodeChallenge
+  id="marble-testing-frames"
+  difficulty="advanced"
+  description="In a marble string 'scheduler.run()' context, what does '--a 10ms b|' mean?"
+  options={[
+    "Emit 'a' after 2 frames (20ms), wait 10ms, emit 'b', then complete",
+    "Emit 'a' after 2 frames, then emit 'b' after 2 + 10 more frames, complete",
+    "Invalid marble syntax — you cannot mix frame notation with ms notation",
+    "Emit 'a' at frame 2, wait 10 virtual frames, emit 'b', complete"
+  ]}
+  correctAnswer={0}
+  explanation="In the TestScheduler.run() context, marble strings support both frame notation (- = 1ms) and explicit time notation (10ms). '--a 10ms b|' means: wait 2ms (two dashes), emit 'a', wait 10 additional milliseconds, emit 'b', complete. The scheduler.run() context uses real milliseconds per frame (1 dash = 1ms), unlike the legacy TestScheduler where frame size could be configured. This mixed notation lets you express both short timing (frames) and longer delays (explicit ms) cleanly."
+/>
+
+## Senior Insight: Choosing Your Testing Approach
+
+| Scenario | Best Approach |
+|----------|--------------|
+| Synchronous transforms | Direct subscription |
+| Debounce/throttle timing | `fakeAsync` + `tick()` |
+| Complex operator chains | Marble testing |
+| Race conditions | Marble testing |
+| switchMap cancellation | Marble testing |
+| Error handling | `fakeAsync` or direct subscription |
+| BehaviorSubject state | Direct subscription |
+| Real HTTP (via HttpClient) | `HttpTestingController` + `fakeAsync` |
+
+Start with the simplest approach that covers the behavior. Move to marble testing when timing precision or complex concurrent behavior needs to be tested.

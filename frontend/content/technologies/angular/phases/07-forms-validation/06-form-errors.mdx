@@ -1,0 +1,205 @@
+---
+title: "Form Error Display Patterns"
+slug: "form-errors"
+order: 6
+difficulty: "intermediate"
+readingTime: 9
+status: "published"
+tags: ["Angular", "form errors", "validation display", "touched", "dirty", "pristine"]
+summary: "Knowing when and how to display validation errors is as important as writing validators. Master Angular's control state flags and patterns for consistent, accessible error display."
+docsLinks:
+  - label: "Displaying Validation Errors"
+    url: "https://angular.dev/guide/forms/form-validation#displaying-validation-errors"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Control State Flags
+
+Angular tracks four state dimensions for each form control:
+
+```
+pristine  ← untouched by user → dirty
+untouched ← never blurred     → touched
+valid     ← passes validation  → invalid
+enabled   ← normal            → disabled
+```
+
+The correct time to show errors is typically `invalid && (touched || form submitted)`:
+
+```typescript
+// Control state reference
+const control = this.form.controls.email;
+
+control.pristine;    // true: user hasn't typed in this field
+control.dirty;       // true: user has typed in this field
+control.untouched;   // true: user hasn't focused then left (blurred) this field
+control.touched;     // true: user has focused then left (blurred) this field
+control.valid;       // true: all validators pass
+control.invalid;     // true: at least one validator fails
+control.pending;     // true: async validator running
+control.disabled;    // true: programmatically disabled
+control.enabled;     // true: not disabled
+control.errors;      // null or { required: true, email: true, ... }
+```
+
+## When to Show Errors
+
+```html
+<!-- ❌ Shows errors immediately on page load (before user interacts) -->
+@if (email.invalid) {
+  <div class="error">Invalid email</div>
+}
+
+<!-- ✅ Shows errors after user has touched the field (left it) -->
+@if (email.invalid && email.touched) {
+  <div class="error">Invalid email</div>
+}
+
+<!-- ✅ After form submit attempt — show all errors -->
+@if (email.invalid && (email.touched || submitted)) {
+  <div class="error">Invalid email</div>
+}
+```
+
+```typescript
+@Component({ selector: 'app-form' })
+class FormComponent {
+  submitted = false;
+
+  onSubmit() {
+    this.submitted = true;
+    if (this.form.invalid) {
+      this.form.markAllAsTouched(); // Show all errors
+      return;
+    }
+    // submit
+  }
+}
+```
+
+## Error Object Structure
+
+```typescript
+// When multiple validators fail, errors contains all of them
+const control = new FormControl('ab', [
+  Validators.minLength(5),
+  Validators.pattern(/[A-Z]/),
+]);
+
+control.errors;
+// {
+//   minlength: { requiredLength: 5, actualLength: 2 },
+//   pattern: { requiredPattern: '/[A-Z]/', actualValue: 'ab' }
+// }
+
+// Individual error access
+control.errors?.['required'];          // boolean | undefined
+control.errors?.['minlength'];         // { requiredLength, actualLength } | undefined
+control.errors?.['minlength']?.requiredLength; // number
+```
+
+## Reusable Error Component
+
+Instead of repeating error display in every component, create a shared error component:
+
+```typescript
+// form-error.component.ts
+@Component({
+  selector: 'app-form-error',
+  standalone: true,
+  template: `
+    @if (shouldShow) {
+      <div class="form-errors" role="alert">
+        @if (control.errors?.['required']) {
+          <p>This field is required</p>
+        }
+        @if (control.errors?.['email']) {
+          <p>Please enter a valid email address</p>
+        }
+        @if (control.errors?.['minlength']) {
+          <p>Minimum {{ control.errors?.['minlength'].requiredLength }} characters required</p>
+        }
+        @if (control.errors?.['maxlength']) {
+          <p>Maximum {{ control.errors?.['maxlength'].requiredLength }} characters allowed</p>
+        }
+        @if (control.errors?.['pattern']) {
+          <p>{{ patternMessage || 'Invalid format' }}</p>
+        }
+        @if (control.errors?.['usernameTaken']) {
+          <p>This username is already taken</p>
+        }
+      </div>
+    }
+  `
+})
+class FormErrorComponent {
+  @Input({ required: true }) control!: AbstractControl;
+  @Input() showWhen: 'touched' | 'always' = 'touched';
+  @Input() patternMessage?: string;
+
+  get shouldShow(): boolean {
+    if (this.showWhen === 'always') return this.control.invalid;
+    return this.control.invalid && this.control.touched;
+  }
+}
+
+// Usage — clean templates
+<input formControlName="email">
+<app-form-error [control]="form.controls.email" />
+
+<input formControlName="username">
+<app-form-error
+  [control]="form.controls.username"
+  patternMessage="Only letters and numbers allowed" />
+```
+
+<Callout type="tip">
+For accessibility, add `role="alert"` to error messages and associate them with form inputs using `aria-describedby`. Screen readers will announce errors when they appear. Angular Material's `<mat-error>` handles this automatically.
+</Callout>
+
+## CSS Classes for Styling
+
+Angular automatically adds CSS classes based on control state:
+
+```css
+/* Style invalid fields that have been touched */
+input.ng-invalid.ng-touched {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+}
+
+/* Style valid fields */
+input.ng-valid.ng-dirty {
+  border-color: #22c55e;
+}
+
+/* Pending state */
+input.ng-pending {
+  border-color: #f59e0b;
+}
+```
+
+<CodeChallenge
+  id="form-error-state"
+  difficulty="foundation"
+  description="A user loads a form and immediately clicks Submit without touching any field. The form has required validators. What does markAllAsTouched() do in this scenario?"
+  options={[
+    "It submits the form despite validation errors",
+    "It removes the required validators temporarily",
+    "It marks all controls as 'touched', triggering error display for all invalid controls",
+    "It resets all controls to their initial state"
+  ]}
+  correctAnswer={2}
+  explanation="markAllAsTouched() sets the 'touched' state to true for all controls in the form. Since error messages typically only show when touched is true (to avoid showing errors before the user interacts), calling markAllAsTouched() before checking validity on submit reveals all unaddressed validation errors at once. This gives the user a clear picture of what needs fixing."
+/>
+
+## Senior Insight: Consistent Error UX
+
+Build a project-wide error display pattern early and stick to it. Inconsistency between "errors show on blur" and "errors show on keystroke" in the same app is confusing. Recommended UX pattern:
+
+1. **Never show errors on untouched fields** — let users start clean
+2. **Show errors immediately on blur** (when `touched = true`)
+3. **On form submission with errors** — call `markAllAsTouched()` to reveal all errors
+4. **Hide errors once the field is valid** — don't keep showing "required" when they've fixed it
+5. **For async validators** — show a spinner in the pending state, then show result

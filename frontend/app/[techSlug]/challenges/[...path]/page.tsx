@@ -1,0 +1,124 @@
+import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+import Link from 'next/link'
+import { ChevronRight, BookOpen } from 'lucide-react'
+import { getChallengeById, getAllChallenges, getAllTechSlugs } from '@/lib/content'
+import { Navbar } from '@/components/layout/Navbar'
+import { Footer } from '@/components/layout/Footer'
+import { CodeChallenge } from '@/components/lesson/CodeChallenge'
+import { Quiz } from '@/components/lesson/Quiz'
+import { LessonContextProvider } from '@/components/lesson/LessonContext'
+import { NavPrevNext } from '@/components/layout/NavPrevNext'
+import type { Difficulty } from '@/types'
+
+interface Props {
+  params: Promise<{ techSlug: string; path: string[] }>
+}
+
+export async function generateStaticParams() {
+  const results: { techSlug: string; path: string[] }[] = []
+  for (const techSlug of getAllTechSlugs()) {
+    for (const c of getAllChallenges().filter((c) => c.techSlug === techSlug)) {
+      // c.id = "techSlug/phaseSlug/lessonSlug/rawId"
+      // path segments = everything after techSlug
+      const parts = c.id.split('/').slice(1)
+      results.push({ techSlug, path: parts })
+    }
+  }
+  return results
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { techSlug, path } = await params
+  const challenge = getChallengeById(`${techSlug}/${path.join('/')}`)
+  if (!challenge) return {}
+  const label = challenge.title ?? (challenge.type === 'quiz' ? 'Quiz' : 'Code Challenge')
+  return {
+    title: `${label} — ${challenge.lessonTitle}`,
+    description: challenge.prompt,
+  }
+}
+
+export default async function TechChallengePage({ params }: Props) {
+  const { techSlug, path } = await params
+  const challengeId = `${techSlug}/${path.join('/')}`
+  const challenge = getChallengeById(challengeId)
+  if (!challenge) notFound()
+
+  const techChallenges = getAllChallenges().filter((c) => c.techSlug === techSlug)
+  const idx = techChallenges.findIndex((c) => c.id === challengeId)
+  const prev = idx > 0 ? techChallenges[idx - 1] : null
+  const next = idx < techChallenges.length - 1 ? techChallenges[idx + 1] : null
+
+  const challengeLabel = (c: typeof challenge) =>
+    c.title ?? (c.type === 'quiz' ? 'Quiz' : 'Code Challenge')
+
+  const lessonHref = `/${techSlug}/phases/${challenge.phaseSlug}/${challenge.lessonSlug}`
+
+  return (
+    <>
+      <Navbar techSlug={techSlug} />
+      <main id="main-content" className="container mx-auto px-4 py-8 max-w-2xl">
+        {/* Breadcrumb */}
+        <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground mb-6">
+          <Link href={`/${techSlug}/challenges`} className="hover:text-foreground transition-colors">Challenges</Link>
+          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          <span className="text-foreground truncate max-w-56">{challenge.lessonTitle}</span>
+        </nav>
+
+        {/* Lesson link */}
+        <div className="mb-2">
+          <Link
+            href={lessonHref}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors"
+          >
+            <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
+            View full lesson: <span className="font-medium">{challenge.lessonTitle}</span>
+          </Link>
+        </div>
+
+        {/* Challenge component — wrapped in LessonContext so basket button works */}
+        <LessonContextProvider
+          value={{
+            techSlug: challenge.techSlug,
+            lessonSlug: challenge.lessonSlug,
+            phaseSlug: challenge.phaseSlug,
+            lessonTitle: challenge.lessonTitle,
+            phaseTitle: challenge.phaseTitle,
+            phaseNumber: challenge.phaseNumber,
+          }}
+        >
+          {challenge.type === 'challenge' ? (
+            <CodeChallenge
+              id={challenge.id}
+              title={challenge.title}
+              prompt={challenge.prompt}
+              code={challenge.code ?? ''}
+              language={challenge.language}
+              options={challenge.options}
+              correctAnswer={challenge.correctAnswer}
+              explanation={challenge.explanation}
+              difficulty={challenge.difficulty as Difficulty}
+            />
+          ) : (
+            <Quiz
+              id={challenge.id}
+              question={challenge.prompt ?? ''}
+              options={challenge.options}
+              correctAnswer={challenge.correctAnswer}
+              explanation={challenge.explanation}
+              difficulty={challenge.difficulty as Difficulty}
+            />
+          )}
+        </LessonContextProvider>
+
+        {/* Prev / Next navigation */}
+        <NavPrevNext
+          prev={prev ? { title: challengeLabel(prev), href: `/${techSlug}/challenges/${prev.id.split('/').slice(1).join('/')}` } : undefined}
+          next={next ? { title: challengeLabel(next), href: `/${techSlug}/challenges/${next.id.split('/').slice(1).join('/')}` } : undefined}
+        />
+      </main>
+      <Footer />
+    </>
+  )
+}

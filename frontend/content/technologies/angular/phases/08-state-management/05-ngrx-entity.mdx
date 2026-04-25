@@ -1,0 +1,239 @@
+---
+title: "NgRx Entity"
+slug: "ngrx-entity"
+order: 5
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["NgRx", "entity", "EntityAdapter", "normalized state", "CRUD"]
+summary: "NgRx Entity normalizes collections into efficient dictionary + ID array structures and provides CRUD adapter methods. It eliminates manual array manipulation in reducers."
+docsLinks:
+  - label: "NgRx Entity"
+    url: "https://ngrx.io/guide/entity"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Problem: Array State Is Painful
+
+Managing an array of entities in NgRx reducers requires careful, repetitive code:
+
+```typescript
+// Without Entity — error-prone and verbose
+on(updateUser, (state, { user }) => ({
+  ...state,
+  users: state.users.map(u => u.id === user.id ? user : u) // O(n) every update
+})),
+
+on(deleteUser, (state, { id }) => ({
+  ...state,
+  users: state.users.filter(u => u.id !== id) // O(n) every delete
+})),
+
+on(loadUsersSuccess, (state, { users }) => ({
+  ...state,
+  users, // No deduplication, no normalization
+})),
+```
+
+## NgRx Entity: Normalized Dictionary Structure
+
+Entity normalizes collections into a dictionary (map of id → entity) + ordered ID array:
+
+```typescript
+// EntityState structure (managed by NgRx Entity):
+{
+  ids: ['1', '2', '3'],              // Ordered array of IDs
+  entities: {                         // Dictionary for O(1) lookup
+    '1': { id: '1', name: 'Alice' },
+    '2': { id: '2', name: 'Bob' },
+    '3': { id: '3', name: 'Carol' }
+  }
+}
+```
+
+O(1) lookup, O(1) add/update, O(n) traversal — much better for large collections.
+
+## Setting Up EntityAdapter
+
+```typescript
+import { EntityAdapter, EntityState, createEntityAdapter } from '@ngrx/entity';
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'user';
+}
+
+// 1. Define your entity state (extends EntityState<T>)
+export interface UserState extends EntityState<User> {
+  selectedId: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+// 2. Create the adapter
+export const userAdapter: EntityAdapter<User> = createEntityAdapter<User>({
+  selectId: (user: User) => user.id, // How to get the ID (default: 'id')
+  sortComparer: (a: User, b: User) => a.name.localeCompare(b.name), // Sort order
+});
+
+// 3. Create initial state
+export const initialState: UserState = userAdapter.getInitialState({
+  selectedId: null,
+  loading: false,
+  error: null,
+});
+```
+
+## Using the Adapter in Reducers
+
+```typescript
+export const userReducer = createReducer(
+  initialState,
+
+  // Load started
+  on(loadUsers, state => ({ ...state, loading: true })),
+
+  // Load success — adapter replaces all entities
+  on(loadUsersSuccess, (state, { users }) =>
+    userAdapter.setAll(users, { ...state, loading: false })
+  ),
+
+  // Load failure
+  on(loadUsersFailure, (state, { error }) =>
+    ({ ...state, loading: false, error })
+  ),
+
+  // Add one user
+  on(addUserSuccess, (state, { user }) =>
+    userAdapter.addOne(user, state)
+  ),
+
+  // Update one user
+  on(updateUserSuccess, (state, { user }) =>
+    userAdapter.upsertOne(user, state) // Insert or update
+  ),
+
+  // Delete one user
+  on(deleteUserSuccess, (state, { id }) =>
+    userAdapter.removeOne(id, state)
+  ),
+
+  // Bulk operations
+  on(loadPageSuccess, (state, { users }) =>
+    userAdapter.addMany(users, state) // Add without replacing
+  ),
+
+  on(updateManyUsers, (state, { updates }) =>
+    userAdapter.updateMany(updates, state) // Partial updates
+    // updates: Array<{ id: string; changes: Partial<User> }>
+  ),
+);
+```
+
+## EntityAdapter CRUD Methods
+
+```typescript
+// Add/Update
+adapter.addOne(entity, state)       // Add; error if exists
+adapter.addMany(entities, state)     // Add multiple; errors if any exist
+adapter.setOne(entity, state)        // Add or replace
+adapter.setMany(entities, state)     // Add or replace multiple
+adapter.setAll(entities, state)      // Replace ALL entities
+adapter.upsertOne(entity, state)     // Add or update (merge)
+adapter.upsertMany(entities, state)  // Add or update multiple
+
+// Update (partial)
+adapter.updateOne({ id, changes }, state)
+adapter.updateMany(updates, state)   // updates: { id, changes }[]
+
+// Remove
+adapter.removeOne(id, state)
+adapter.removeMany(ids, state)
+adapter.removeAll(state)
+
+// Map (transform all entities)
+adapter.map(transformFn, state)      // Apply function to every entity
+```
+
+<Callout type="tip">
+Use `upsertOne` when you don't know if the entity already exists (e.g., HTTP PATCH responses). Use `updateOne` when you know it exists and want to fail-fast if it doesn't.
+</Callout>
+
+## Entity Selectors
+
+The adapter generates selector factories:
+
+```typescript
+// Get the standard selectors
+export const {
+  selectIds,        // string[] | number[] of all IDs in order
+  selectEntities,   // Dictionary<User>
+  selectAll,        // User[] in sort order
+  selectTotal,      // number of entities
+} = userAdapter.getSelectors();
+
+// Use with createFeatureSelector
+const selectUserState = createFeatureSelector<UserState>('users');
+
+export const selectAllUsers = createSelector(selectUserState, selectAll);
+export const selectUserEntities = createSelector(selectUserState, selectEntities);
+export const selectUserTotal = createSelector(selectUserState, selectTotal);
+
+// Lookup by ID
+export const selectUserById = (id: string) => createSelector(
+  selectUserEntities,
+  entities => entities[id] ?? null
+);
+```
+
+<CodeChallenge
+  id="ngrx-entity-upsert"
+  difficulty="advanced"
+  description="You dispatch updateUser action with a user that doesn't exist in the store. You use adapter.updateOne({ id: user.id, changes: user }, state). What happens?"
+  options={[
+    "The entity is added to the store",
+    "Nothing — updateOne only modifies existing entities",
+    "An error is thrown",
+    "The store state is replaced with just this entity"
+  ]}
+  correctAnswer={1}
+  explanation="adapter.updateOne() only modifies an entity if it already exists in the store — it silently does nothing if the ID isn't found. To add-or-update (like HTTP POST/PUT semantics), use adapter.upsertOne() instead. upsertOne adds if new, merges changes if existing. This distinction matters when handling optimistic updates or sync scenarios."
+/>
+
+## Senior Insight: Entity for Normalized State
+
+NgRx Entity encourages the Redux best practice of **normalized state** — store entities once in a dictionary, reference them by ID everywhere else:
+
+```typescript
+// ❌ Denormalized — data duplicated across state slices
+{
+  currentUser: { id: '1', name: 'Alice', posts: [...] },
+  userList: [
+    { id: '1', name: 'Alice', posts: [...] }, // Duplicated!
+    { id: '2', name: 'Bob', posts: [...] },
+  ]
+}
+
+// ✅ Normalized — entity stored once, referenced by ID
+{
+  users: {
+    ids: ['1', '2'],
+    entities: {
+      '1': { id: '1', name: 'Alice' },
+      '2': { id: '2', name: 'Bob' },
+    }
+  },
+  posts: {
+    ids: ['p1', 'p2'],
+    entities: {
+      'p1': { id: 'p1', authorId: '1', title: '...' }, // Reference by ID
+    }
+  },
+  currentUserId: '1',  // Reference — not the full user object
+}
+```
+
+Selectors then join the data: `selectCurrentUser = createSelector(selectCurrentUserId, selectUserEntities, (id, entities) => entities[id])`.

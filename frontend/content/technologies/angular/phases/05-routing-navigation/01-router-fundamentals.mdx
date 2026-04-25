@@ -1,0 +1,262 @@
+---
+title: "Router Fundamentals"
+slug: "router-fundamentals"
+order: 1
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["Angular", "router", "RouterOutlet", "RouterLink", "routes"]
+summary: "Angular's router maps URLs to components, enabling SPA navigation. Learn how to define routes, render them with RouterOutlet, and navigate with RouterLink and the Router service."
+docsLinks:
+  - label: "Angular Router"
+    url: "https://angular.dev/guide/routing"
+  - label: "Common Routing Tasks"
+    url: "https://angular.dev/guide/routing/common-router-tasks"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Client-Side Routing?
+
+In a Single Page Application, the server delivers one HTML file and JavaScript handles all navigation. Angular's router updates the URL and swaps components without a full page reload — giving users a fast, app-like experience while preserving URL-based navigation, bookmarks, and browser history.
+
+## Defining Routes
+
+Routes are an array of `Route` objects that map URL patterns to components:
+
+```typescript
+// app.routes.ts
+import { Routes } from '@angular/router';
+import { HomeComponent } from './home/home.component';
+import { AboutComponent } from './about/about.component';
+import { NotFoundComponent } from './not-found/not-found.component';
+
+export const routes: Routes = [
+  // Redirect empty path to home
+  { path: '', redirectTo: '/home', pathMatch: 'full' },
+
+  // Static routes
+  { path: 'home', component: HomeComponent },
+  { path: 'about', component: AboutComponent },
+
+  // Route with parameter
+  { path: 'users/:id', component: UserDetailComponent },
+
+  // Lazy-loaded route (code-splits at build time)
+  {
+    path: 'products',
+    loadComponent: () => import('./products/products.component')
+      .then(m => m.ProductsComponent)
+  },
+
+  // Wildcard — must be LAST
+  { path: '**', component: NotFoundComponent }
+];
+```
+
+## Providing the Router
+
+```typescript
+// main.ts — standalone approach
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideRouter(routes),
+    // Additional router features:
+    provideRouter(routes,
+      withPreloading(PreloadAllModules),      // Preload lazy routes
+      withComponentInputBinding(),            // Bind route params to @Input()
+      withRouterConfig({ paramsInheritanceStrategy: 'always' }), // Child route param access
+      withDebugTracing()                      // Log all router events (dev only)
+    ),
+  ]
+});
+
+// NgModule approach (legacy)
+@NgModule({
+  imports: [RouterModule.forRoot(routes)]
+})
+class AppModule {}
+```
+
+## `RouterOutlet` — Where Components Render
+
+```html
+<!-- app.component.html -->
+<nav>
+  <a routerLink="/home" routerLinkActive="active">Home</a>
+  <a routerLink="/about" routerLinkActive="active">About</a>
+</nav>
+
+<!-- The active route's component renders here -->
+<router-outlet></router-outlet>
+
+<!-- Footer always visible -->
+<footer>© 2024 My App</footer>
+```
+
+## `RouterLink` — Declarative Navigation
+
+```html
+<!-- Basic link — builds: /users/123 -->
+<a [routerLink]="['/users', user.id]">{{ user.name }}</a>
+
+<!-- Static link -->
+<a routerLink="/home">Home</a>
+
+<!-- With query params: /search?q=angular&page=1 -->
+<a
+  routerLink="/search"
+  [queryParams]="{ q: searchQuery, page: 1 }">
+  Search
+</a>
+
+<!-- With fragment: /about#contact -->
+<a routerLink="/about" fragment="contact">Contact</a>
+
+<!-- routerLinkActive adds a CSS class when route is active -->
+<a routerLink="/home" routerLinkActive="nav-active">Home</a>
+
+<!-- routerLinkActiveOptions — exact match (default: prefix match) -->
+<a
+  routerLink="/"
+  routerLinkActive="active"
+  [routerLinkActiveOptions]="{ exact: true }">
+  Home
+</a>
+```
+
+<Callout type="warning">
+Without `[routerLinkActiveOptions]="{ exact: true }"`, a link to `/` will be marked as "active" for ALL routes because `/` is a prefix of every path. Always use exact matching for the home/root link.
+</Callout>
+
+## Programmatic Navigation
+
+```typescript
+@Component({ selector: 'app-login' })
+class LoginComponent {
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+
+  async onLogin() {
+    const success = await this.authService.login(this.credentials);
+    if (success) {
+      // Navigate to a path
+      await this.router.navigate(['/dashboard']);
+
+      // Or navigate relative to current route
+      await this.router.navigate(['../home'], { relativeTo: this.route });
+
+      // With extras
+      await this.router.navigate(['/users', userId], {
+        queryParams: { tab: 'profile' },
+        fragment: 'settings',
+        replaceUrl: true,  // Replace history entry instead of push
+        state: { fromLogin: true }, // Pass state without URL (lost on refresh)
+      });
+
+      // Using URL string directly
+      await this.router.navigateByUrl('/dashboard?welcome=true');
+    }
+  }
+}
+```
+
+## Route Data — Static Metadata
+
+Add static metadata to routes:
+
+```typescript
+const routes: Routes = [
+  {
+    path: 'admin',
+    component: AdminComponent,
+    data: {
+      title: 'Admin Panel',
+      requiredRole: 'admin',
+      breadcrumb: 'Administration',
+    }
+  }
+];
+
+// Access in component
+@Component({ selector: 'app-admin' })
+class AdminComponent {
+  private route = inject(ActivatedRoute);
+
+  readonly routeData = this.route.data; // Observable<Data>
+
+  ngOnInit() {
+    this.route.data.subscribe(data => {
+      document.title = data['title'];
+    });
+  }
+}
+```
+
+## `withComponentInputBinding()` — Route Params as Inputs
+
+Angular 16+ feature that automatically binds route parameters, query params, and data to component `@Input()`:
+
+```typescript
+// Enable in providers
+providers: [provideRouter(routes, withComponentInputBinding())]
+
+// Route: { path: 'users/:id' }
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent {
+  // Automatically bound from :id route parameter
+  @Input() id!: string;
+
+  // Automatically bound from ?tab=... query param
+  @Input() tab?: string;
+
+  // Signal-based input also works
+  id = input<string>();
+}
+
+// No need for inject(ActivatedRoute).snapshot.params['id']!
+```
+
+<CodeChallenge
+  id="router-link-active"
+  difficulty="foundation"
+  description="You have <a routerLink='/dashboard' routerLinkActive='active'>Dashboard</a>. When the user is on /dashboard/settings, is the 'active' class applied?"
+  options={[
+    "No — the route is /dashboard/settings, not /dashboard",
+    "Yes — routerLinkActive uses prefix matching by default, /dashboard is a prefix of /dashboard/settings",
+    "It depends on the router configuration",
+    "Yes, but only if /dashboard is defined as a parent route of settings"
+  ]}
+  correctAnswer={1}
+  explanation="routerLinkActive uses prefix matching by default — the link is active if the current URL starts with the link's path. /dashboard is a prefix of /dashboard/settings, so the 'active' class IS applied. This is often desired (highlight parent nav item when on a child route), but for the root/home link use [routerLinkActiveOptions]='{ exact: true }' to avoid it always being active."
+/>
+
+## Senior Insight: Router as the Source of Truth
+
+The URL should be the source of truth for application state where possible. Filter values, pagination, selected tab, search queries — these should be in the URL (query params) so they're bookmarkable and shareable.
+
+```typescript
+// ❌ State in memory — lost on refresh/share
+class ProductListComponent {
+  filter = 'electronics';
+  page = 1;
+}
+
+// ✅ State in URL — bookmarkable and shareable
+class ProductListComponent {
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+
+  // URL: /products?category=electronics&page=1
+  filter$ = this.route.queryParams.pipe(map(p => p['category'] ?? 'all'));
+  page$ = this.route.queryParams.pipe(map(p => Number(p['page'] ?? 1)));
+
+  updateFilter(category: string) {
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { category, page: 1 },
+      queryParamsHandling: 'merge', // Keep other query params
+    });
+  }
+}
+```

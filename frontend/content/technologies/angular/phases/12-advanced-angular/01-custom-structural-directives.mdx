@@ -1,0 +1,290 @@
+---
+title: "Custom Structural Directives"
+slug: "custom-structural-directives"
+order: 1
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "advanced", "structural directives", "TemplateRef", "ViewContainerRef", "ng-template", "microsyntax"]
+summary: "Structural directives manipulate the DOM by adding, removing, or replacing elements. Building custom structural directives requires understanding TemplateRef, ViewContainerRef, and Angular's microsyntax sugar. This unlocks patterns like *ifPermission, *featureFlag, and *letVar."
+docsLinks:
+  - label: "Structural Directives"
+    url: "https://angular.dev/guide/directives/structural-directives"
+  - label: "TemplateRef"
+    url: "https://angular.dev/api/core/TemplateRef"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## How Structural Directives Work
+
+Angular transforms structural directive syntax into `<ng-template>` internally:
+
+```html
+<!-- What you write: -->
+<div *ngIf="condition">Content</div>
+
+<!-- What Angular compiles to: -->
+<ng-template [ngIf]="condition">
+  <div>Content</div>
+</ng-template>
+```
+
+The `*` prefix is syntactic sugar that wraps the element in `<ng-template>` and passes the expression as an input to the directive. Understanding this transformation is key to building custom structural directives.
+
+## Building a Permission Directive
+
+```typescript
+// *appIfPermission="'admin'" — show content only if user has permission
+@Directive({
+  selector: '[appIfPermission]',
+  standalone: true,
+})
+export class IfPermissionDirective implements OnInit {
+  private templateRef = inject(TemplateRef<any>);
+  private viewContainer = inject(ViewContainerRef);
+  private authService = inject(AuthService);
+
+  @Input('appIfPermission') permission!: string;
+
+  ngOnInit() {
+    if (this.authService.hasPermission(this.permission)) {
+      // Render the template
+      this.viewContainer.createEmbeddedView(this.templateRef);
+    } else {
+      // Don't render anything
+      this.viewContainer.clear();
+    }
+  }
+}
+```
+
+```html
+<!-- Usage -->
+<button *appIfPermission="'delete:users'">Delete User</button>
+<section *appIfPermission="'view:reports'">Reports Dashboard</section>
+```
+
+## Directive with Else Template
+
+The `*ngIf` directive supports `else`. Building the same for custom directives:
+
+```typescript
+@Directive({
+  selector: '[appIfPermission]',
+  standalone: true,
+})
+export class IfPermissionDirective implements OnChanges {
+  private templateRef = inject(TemplateRef<any>);
+  private viewContainer = inject(ViewContainerRef);
+  private authService = inject(AuthService);
+
+  @Input('appIfPermission') permission!: string;
+  @Input('appIfPermissionElse') elseTemplate?: TemplateRef<any>;
+
+  ngOnChanges() {
+    this.viewContainer.clear();
+
+    if (this.authService.hasPermission(this.permission)) {
+      this.viewContainer.createEmbeddedView(this.templateRef);
+    } else if (this.elseTemplate) {
+      this.viewContainer.createEmbeddedView(this.elseTemplate);
+    }
+  }
+}
+```
+
+```html
+<ng-template #noAccess>
+  <p>You don't have permission to view this.</p>
+</ng-template>
+
+<section *appIfPermission="'admin'; else noAccess">
+  Admin content
+</section>
+```
+
+## Building a *letVar Directive
+
+A common request: declare template variables from complex expressions:
+
+```typescript
+@Directive({
+  selector: '[appLet]',
+  standalone: true,
+})
+export class LetDirective<T> {
+  private templateRef = inject(TemplateRef<{ appLet: T }>);
+  private viewContainer = inject(ViewContainerRef);
+
+  private _context: { appLet: T } = { appLet: null as T };
+  private _view: EmbeddedViewRef<{ appLet: T }> | null = null;
+
+  @Input('appLet')
+  set value(value: T) {
+    this._context.appLet = value;
+    if (!this._view) {
+      this._view = this.viewContainer.createEmbeddedView(
+        this.templateRef,
+        this._context
+      );
+    }
+  }
+
+  // Type guard for template type inference
+  static ngTemplateContextGuard<T>(
+    dir: LetDirective<T>,
+    ctx: unknown
+  ): ctx is { appLet: T } {
+    return true;
+  }
+}
+```
+
+```html
+<!-- Usage: assign a complex expression to a template variable -->
+@let vm = {
+  user: user$ | async,
+  isAdmin: (user$ | async)?.role === 'admin'
+};
+
+<!-- Without *appLet, you'd need to pipe twice: -->
+<div *appLet="user$ | async as user">
+  <h1>{{ user?.name }}</h1>
+  <p>{{ user?.email }}</p>
+  <button *ngIf="user?.role === 'admin'">Admin Panel</button>
+</div>
+```
+
+<Callout type="tip">
+Angular 17+ has built-in `@let` syntax for template variables, making a custom `*letVar` directive less necessary. But understanding how to build one reveals how structural directives work with `TemplateRef` context.
+</Callout>
+
+## Building a Repeat Directive
+
+A simplified `*ngFor` that just repeats `n` times:
+
+```typescript
+@Directive({
+  selector: '[appRepeat]',
+  standalone: true,
+})
+export class RepeatDirective implements OnChanges {
+  private templateRef = inject(TemplateRef<{ $implicit: number; index: number }>);
+  private viewContainer = inject(ViewContainerRef);
+
+  @Input('appRepeat') count = 0;
+
+  ngOnChanges() {
+    this.viewContainer.clear();
+
+    for (let i = 0; i < this.count; i++) {
+      this.viewContainer.createEmbeddedView(this.templateRef, {
+        $implicit: i,
+        index: i,
+      });
+    }
+  }
+}
+```
+
+```html
+<!-- Usage: repeat a template n times -->
+<li *appRepeat="5; let i = index">Item {{ i + 1 }}</li>
+
+<!-- Renders: -->
+<!-- <li>Item 1</li> -->
+<!-- <li>Item 2</li> -->
+<!-- ... -->
+<!-- <li>Item 5</li> -->
+```
+
+## Microsyntax: The *-Notation Rules
+
+Angular's microsyntax parser converts `*directive="expression; key1: value1; key2: value2"` into:
+
+```html
+<!-- This microsyntax: -->
+<div *appRepeat="5; let i = index; trackBy: trackFn">
+
+<!-- Becomes: -->
+<ng-template
+  [appRepeat]="5"
+  let-i="index"
+  [appRepeatTrackBy]="trackFn"
+>
+  <div></div>
+</ng-template>
+```
+
+The binding name convention: `appRepeat` directive receives `[appRepeat]` (the main value) and `[appRepeat + CapitalizedKey]` for each keyed value.
+
+<CodeChallenge
+  id="structural-directive-template"
+  difficulty="advanced"
+  description="A custom structural directive uses ViewContainerRef.createEmbeddedView(this.templateRef) but doesn't call ViewContainerRef.clear() first. What happens if the @Input changes?"
+  options={[
+    "Angular automatically removes old views when new ones are created",
+    "Multiple views accumulate — each change adds another copy of the template without removing the previous one",
+    "An error is thrown: cannot create view while existing view is attached",
+    "Only the most recently created view is visible — previous ones are hidden"
+  ]}
+  correctAnswer={1}
+  explanation="ViewContainerRef is like an array of views. createEmbeddedView() appends a new view — it doesn't replace anything. If you call it 5 times without clear(), you get 5 copies of the template rendered. You must call this.viewContainer.clear() before creating a new view when handling input changes (in ngOnChanges). Some directives track the view reference and call viewRef.destroy() instead of clearing all views — useful when only one specific view needs to be removed. Always manage the view lifecycle explicitly."
+/>
+
+## Real-World Pattern: Feature Flag Directive
+
+```typescript
+@Directive({
+  selector: '[appFeatureFlag]',
+  standalone: true,
+})
+export class FeatureFlagDirective implements OnInit, OnDestroy {
+  private templateRef = inject(TemplateRef<any>);
+  private viewContainer = inject(ViewContainerRef);
+  private featureService = inject(FeatureFlagService);
+
+  @Input('appFeatureFlag') featureName!: string;
+
+  private subscription?: Subscription;
+
+  ngOnInit() {
+    // React to real-time feature flag changes
+    this.subscription = this.featureService
+      .isEnabled(this.featureName)
+      .subscribe(enabled => {
+        this.viewContainer.clear();
+        if (enabled) {
+          this.viewContainer.createEmbeddedView(this.templateRef);
+        }
+      });
+  }
+
+  ngOnDestroy() {
+    this.subscription?.unsubscribe();
+  }
+}
+```
+
+```html
+<!-- Feature only visible when flag is enabled in your feature flag service -->
+<app-new-checkout-flow *appFeatureFlag="'new-checkout-v2'" />
+<app-old-checkout-flow *appFeatureFlag="'old-checkout'" />
+```
+
+## Senior Insight: When to Build Structural Directives
+
+Custom structural directives are powerful but add complexity. Use them when:
+
+1. **Permission/feature flag control** — cleaner than `*ngIf` with complex expressions
+2. **Custom iteration patterns** — repeat, paginate, virtualize
+3. **Template reuse across contexts** — same template rendered in multiple locations
+4. **Runtime template switching** — swapping templates based on state
+
+Avoid custom structural directives when:
+- A simple `*ngIf` or `@if` does the job
+- The logic belongs in the component, not the template
+- The behavior can be achieved with attribute directives
+
+The key insight interviewers look for: understanding that structural directives don't add HTML — they add or remove `<ng-template>` renditions from the view container. This fundamental understanding distinguishes engineers who use structural directives from engineers who truly understand Angular's template engine.

@@ -1,0 +1,14 @@
+{
+  "slug": "dotnet",
+  "title": ".NET",
+  "subtitle": "C# & .NET Senior Interview Prep",
+  "description": "Master C# internals, async/await, Entity Framework Core, ASP.NET Core, and system design. 13 phases covering everything from CLR fundamentals to distributed architecture.",
+  "icon": "Cpu",
+  "color": "violet",
+  "status": "active",
+  "order": 1,
+  "defaultLanguage": "csharp",
+  "docsBaseUrl": "https://learn.microsoft.com/en-us/dotnet",
+  "keywords": [".NET", "C#", "ASP.NET Core", "Entity Framework", "dotnet", "CLR"],
+  "estimatedTotalHours": 131
+}

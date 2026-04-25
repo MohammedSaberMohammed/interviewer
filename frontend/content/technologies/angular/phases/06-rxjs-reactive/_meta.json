@@ -1,0 +1,22 @@
+{
+  "slug": "06-rxjs-reactive",
+  "number": 6,
+  "title": "RxJS & Reactive Patterns",
+  "subtitle": "Observables, operators, subjects, and memory leak prevention",
+  "level": "mid",
+  "estimatedHours": 12,
+  "emoji": "🌊",
+  "color": "cyan",
+  "description": "RxJS is Angular's reactive programming library, used for HTTP, routing, forms, and event streams. Master the operators that interviewers test — switchMap, mergeMap, combineLatest, and the memory leak patterns that trip up developers.",
+  "prerequisites": ["01-typescript-essentials"],
+  "learningOutcomes": [
+    "Explain the Observable/Observer/Subscription model and hot vs cold observables",
+    "Use creation operators (of, from, fromEvent, interval) appropriately",
+    "Choose correctly between switchMap, mergeMap, concatMap, and exhaustMap",
+    "Apply filtering operators including debounceTime and distinctUntilChanged",
+    "Combine multiple streams with combineLatest, forkJoin, and withLatestFrom",
+    "Use Subject, BehaviorSubject, and ReplaySubject for multicasting",
+    "Handle errors with catchError and retry without losing the stream",
+    "Prevent memory leaks with takeUntilDestroyed and the async pipe"
+  ]
+}

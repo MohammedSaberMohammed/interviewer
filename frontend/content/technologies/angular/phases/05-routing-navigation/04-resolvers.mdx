@@ -1,0 +1,216 @@
+---
+title: "Route Resolvers"
+slug: "resolvers"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "resolvers", "ResolveFn", "route data", "pre-loading"]
+summary: "Resolvers pre-fetch data before a route renders, ensuring the component receives its data immediately rather than showing loading states. The modern ResolveFn syntax makes them simple functions."
+docsLinks:
+  - label: "Route Resolvers"
+    url: "https://angular.dev/guide/routing/common-router-tasks#resolve-pre-fetching-component-data"
+  - label: "ResolveFn"
+    url: "https://angular.dev/api/router/ResolveFn"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Problem Resolvers Solve
+
+Without resolvers, components typically show a loading state while data fetches:
+
+```typescript
+// Without resolver — component handles loading state
+@Component({
+  template: `
+    @if (loading) { <app-spinner /> }
+    @else if (user) { <app-user-detail [user]="user" /> }
+    @else { <app-error /> }
+  `
+})
+class UserDetailComponent implements OnInit {
+  user?: User;
+  loading = true;
+
+  ngOnInit() {
+    const id = this.route.snapshot.params['id'];
+    this.userService.getUser(id).subscribe({
+      next: user => { this.user = user; this.loading = false; },
+      error: () => { this.loading = false; /* handle */ }
+    });
+  }
+}
+```
+
+With a resolver, the data is fetched **before** the component renders:
+
+```typescript
+// With resolver — component always has the data
+@Component({
+  template: `<app-user-detail [user]="user" />`
+})
+class UserDetailComponent {
+  user = this.route.snapshot.data['user'] as User;
+  // Or with withComponentInputBinding():
+  @Input() user!: User; // Data injected as if it were a query param
+}
+```
+
+## Modern Functional Resolvers (Angular 15+)
+
+```typescript
+import { ResolveFn } from '@angular/router';
+import { inject } from '@angular/core';
+
+// ResolveFn<T> — T is the type of resolved data
+export const userResolver: ResolveFn<User> = (route, state) => {
+  const userService = inject(UserService);
+  const router = inject(Router);
+  const id = route.params['id'];
+
+  return userService.getUser(id).pipe(
+    catchError(err => {
+      // On error, redirect to not found or error page
+      router.navigate(['/not-found']);
+      return EMPTY; // Don't render the target component
+    })
+  );
+};
+
+// Apply to route
+const routes: Routes = [
+  {
+    path: 'users/:id',
+    component: UserDetailComponent,
+    resolve: {
+      user: userResolver,            // Key 'user' matches route.data['user']
+    }
+  }
+];
+```
+
+## Accessing Resolved Data
+
+```typescript
+// Method 1: ActivatedRoute.data observable
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent {
+  private route = inject(ActivatedRoute);
+
+  user$ = this.route.data.pipe(map(data => data['user'] as User));
+}
+
+// Method 2: Snapshot (when component won't be reused)
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent {
+  private route = inject(ActivatedRoute);
+  user = this.route.snapshot.data['user'] as User;
+}
+
+// Method 3: withComponentInputBinding() — cleanest
+// Enable: provideRouter(routes, withComponentInputBinding())
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent {
+  @Input() user!: User; // Automatically bound from resolve.user
+}
+```
+
+## Multiple Resolvers
+
+```typescript
+const routes: Routes = [
+  {
+    path: 'products/:id',
+    component: ProductDetailComponent,
+    resolve: {
+      product: productResolver,      // Fetches product
+      relatedProducts: relatedProductsResolver, // Fetches related items
+      reviews: reviewsResolver,      // Fetches reviews
+    }
+    // All three resolve CONCURRENTLY before the component renders
+  }
+];
+
+// Access all resolved data
+@Component({ selector: 'app-product-detail' })
+class ProductDetailComponent {
+  @Input() product!: Product;
+  @Input() relatedProducts!: Product[];
+  @Input() reviews!: Review[];
+}
+```
+
+<Callout type="tip">
+Resolvers defined in the same route's `resolve` object run in **parallel** — Angular executes them concurrently and waits for all to complete. This is more efficient than sequential loading in the component. If one resolver depends on another's result, use a single resolver that handles both fetches in sequence.
+</Callout>
+
+## Error Handling in Resolvers
+
+```typescript
+export const productResolver: ResolveFn<Product> = (route) => {
+  const productService = inject(ProductService);
+  const router = inject(Router);
+  const id = route.params['id'];
+
+  return productService.getProduct(id).pipe(
+    catchError(error => {
+      if (error.status === 404) {
+        router.navigate(['/products'], { state: { error: 'Product not found' } });
+      } else {
+        router.navigate(['/error'], { state: { code: error.status } });
+      }
+      return EMPTY; // Prevents the route from activating
+    })
+  );
+};
+```
+
+## When to Use Resolvers vs Component Loading
+
+**Use resolvers when:**
+- The component is meaningless without its data (can't show anything useful while loading)
+- You want to prevent the route from activating on fetch errors
+- SEO matters — SSR should have data when rendering
+
+**Don't use resolvers when:**
+- The page can show meaningful content while loading (skeletons, progressive loading)
+- The data fetch is slow and blocking navigation feels bad UX
+- You need to show optimistic UI updates
+
+<CodeChallenge
+  id="resolver-concurrency"
+  difficulty="intermediate"
+  description="A route has three resolvers: userResolver, permissionsResolver, preferencesResolver. In what order do they execute?"
+  options={[
+    "In the order listed — userResolver first, then permissions, then preferences",
+    "All three execute concurrently — the route waits for all three to complete",
+    "Angular chooses the fastest one and uses that",
+    "In reverse order — Angular optimizes by running cheapest last"
+  ]}
+  correctAnswer={1}
+  explanation="Angular executes all resolvers defined in a route's resolve object concurrently — similar to Promise.all(). The navigation completes and the component renders only after ALL resolvers have completed. This is efficient for independent data fetches. If one resolver depends on another's result, combine them into a single resolver that fetches sequentially."
+/>
+
+## Senior Insight: Resolvers for Data Caching
+
+Resolvers combined with a caching service create a powerful pattern — data is pre-fetched, cached, and reused on subsequent visits:
+
+```typescript
+export const cachedUserResolver: ResolveFn<User> = (route) => {
+  const cache = inject(UserCacheService);
+  const http = inject(HttpClient);
+  const id = route.params['id'];
+
+  // Return cached version immediately if available
+  const cached = cache.get(id);
+  if (cached) return of(cached);
+
+  // Otherwise fetch and cache
+  return http.get<User>(`/api/users/${id}`).pipe(
+    tap(user => cache.set(id, user, { ttl: 5 * 60 * 1000 })) // 5 min cache
+  );
+};
+```
+
+The user gets instant navigation on cached pages — a significant UX improvement.

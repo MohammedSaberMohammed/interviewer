@@ -1,0 +1,223 @@
+---
+title: "Template-Driven Forms"
+slug: "template-driven-forms"
+order: 1
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["Angular", "template-driven forms", "ngModel", "ngForm", "FormsModule"]
+summary: "Template-driven forms use ngModel for two-way binding and handle validation through directives. They're simpler for basic forms but lack the TypeScript integration of reactive forms."
+docsLinks:
+  - label: "Template-driven Forms"
+    url: "https://angular.dev/guide/forms/template-driven-forms"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Template-Driven vs Reactive Forms
+
+Angular provides two form systems. Template-driven forms define the form structure in the template using directives. Reactive forms define the structure in the component class using TypeScript objects. Both are valid — the choice depends on form complexity and team preference.
+
+```typescript
+// Template-driven — FormsModule required
+@Component({
+  standalone: true,
+  imports: [FormsModule], // Provides NgModel, NgForm, NgModelGroup
+  template: `
+    <form #myForm="ngForm" (ngSubmit)="onSubmit(myForm)">
+      <input name="username" [(ngModel)]="user.username" required>
+      <button [disabled]="myForm.invalid">Submit</button>
+    </form>
+  `
+})
+class TemplateFormComponent {
+  user = { username: '' };
+
+  onSubmit(form: NgForm) {
+    if (form.valid) {
+      console.log(form.value); // { username: 'Alice' }
+    }
+  }
+}
+```
+
+## Building a Template-Driven Form
+
+```typescript
+@Component({
+  standalone: true,
+  imports: [FormsModule, NgIf],
+  template: `
+    <form #loginForm="ngForm" (ngSubmit)="onSubmit(loginForm.value)">
+      <!-- Template reference + ngModel -->
+      <div class="field">
+        <label>Email</label>
+        <input
+          type="email"
+          name="email"
+          [(ngModel)]="credentials.email"
+          #emailField="ngModel"
+          required
+          email>
+        <!-- Validation error display -->
+        @if (emailField.invalid && emailField.touched) {
+          <div class="error">
+            @if (emailField.errors?.['required']) { Email is required }
+            @if (emailField.errors?.['email']) { Invalid email format }
+          </div>
+        }
+      </div>
+
+      <div class="field">
+        <label>Password</label>
+        <input
+          type="password"
+          name="password"
+          [(ngModel)]="credentials.password"
+          #passwordField="ngModel"
+          required
+          minlength="8">
+        @if (passwordField.invalid && passwordField.touched) {
+          <div class="error">
+            @if (passwordField.errors?.['required']) { Password is required }
+            @if (passwordField.errors?.['minlength']) {
+              Minimum {{ passwordField.errors?.['minlength'].requiredLength }} characters
+            }
+          </div>
+        }
+      </div>
+
+      <button type="submit" [disabled]="loginForm.invalid || submitting">
+        {{ submitting ? 'Logging in...' : 'Log In' }}
+      </button>
+    </form>
+  `
+})
+class LoginFormComponent {
+  credentials = { email: '', password: '' };
+  submitting = false;
+
+  onSubmit(value: { email: string; password: string }) {
+    this.submitting = true;
+    this.authService.login(value).subscribe({
+      next: () => this.router.navigate(['/dashboard']),
+      error: () => this.submitting = false,
+    });
+  }
+}
+```
+
+## Form Control State Properties
+
+Angular tracks the state of each form control:
+
+```
+pristine ↔ dirty       — Has the user interacted with this field?
+untouched ↔ touched    — Has the user left (blurred) this field?
+valid ↔ invalid        — Does the field pass all validators?
+pending                — Is an async validator running?
+```
+
+```html
+<!-- CSS classes are automatically added to the input element -->
+<input ngModel name="email">
+<!-- Angular adds: ng-pristine, ng-untouched, ng-valid (or their opposites) -->
+<!-- You can style based on these classes: input.ng-invalid.ng-touched { border-color: red } -->
+
+<!-- Access state programmatically -->
+@if (emailField.dirty && emailField.invalid) {
+  <span class="error">Please enter a valid email</span>
+}
+```
+
+## Built-in Validators as Directives
+
+```html
+<input
+  [(ngModel)]="value"
+  required          <!-- Prevents empty submission -->
+  minlength="3"     <!-- Minimum string length -->
+  maxlength="50"    <!-- Maximum string length -->
+  min="0"           <!-- Minimum numeric value -->
+  max="100"         <!-- Maximum numeric value -->
+  pattern="[A-Z]+"  <!-- Regex pattern -->
+  email>            <!-- Email format validation -->
+```
+
+## `ngModelGroup` — Nested Groups
+
+```html
+<form #form="ngForm">
+  <div ngModelGroup="address">
+    <input name="street" [(ngModel)]="user.address.street" required>
+    <input name="city" [(ngModel)]="user.address.city" required>
+  </div>
+</form>
+
+<!-- form.value: { address: { street: '...', city: '...' } } -->
+```
+
+<Callout type="tip">
+Each `[(ngModel)]` field MUST have a `name` attribute when inside a form. Without `name`, the control doesn't register with the parent form and won't be included in `form.value` or participate in validation.
+</Callout>
+
+## Resetting Forms
+
+```typescript
+@Component({
+  template: `
+    <form #form="ngForm" (ngSubmit)="onSubmit()">
+      <input name="name" [(ngModel)]="name">
+      <button (click)="reset(form)">Reset</button>
+    </form>
+  `
+})
+class MyFormComponent {
+  name = '';
+
+  reset(form: NgForm) {
+    form.reset(); // Resets values AND marks pristine/untouched
+    // Or reset to specific values:
+    form.resetForm({ name: 'Default' });
+  }
+}
+```
+
+<CodeChallenge
+  id="template-driven-validation"
+  difficulty="foundation"
+  description="A template-driven form input has required and email validators. The user clicks the field and immediately clicks away without typing. Which state classes does Angular add?"
+  options={[
+    "ng-valid ng-pristine ng-touched",
+    "ng-invalid ng-pristine ng-touched",
+    "ng-invalid ng-dirty ng-touched",
+    "ng-valid ng-dirty ng-untouched"
+  ]}
+  correctAnswer={1}
+  explanation="Clicking (focus) then clicking away (blur) makes the field 'touched' (ng-touched). The field was never typed in — it's still 'pristine' (ng-pristine). Since required is violated (empty value), it's 'invalid' (ng-invalid). The touched+invalid combination is what you check for to show validation errors: '@if (field.invalid && field.touched)'."
+/>
+
+## When to Use Template-Driven Forms
+
+**Use template-driven when:**
+- Simple contact forms, login forms, newsletter signup
+- Few fields with straightforward validation
+- Team is more comfortable with Angular templates than TypeScript class APIs
+- You don't need programmatic control over form state
+
+**Use reactive forms when:**
+- Complex validation logic (cross-field, async)
+- Dynamic form fields (FormArray)
+- Strong TypeScript typing needed (Angular 14+ typed forms)
+- Unit testing form logic in isolation
+- Form state needs to interact with RxJS streams
+
+## Senior Insight: The Modern Preference
+
+Most Angular teams prefer reactive forms for new development:
+- TypeScript gives you type-safe form values
+- Reactive forms are easier to unit test
+- AsyncValidator integration is cleaner
+- Angular 14+ typed forms eliminate the `form.value as unknown as MyType` casts
+
+Template-driven forms still have a place for simple internal admin forms where developer ergonomics matter more than type safety.

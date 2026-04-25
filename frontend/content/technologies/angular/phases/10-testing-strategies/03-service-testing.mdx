@@ -1,0 +1,345 @@
+---
+title: "Service Testing"
+slug: "service-testing"
+order: 3
+difficulty: "intermediate"
+readingTime: 9
+status: "published"
+tags: ["Angular", "testing", "services", "spies", "mocks", "inject", "jasmine.createSpyObj"]
+summary: "Service tests verify business logic in isolation. The strategy varies based on dependencies — pure services need no TestBed, services with Angular DI use TestBed.inject, and HTTP services use HttpClientTestingModule."
+docsLinks:
+  - label: "Service Testing"
+    url: "https://angular.dev/guide/testing/services"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Service Testing Strategy
+
+Choose the right approach based on what the service uses:
+
+| Service Type | Testing Approach |
+|-------------|-----------------|
+| No Angular deps | Direct `new Service()` |
+| Uses `inject()` / Angular DI | TestBed with mocked providers |
+| Makes HTTP calls | TestBed + HttpClientTestingModule |
+| Uses RxJS | Direct instantiation + marble testing |
+| Uses Router, ActivatedRoute | TestBed with RouterTestingModule |
+
+## Direct Instantiation (No TestBed)
+
+The fastest and simplest approach for pure services:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class CalculatorService {
+  add(a: number, b: number): number { return a + b; }
+  multiply(a: number, b: number): number { return a * b; }
+  factorial(n: number): number {
+    if (n <= 1) return 1;
+    return n * this.factorial(n - 1);
+  }
+}
+
+describe('CalculatorService', () => {
+  let service: CalculatorService;
+
+  beforeEach(() => {
+    service = new CalculatorService();
+  });
+
+  it('should add correctly', () => {
+    expect(service.add(2, 3)).toBe(5);
+  });
+
+  it('should handle factorial', () => {
+    expect(service.factorial(5)).toBe(120);
+    expect(service.factorial(0)).toBe(1);
+  });
+});
+```
+
+## Testing Services with Dependencies
+
+When a service injects other services, use TestBed to handle DI:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class UserService {
+  private http = inject(HttpClient);
+  private logger = inject(LoggerService);
+
+  getUser(id: string): Observable<User> {
+    this.logger.info(`Fetching user ${id}`);
+    return this.http.get<User>(`/api/users/${id}`);
+  }
+}
+
+describe('UserService', () => {
+  let service: UserService;
+  let loggerSpy: jasmine.SpyObj<LoggerService>;
+
+  beforeEach(() => {
+    // Create spy with all methods mocked
+    loggerSpy = jasmine.createSpyObj('LoggerService', ['info', 'warn', 'error']);
+
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule], // Mock HTTP
+      providers: [
+        UserService,
+        { provide: LoggerService, useValue: loggerSpy }
+      ]
+    });
+
+    service = TestBed.inject(UserService);
+  });
+
+  it('should log when fetching user', () => {
+    const httpMock = TestBed.inject(HttpTestingController);
+
+    service.getUser('123').subscribe();
+
+    // Flush the pending request
+    httpMock.expectOne('/api/users/123').flush({ id: '123', name: 'Alice' });
+
+    expect(loggerSpy.info).toHaveBeenCalledWith('Fetching user 123');
+  });
+});
+```
+
+## Testing Signal-Based Services
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class ShoppingCartService {
+  private items = signal<CartItem[]>([]);
+
+  readonly itemCount = computed(() => this.items().length);
+  readonly total = computed(() =>
+    this.items().reduce((sum, item) => sum + item.price * item.quantity, 0)
+  );
+
+  addItem(item: CartItem) {
+    this.items.update(current => {
+      const existing = current.find(i => i.id === item.id);
+      if (existing) {
+        return current.map(i => i.id === item.id
+          ? { ...i, quantity: i.quantity + 1 }
+          : i
+        );
+      }
+      return [...current, item];
+    });
+  }
+
+  removeItem(id: string) {
+    this.items.update(current => current.filter(i => i.id !== id));
+  }
+}
+
+describe('ShoppingCartService', () => {
+  let service: ShoppingCartService;
+
+  beforeEach(() => {
+    service = new ShoppingCartService(); // No TestBed needed
+  });
+
+  it('should start empty', () => {
+    expect(service.itemCount()).toBe(0);
+    expect(service.total()).toBe(0);
+  });
+
+  it('should increment quantity for duplicate items', () => {
+    const item = { id: '1', name: 'Book', price: 20, quantity: 1 };
+    service.addItem(item);
+    service.addItem(item); // Same ID
+
+    expect(service.itemCount()).toBe(1);
+    expect(service.total()).toBe(40); // 20 × 2
+  });
+
+  it('should remove items correctly', () => {
+    service.addItem({ id: '1', name: 'A', price: 10, quantity: 1 });
+    service.addItem({ id: '2', name: 'B', price: 20, quantity: 1 });
+    service.removeItem('1');
+
+    expect(service.itemCount()).toBe(1);
+    expect(service.total()).toBe(20);
+  });
+});
+```
+
+## Testing with Fake Implementations
+
+Sometimes a full spy is too much — a simple fake class is clearer:
+
+```typescript
+// Fake implementation for testing
+class FakeStorageService implements StorageService {
+  private store = new Map<string, string>();
+
+  get(key: string) { return this.store.get(key) ?? null; }
+  set(key: string, value: string) { this.store.set(key, value); }
+  remove(key: string) { this.store.delete(key); }
+  clear() { this.store.clear(); }
+}
+
+describe('SessionService', () => {
+  let service: SessionService;
+  let fakeStorage: FakeStorageService;
+
+  beforeEach(() => {
+    fakeStorage = new FakeStorageService();
+    TestBed.configureTestingModule({
+      providers: [
+        SessionService,
+        { provide: StorageService, useValue: fakeStorage }
+      ]
+    });
+    service = TestBed.inject(SessionService);
+  });
+
+  it('should persist session token', () => {
+    service.startSession('user-123', 'token-abc');
+    expect(fakeStorage.get('session_token')).toBe('token-abc');
+  });
+});
+```
+
+<Callout type="tip">
+Use `jasmine.createSpyObj` when you want to assert HOW methods were called (how many times, with what arguments). Use fake implementations when you want to test WHAT the service does with its dependencies — fakes provide real behavior without real side effects.
+</Callout>
+
+## Testing BehaviorSubject-Based Services
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class NotificationService {
+  private notifications$ = new BehaviorSubject<Notification[]>([]);
+
+  readonly notifications = this.notifications$.asObservable();
+
+  add(notification: Notification) {
+    this.notifications$.next([...this.notifications$.value, notification]);
+  }
+
+  dismiss(id: string) {
+    this.notifications$.next(
+      this.notifications$.value.filter(n => n.id !== id)
+    );
+  }
+}
+
+describe('NotificationService', () => {
+  let service: NotificationService;
+
+  beforeEach(() => {
+    service = new NotificationService();
+  });
+
+  it('should emit notification when added', (done) => {
+    const notification = { id: '1', message: 'Success!', type: 'success' };
+
+    service.notifications.subscribe(notifications => {
+      if (notifications.length > 0) {
+        expect(notifications[0]).toEqual(notification);
+        done();
+      }
+    });
+
+    service.add(notification);
+  });
+
+  it('should remove notification when dismissed', () => {
+    service.add({ id: '1', message: 'A', type: 'info' });
+    service.add({ id: '2', message: 'B', type: 'info' });
+
+    service.dismiss('1');
+
+    let current: Notification[] = [];
+    service.notifications.subscribe(n => current = n).unsubscribe();
+
+    expect(current.length).toBe(1);
+    expect(current[0].id).toBe('2');
+  });
+});
+```
+
+<CodeChallenge
+  id="service-testing-spy"
+  difficulty="intermediate"
+  description="You use jasmine.createSpyObj('UserService', ['getUser']) to mock a dependency. The service under test calls getUser('123'). You forgot to call .and.returnValue(). What does getUser return?"
+  options={[
+    "Throws an error — spy must have a return value configured",
+    "Returns undefined — Jasmine spies return undefined by default when no returnValue is configured",
+    "Returns an empty Observable",
+    "Returns null"
+  ]}
+  correctAnswer={1}
+  explanation="Jasmine spies return undefined by default unless you configure .and.returnValue() or .and.callFake(). This often causes confusing test failures: the service calls mockUserService.getUser('123') which returns undefined, then tries to call .subscribe() on undefined, throwing 'Cannot read properties of undefined (reading subscribe)'. Always configure the return value before the code under test runs: mockService.method.and.returnValue(of(expectedData))."
+/>
+
+## Testing Async Service Methods
+
+```typescript
+describe('DataService', () => {
+  let service: DataService;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule],
+      providers: [DataService]
+    });
+
+    service = TestBed.inject(DataService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    // Verify no unexpected requests were made
+    httpMock.verify();
+  });
+
+  it('should return data', (done) => {
+    const mockData = { id: 1, value: 'test' };
+
+    service.getData().subscribe(data => {
+      expect(data).toEqual(mockData);
+      done();
+    });
+
+    // Assert and flush the request
+    const req = httpMock.expectOne('/api/data');
+    expect(req.request.method).toBe('GET');
+    req.flush(mockData); // Resolve with mock data
+  });
+});
+```
+
+## Senior Insight: Test Coverage That Matters
+
+Test coverage metrics can be misleading — 100% coverage doesn't mean tests are good:
+
+```typescript
+// 100% coverage but tests nothing meaningful
+it('should exist', () => {
+  expect(service).toBeTruthy(); // Covers constructor
+  service.doSomething(); // Covers the method — but no assertions!
+});
+
+// Lower coverage but much more valuable
+it('should transform user data correctly', () => {
+  const raw = { user_name: 'alice', user_email: 'alice@test.com' };
+  const result = service.transformUser(raw);
+  expect(result).toEqual({ name: 'alice', email: 'alice@test.com' });
+});
+
+it('should handle missing email gracefully', () => {
+  const raw = { user_name: 'alice', user_email: null };
+  const result = service.transformUser(raw);
+  expect(result.email).toBe('');
+});
+```
+
+Focus coverage on: **business logic branches**, **error cases**, **boundary conditions**, and **integration points** (what gets passed to external dependencies).

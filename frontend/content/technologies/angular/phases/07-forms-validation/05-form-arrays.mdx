@@ -1,0 +1,224 @@
+---
+title: "FormArray & Dynamic Forms"
+slug: "form-arrays"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "FormArray", "dynamic forms", "reactive forms", "form controls"]
+summary: "FormArray manages a dynamic list of form controls — add, remove, and reorder fields at runtime. Essential for tag inputs, phone number lists, and any variable-length form data."
+docsLinks:
+  - label: "FormArray"
+    url: "https://angular.dev/api/forms/FormArray"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Is FormArray?
+
+`FormArray` manages an ordered list of `FormControl`, `FormGroup`, or nested `FormArray` instances. Unlike `FormGroup` (which has named controls), `FormArray` uses numeric indices and supports adding/removing controls dynamically.
+
+```typescript
+import { FormArray, FormControl, FormGroup, FormBuilder } from '@angular/forms';
+
+const skillsForm = new FormArray([
+  new FormControl('TypeScript'),
+  new FormControl('Angular'),
+  new FormControl('RxJS'),
+]);
+
+// Access by index
+skillsForm.at(0).value; // 'TypeScript'
+
+// Add
+skillsForm.push(new FormControl('NgRx'));
+
+// Remove by index
+skillsForm.removeAt(1); // Removes 'Angular'
+
+// Get the value
+skillsForm.value; // ['TypeScript', 'RxJS', 'NgRx']
+```
+
+## FormArray of FormGroups
+
+The most common pattern — a dynamic list of complex objects:
+
+```typescript
+@Component({
+  standalone: true,
+  imports: [ReactiveFormsModule, NgFor, NgIf],
+  template: `
+    <form [formGroup]="experienceForm">
+      <div formArrayName="experiences">
+        @for (exp of experiences.controls; track $index; let i = $index) {
+          <div [formGroupName]="i" class="experience-item">
+            <input formControlName="company" placeholder="Company">
+            <input formControlName="title" placeholder="Job Title">
+            <input type="number" formControlName="years" placeholder="Years">
+            <button type="button" (click)="removeExperience(i)">Remove</button>
+          </div>
+        }
+      </div>
+      <button type="button" (click)="addExperience()">Add Experience</button>
+    </form>
+  `
+})
+class ExperienceFormComponent {
+  private fb = inject(FormBuilder);
+
+  experienceForm = this.fb.group({
+    experiences: this.fb.array([
+      this.createExperienceGroup(), // Start with one item
+    ]),
+  });
+
+  // Typed getter for the FormArray
+  get experiences() {
+    return this.experienceForm.get('experiences') as FormArray;
+  }
+
+  createExperienceGroup() {
+    return this.fb.group({
+      company: ['', Validators.required],
+      title: ['', Validators.required],
+      years: [null as number | null, [Validators.required, Validators.min(0)]],
+    });
+  }
+
+  addExperience() {
+    this.experiences.push(this.createExperienceGroup());
+  }
+
+  removeExperience(index: number) {
+    this.experiences.removeAt(index);
+  }
+}
+```
+
+<Callout type="tip">
+The template binds with `formArrayName="experiences"` on the parent, then `[formGroupName]="i"` on each item (using the index as the group name). The `i` in `[formGroupName]="i"` must be a number — hence using `let i = $index` in the `@for` block.
+</Callout>
+
+## Initializing FormArray from Data
+
+```typescript
+// Load existing data and populate the FormArray
+@Component({ selector: 'app-edit-profile' })
+class EditProfileComponent implements OnInit {
+  private fb = inject(FormBuilder);
+
+  profileForm = this.fb.group({
+    name: [''],
+    phoneNumbers: this.fb.array<string>([]),
+  });
+
+  get phoneNumbers() {
+    return this.profileForm.get('phoneNumbers') as FormArray;
+  }
+
+  ngOnInit() {
+    this.userService.getProfile().subscribe(profile => {
+      // Populate name
+      this.profileForm.patchValue({ name: profile.name });
+
+      // Populate FormArray
+      this.phoneNumbers.clear(); // Remove existing controls
+      profile.phoneNumbers.forEach(phone => {
+        this.phoneNumbers.push(new FormControl(phone));
+      });
+    });
+  }
+}
+```
+
+## Validation on FormArray
+
+```typescript
+// Validator that requires at least one item
+export function minArrayLength(min: number): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    if (!(control instanceof FormArray)) return null;
+    return control.length >= min ? null : { minArrayLength: { required: min, actual: control.length } };
+  };
+}
+
+// Apply to the FormArray itself
+const tagsArray = new FormArray<FormControl<string>>(
+  [],
+  [minArrayLength(1)] // Must have at least 1 tag
+);
+```
+
+## Reordering with Drag and Drop
+
+```typescript
+// With Angular CDK DragDrop
+import { CdkDragDrop, moveItemInArray } from '@angular/cdk/drag-drop';
+
+@Component({
+  imports: [DragDropModule, ReactiveFormsModule],
+  template: `
+    <div cdkDropList (cdkDropListDropped)="drop($event)">
+      @for (control of items.controls; track $index; let i = $index) {
+        <div cdkDrag [formGroupName]="i">
+          <!-- form fields -->
+        </div>
+      }
+    </div>
+  `
+})
+class DraggableListComponent {
+  get items() { return this.form.get('items') as FormArray; }
+
+  drop(event: CdkDragDrop<string[]>) {
+    // Move the underlying controls to match the new order
+    const dir = event.currentIndex > event.previousIndex ? 1 : -1;
+    const from = event.previousIndex;
+    const to = event.currentIndex;
+
+    const ctrl = this.items.at(from);
+    for (let i = from; i * dir < to * dir; i += dir) {
+      const current = this.items.at(i + dir);
+      this.items.setControl(i, current);
+    }
+    this.items.setControl(to, ctrl);
+  }
+}
+```
+
+<CodeChallenge
+  id="form-array-index"
+  difficulty="intermediate"
+  description="A FormArray has 3 controls. You call formArray.removeAt(1). What does formArray.value contain after this call?"
+  options={[
+    "The removed control's value is replaced with null",
+    "The array still has 3 items, but index 1 is marked as removed",
+    "The array now has 2 items — the control at index 1 is permanently removed",
+    "An error — FormArray controls cannot be removed once added"
+  ]}
+  correctAnswer={2}
+  explanation="removeAt(index) permanently removes the control at that index. The array shrinks — if you had [A, B, C] and call removeAt(1), you get [A, C]. The former index 2 (C) is now index 1. All indices after the removed one shift down by 1. This is important when using index-based form group names in templates — they automatically update."
+/>
+
+## Senior Insight: Typed FormArray (Angular 14+)
+
+In Angular 14+, use typed FormArrays:
+
+```typescript
+// Typed — TypeScript knows the control type
+const tagsArray = new FormArray<FormControl<string>>([
+  new FormControl('angular', { nonNullable: true }),
+  new FormControl('rxjs', { nonNullable: true }),
+]);
+
+tagsArray.value; // string[] — fully typed!
+
+// With FormBuilder
+this.fb.array<string>(['angular', 'rxjs']); // Convenience syntax
+
+// TypeScript catches mistakes
+tagsArray.push(new FormControl<number>(5)); // TypeScript error! Expected FormControl<string>
+```
+
+This eliminates the need for `tagsArray.value as string[]` casts that were common in pre-14 code.

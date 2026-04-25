@@ -1,0 +1,248 @@
+---
+title: "@Input & @Output"
+slug: "input-output"
+order: 1
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["Angular", "@Input", "@Output", "EventEmitter", "component communication", "signals"]
+summary: "@Input and @Output are the primary communication channels between parent and child components. Angular 17.1+ introduces signal-based inputs that improve on the traditional decorator approach."
+docsLinks:
+  - label: "Component Inputs"
+    url: "https://angular.dev/guide/components/inputs"
+  - label: "Component Outputs"
+    url: "https://angular.dev/guide/components/outputs"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Parent-Child Data Flow
+
+Angular components communicate through a well-defined data flow: parents pass data **down** to children via `@Input()`, and children pass events **up** to parents via `@Output()`. This unidirectional data flow makes applications predictable and easier to debug.
+
+## `@Input()` — Data Flows Down
+
+```typescript
+// Child component declares its inputs
+@Component({
+  selector: 'app-user-card',
+  standalone: true,
+  template: `
+    <div class="card" [class.featured]="featured">
+      <img [src]="user.avatarUrl" [alt]="user.name">
+      <h3>{{ user.name }}</h3>
+      <p>{{ user.email }}</p>
+      <span class="badge">{{ user.role }}</span>
+    </div>
+  `
+})
+export class UserCardComponent {
+  @Input({ required: true }) user!: User; // Required in Angular 16+
+  @Input() featured = false;
+  @Input('highlightColor') color = 'blue'; // Alias: template uses highlightColor
+}
+
+// Parent template
+<app-user-card
+  [user]="currentUser"
+  [featured]="isVIP"
+  [highlightColor]="themeColor"
+/>
+```
+
+### Input Transforms (Angular 16+)
+
+```typescript
+@Component({ selector: 'app-badge' })
+class BadgeComponent {
+  // Transform string input to number
+  @Input({ transform: numberAttribute }) count = 0;
+
+  // Transform string to boolean (common for attribute-style inputs)
+  @Input({ transform: booleanAttribute }) disabled = false;
+}
+
+// Now these work without binding syntax:
+<app-badge count="5" />         <!-- count is number 5, not string "5" -->
+<app-badge disabled />          <!-- disabled is boolean true -->
+```
+
+## `@Output()` — Events Flow Up
+
+```typescript
+@Component({
+  selector: 'app-user-card',
+  template: `
+    <button (click)="onEdit()">Edit</button>
+    <button (click)="onDelete()">Delete</button>
+  `
+})
+export class UserCardComponent {
+  @Input({ required: true }) user!: User;
+
+  // EventEmitter<T> — T is the event payload type
+  @Output() editUser = new EventEmitter<User>();
+  @Output() deleteUser = new EventEmitter<string>(); // emits the user's ID
+
+  onEdit() {
+    this.editUser.emit(this.user); // Emit the full user object
+  }
+
+  onDelete() {
+    this.deleteUser.emit(this.user.id); // Emit just the ID
+  }
+}
+
+// Parent component
+@Component({
+  template: `
+    <app-user-card
+      [user]="user"
+      (editUser)="handleEdit($event)"
+      (deleteUser)="handleDelete($event)"
+    />
+  `
+})
+class UserListComponent {
+  handleEdit(user: User) {
+    this.router.navigate(['/users', user.id, 'edit']);
+  }
+
+  handleDelete(userId: string) {
+    this.userService.delete(userId).subscribe(() => this.loadUsers());
+  }
+}
+```
+
+<Callout type="tip">
+Name `@Output()` properties as verbs in past tense — `userSaved`, `formSubmitted`, `itemDeleted`. This matches native DOM event conventions and makes template event binding read naturally: `(userSaved)="onUserSaved($event)"`.
+</Callout>
+
+## Signal-Based Inputs (Angular 17.1+)
+
+The new `input()` function creates signal-based inputs that Angular can track more efficiently:
+
+```typescript
+import { Component, input, output, model } from '@angular/core';
+
+@Component({
+  selector: 'app-user-card',
+  template: `
+    <!-- Signal inputs are called like functions -->
+    <h3>{{ user().name }}</h3>
+    <p>{{ user().email }}</p>
+    <span>{{ role() }}</span>
+  `
+})
+export class UserCardComponent {
+  // Required signal input
+  user = input.required<User>();
+
+  // Optional with default
+  role = input<string>('user');
+
+  // Computed from signal input — auto-updates when user changes
+  displayName = computed(() => `${this.user().name} (${this.role()})`);
+
+  // Signal output
+  selected = output<User>();
+
+  select() {
+    this.selected.emit(this.user());
+  }
+}
+```
+
+### `model()` — Two-Way Binding Signal
+
+`model()` creates a signal that supports two-way binding with `[(prop)]`:
+
+```typescript
+@Component({
+  selector: 'app-toggle',
+  template: `
+    <button (click)="toggle()">{{ enabled() ? 'On' : 'Off' }}</button>
+  `
+})
+class ToggleComponent {
+  enabled = model(false); // Creates both an input signal and an output
+
+  toggle() {
+    this.enabled.set(!this.enabled()); // Notifies parent via enabledChange output
+  }
+}
+
+// Parent usage:
+<app-toggle [(enabled)]="isDarkMode" />
+// Equivalent to:
+<app-toggle [enabled]="isDarkMode" (enabledChange)="isDarkMode = $event" />
+```
+
+## Comparison: Decorator vs Signal Inputs
+
+```typescript
+// Decorator approach
+@Component({})
+class OldComponent implements OnChanges {
+  @Input() user!: User;
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes['user']) {
+      this.processUser(); // Manual change detection
+    }
+  }
+}
+
+// Signal approach
+@Component({})
+class NewComponent {
+  user = input.required<User>();
+
+  // computed() automatically re-runs when user() changes
+  processedUser = computed(() => this.processUser(this.user()));
+
+  // effect() runs when dependencies change
+  private logEffect = effect(() => {
+    console.log('User changed:', this.user());
+  });
+}
+```
+
+Signal inputs eliminate the need for `ngOnChanges` in most cases — `computed()` and `effect()` react to changes automatically.
+
+<CodeChallenge
+  id="input-output-eventemitter"
+  difficulty="foundation"
+  description="A child component emits: @Output() saved = new EventEmitter<User>(). The parent template has (saved)='onSaved($event)'. What is the type of $event in onSaved?"
+  options={[
+    "Event — the native DOM event object",
+    "User — the type parameter of EventEmitter<User>",
+    "any — EventEmitter doesn't preserve type information",
+    "void — EventEmitter.emit() doesn't return a value"
+  ]}
+  correctAnswer={1}
+  explanation="EventEmitter<T> is a typed event stream. When emit(user) is called with a User object, Angular passes that User to the (saved) event handler as $event. The type parameter T of EventEmitter<T> determines the type of $event in the parent template. TypeScript (with strictTemplates) will enforce that onSaved() accepts a User parameter."
+/>
+
+## Senior Insight: Output Migration
+
+The Angular team is migrating from `@Output() myEvent = new EventEmitter<T>()` to `myEvent = output<T>()`. The differences:
+- `output()` is not an RxJS Subject — it's a simpler, Angular-native event emitter
+- `output()` can't be subscribed to with `.subscribe()` (by design)
+- `output()` works better with zoneless Angular (no Zone.js patching needed)
+- For subscribing to outputs programmatically, use `outputToObservable(component.myEvent)`
+
+```typescript
+import { output, outputToObservable } from '@angular/core';
+
+class ChildComponent {
+  clicked = output<void>();
+}
+
+// Parent programmatically subscribes:
+@ViewChild(ChildComponent) child!: ChildComponent;
+
+ngAfterViewInit() {
+  outputToObservable(this.child.clicked).subscribe(() => console.log('Clicked!'));
+}
+```

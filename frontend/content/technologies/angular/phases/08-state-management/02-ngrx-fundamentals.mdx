@@ -1,0 +1,270 @@
+---
+title: "NgRx Fundamentals"
+slug: "ngrx-fundamentals"
+order: 2
+difficulty: "advanced"
+readingTime: 14
+status: "published"
+tags: ["NgRx", "store", "actions", "reducers", "state management", "Redux"]
+summary: "NgRx implements Redux for Angular. Master the unidirectional data flow: components dispatch actions, reducers transform state, selectors query state, and effects handle side effects."
+docsLinks:
+  - label: "NgRx Documentation"
+    url: "https://ngrx.io/docs"
+  - label: "NgRx Store"
+    url: "https://ngrx.io/guide/store"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The NgRx Data Flow
+
+NgRx implements the Redux pattern for Angular:
+
+```
+Components
+    ↓ dispatch(action)
+Actions (describe what happened)
+    ↓ fed to
+Reducers (pure functions that transform state)
+    ↓ update
+Store (single source of truth)
+    ↓ queried by
+Selectors (derive data from state)
+    ↓ observed by
+Components (update UI)
+
+Side effects (HTTP, navigation) →
+Effects (listen for actions, perform async work)
+    → dispatch new actions with results
+```
+
+## Setup
+
+```bash
+npm install @ngrx/store @ngrx/effects @ngrx/entity @ngrx/devtools
+```
+
+```typescript
+// main.ts — standalone app
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideStore(reducers),           // Root store
+    provideEffects(UserEffects),       // Root effects
+    provideStoreDevtools({ maxAge: 25 }), // Redux DevTools
+  ]
+});
+```
+
+## Actions
+
+Actions describe events that happen in the app. They're plain objects with a `type` property:
+
+```typescript
+import { createAction, props } from '@ngrx/store';
+
+// Action creators — strongly typed
+export const loadUsers = createAction('[User List] Load Users');
+
+export const loadUsersSuccess = createAction(
+  '[User List] Load Users Success',
+  props<{ users: User[] }>()
+);
+
+export const loadUsersFailure = createAction(
+  '[User List] Load Users Failure',
+  props<{ error: string }>()
+);
+
+export const addUser = createAction('[User Form] Add User', props<{ user: User }>());
+export const deleteUser = createAction('[User List] Delete User', props<{ id: string }>());
+export const updateUser = createAction('[User Form] Update User', props<{ user: User }>());
+
+// Action naming convention: '[Source] Event Name'
+// Source = the component/feature that dispatched it
+// Event = what happened (past tense)
+```
+
+<Callout type="tip">
+The `[Source] Event` naming convention is important for debugging. When you see `[User List] Load Users` in Redux DevTools, you immediately know which component dispatched it. This is the main readability advantage of NgRx's verbose action naming.
+</Callout>
+
+## Reducers
+
+Reducers are **pure functions** that transform state. Never mutate state — return new objects:
+
+```typescript
+import { createReducer, on } from '@ngrx/store';
+
+export interface UserState {
+  users: User[];
+  selectedUserId: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+export const initialState: UserState = {
+  users: [],
+  selectedUserId: null,
+  loading: false,
+  error: null,
+};
+
+export const userReducer = createReducer(
+  initialState,
+
+  // Load started
+  on(loadUsers, (state) => ({
+    ...state,
+    loading: true,
+    error: null,
+  })),
+
+  // Load succeeded
+  on(loadUsersSuccess, (state, { users }) => ({
+    ...state,
+    users,
+    loading: false,
+  })),
+
+  // Load failed
+  on(loadUsersFailure, (state, { error }) => ({
+    ...state,
+    loading: false,
+    error,
+  })),
+
+  // Add user
+  on(addUser, (state, { user }) => ({
+    ...state,
+    users: [...state.users, user],
+  })),
+
+  // Delete user
+  on(deleteUser, (state, { id }) => ({
+    ...state,
+    users: state.users.filter(u => u.id !== id),
+  })),
+
+  // Update user
+  on(updateUser, (state, { user }) => ({
+    ...state,
+    users: state.users.map(u => u.id === user.id ? user : u),
+  })),
+);
+```
+
+## Registering the Store
+
+```typescript
+// app.state.ts — root state interface
+export interface AppState {
+  users: UserState;
+  products: ProductState;
+  auth: AuthState;
+}
+
+// app.reducers.ts — root reducers map
+export const reducers: ActionReducerMap<AppState> = {
+  users: userReducer,
+  products: productReducer,
+  auth: authReducer,
+};
+
+// Feature lazy-loaded state
+// In a feature module or route:
+provideState('orders', orderReducer)
+// or: StoreModule.forFeature('orders', orderReducer)
+```
+
+## Dispatching Actions from Components
+
+```typescript
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  imports: [AsyncPipe],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (loading$ | async) { <app-spinner /> }
+    @for (user of users$ | async; track user.id) {
+      <app-user-card
+        [user]="user"
+        (delete)="onDelete(user.id)"
+        (edit)="onEdit(user)" />
+    }
+    @if (error$ | async; as error) {
+      <app-error [message]="error" />
+    }
+  `
+})
+class UserListComponent implements OnInit {
+  private store = inject(Store);
+
+  users$ = this.store.select(selectAllUsers);
+  loading$ = this.store.select(selectUsersLoading);
+  error$ = this.store.select(selectUsersError);
+
+  ngOnInit() {
+    this.store.dispatch(loadUsers()); // Trigger the load
+  }
+
+  onDelete(id: string) {
+    this.store.dispatch(deleteUser({ id }));
+  }
+
+  onEdit(user: User) {
+    this.router.navigate(['/users', user.id, 'edit']);
+  }
+}
+```
+
+## Action Group Pattern (NgRx 15+)
+
+More concise action creation with `createActionGroup`:
+
+```typescript
+import { createActionGroup, emptyProps } from '@ngrx/store';
+
+// Groups related actions together
+export const UserActions = createActionGroup({
+  source: 'User',
+  events: {
+    'Load Users': emptyProps(),
+    'Load Users Success': props<{ users: User[] }>(),
+    'Load Users Failure': props<{ error: string }>(),
+    'Add User': props<{ user: User }>(),
+    'Delete User': props<{ id: string }>(),
+  }
+});
+
+// Auto-generated action creators:
+UserActions.loadUsers()
+UserActions.loadUsersSuccess({ users })
+UserActions.loadUsersFailure({ error })
+UserActions.addUser({ user })
+UserActions.deleteUser({ id })
+```
+
+<CodeChallenge
+  id="ngrx-reducer-immutability"
+  difficulty="intermediate"
+  description="A NgRx reducer receives a 'Delete User' action. Which implementation is correct?"
+  options={[
+    "state.users.splice(index, 1); return state;",
+    "return { ...state, users: state.users.filter(u => u.id !== id) };",
+    "delete state.users[index]; return state;",
+    "state.users = state.users.filter(u => u.id !== id); return state;"
+  ]}
+  correctAnswer={1}
+  explanation="Reducers must be PURE — they must not mutate their arguments. Options A, C, D all mutate state.users in place. NgRx (and Redux) requires returning a NEW state object with new references. filter() returns a new array. The spread {...state} creates a new state object with the new users array. NgRx uses reference comparison to detect changes — mutations are invisible to it."
+/>
+
+## Senior Insight: NgRx DevTools
+
+The killer feature of NgRx is the Redux DevTools browser extension:
+- **Time-travel debugging**: Go back and replay any action
+- **Action log**: See every action dispatched in order with its payload
+- **State diff**: See exactly what changed in state for each action
+- **Import/export**: Save and replay production bug scenarios
+
+This visibility into state changes makes debugging complex state issues dramatically easier — which is a key reason to choose NgRx for large team applications.

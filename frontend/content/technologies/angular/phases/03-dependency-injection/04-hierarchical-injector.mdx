@@ -1,0 +1,206 @@
+---
+title: "Hierarchical Injector"
+slug: "hierarchical-injector"
+order: 4
+difficulty: "advanced"
+readingTime: 13
+status: "published"
+tags: ["Angular", "hierarchical injector", "element injector", "module injector", "DI resolution"]
+summary: "Angular has two parallel injector hierarchies: the ModuleInjector tree and the ElementInjector tree. Understanding how resolution works up both trees is critical for debugging DI issues."
+docsLinks:
+  - label: "Hierarchical Injectors"
+    url: "https://angular.dev/guide/di/hierarchical-dependency-injection"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Two Injector Hierarchies
+
+Angular actually has two parallel injector trees that work together:
+
+1. **ModuleInjector hierarchy**: Root → Platform → NullInjector
+2. **ElementInjector hierarchy**: Follows the component/directive tree
+
+When a component requests a dependency, Angular checks the **ElementInjector** hierarchy first (bottom-up from the component), then falls back to the **ModuleInjector** hierarchy.
+
+```
+NullInjector (throws if token not found)
+    ↑
+PlatformInjector (created by platformBrowserDynamic)
+    ↑
+RootInjector (services with providedIn: 'root' or AppModule providers)
+    ↑
+EnvironmentInjector (for lazy-loaded routes — has its own branch)
+    ↑
+ElementInjector (AppComponent)
+    ↑
+ElementInjector (FeatureComponent with providers: [FeatureService])
+    ↑
+ElementInjector (ChildComponent — requests FeatureService)
+```
+
+## Element Injectors — Per-Component Instances
+
+When you add `providers` to a component's `@Component` decorator, you create an **element injector** for that component:
+
+```typescript
+@Component({
+  selector: 'app-feature',
+  providers: [FeatureStateService], // Creates element injector with FeatureStateService
+  template: `
+    <app-child-a />  <!-- Gets FeatureStateService from parent's element injector -->
+    <app-child-b />  <!-- Gets the SAME instance as child-a -->
+  `
+})
+class FeatureComponent {
+  // Gets FeatureStateService from its own element injector
+  private state = inject(FeatureStateService);
+}
+
+@Component({ selector: 'app-child-a' })
+class ChildAComponent {
+  // Walks up to FeatureComponent's element injector — gets the same instance
+  private state = inject(FeatureStateService);
+}
+```
+
+This is how you scope a service to a **subtree** of components. Every component in that subtree shares the same instance, but components outside get a different (or root) instance.
+
+<Callout type="tip">
+This pattern — providing a service at the feature root component — is the Angular equivalent of feature-scoped state. All components in the feature share the state service. Destroy the root component, destroy the service instance. This is cleaner than module-scoped services for feature state.
+</Callout>
+
+## Resolution Order in Detail
+
+When `ChildComponent` requests `MyService`:
+
+1. Check `ChildComponent`'s element injector (its own `providers`)
+2. Check parent `ParentComponent`'s element injector
+3. Continue up the component tree to `AppComponent`'s element injector
+4. Check the environment/root injector (all `providedIn: 'root'` services)
+5. Check the platform injector
+6. Reach the `NullInjector` — throws `NullInjectorError`
+
+```typescript
+// Visualization of the traversal
+AppComponent (providers: [GlobalService])
+  └── FeatureComponent (providers: [FeatureService])
+        └── FormComponent (providers: [FormValidationService])
+              └── InputComponent requests: [FormValidationService, FeatureService, GlobalService, HttpClient]
+
+// Resolution:
+// FormValidationService → found at FormComponent's element injector ✅
+// FeatureService → not found at FormComponent → found at FeatureComponent ✅
+// GlobalService → not found at feature level → found at AppComponent ✅
+// HttpClient → not found in element tree → found in root injector ✅
+```
+
+## Lazy-Loaded Route Injectors
+
+Lazy-loaded routes create their own **EnvironmentInjector** — this is a key source of confusion:
+
+```typescript
+// app.routes.ts
+const routes: Routes = [
+  {
+    path: 'admin',
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+    providers: [
+      AdminService, // Scoped to admin routes — each lazy load gets fresh instance
+    ]
+  }
+];
+```
+
+Services provided in route `providers` are scoped to that lazy-loaded segment. They're created when the route activates and destroyed when it's navigated away from.
+
+## Real-World Scenario: Per-Form State
+
+```typescript
+// FormManagerService manages state for one form instance
+@Injectable()
+class FormManagerService {
+  private controls = new Map<string, AbstractControl>();
+
+  register(name: string, control: AbstractControl) {
+    this.controls.set(name, control);
+  }
+
+  validate(): boolean {
+    return [...this.controls.values()].every(c => c.valid);
+  }
+}
+
+// Each DynamicFormComponent gets its own FormManagerService instance
+@Component({
+  selector: 'app-dynamic-form',
+  providers: [FormManagerService], // Scoped to this form
+  template: `
+    <app-form-field name="name" label="Full Name" />
+    <app-form-field name="email" label="Email" />
+    <button (click)="submit()">Submit</button>
+  `
+})
+class DynamicFormComponent {
+  private formManager = inject(FormManagerService);
+
+  submit() {
+    if (this.formManager.validate()) {
+      // submit
+    }
+  }
+}
+
+// FormFieldComponent gets the same FormManagerService as its parent form
+@Component({ selector: 'app-form-field' })
+class FormFieldComponent implements OnInit {
+  @Input() name!: string;
+  private formManager = inject(FormManagerService);
+
+  ngOnInit() {
+    this.formManager.register(this.name, this.control);
+  }
+}
+```
+
+Two `DynamicFormComponent` instances on screen at the same time → two separate `FormManagerService` instances → no interference between forms.
+
+<CodeChallenge
+  id="hierarchical-injector-resolution"
+  difficulty="advanced"
+  description="Service A is provided with providedIn: 'root'. Service B is provided in a component's providers array. Another component (child of the first) injects both. What instances does it receive?"
+  options={[
+    "Two root-level singletons for both services",
+    "Root singleton for A, component-scoped instance for B",
+    "Component-scoped instances for both (element injector wins)",
+    "An error — can't inject from different injector levels"
+  ]}
+  correctAnswer={1}
+  explanation="The element injector tree is checked first. Service B is found in the parent component's element injector — so the child gets that component-scoped instance. Service A is not in any element injector, so the search reaches the root ModuleInjector where providedIn: 'root' registered it. Both work simultaneously — different injector levels don't conflict."
+/>
+
+## The NullInjectorError
+
+If a token isn't found anywhere in the tree:
+
+```
+NullInjectorError: No provider for UserService!
+```
+
+Common causes:
+1. Forgot `@Injectable()` decorator on the service
+2. Service not registered anywhere in the provider tree
+3. Module with `providers` array not imported
+4. Typo in the token (especially with string tokens)
+5. Trying to inject a standalone service into an NgModule-based component without proper setup
+
+## Senior Insight: Scoped Services as State Management
+
+Angular's hierarchical injector is an underused state management tool. Instead of always reaching for NgRx or a global BehaviorSubject:
+
+- **Global state**: `providedIn: 'root'` — one instance for the whole app
+- **Feature state**: Provide in the feature root component or lazy route — scoped to that feature
+- **Component state**: Provide in the component — each instance has its own state
+- **Form state**: Provide in the form component — scoped to one form instance
+
+This hierarchy matches your domain: global user auth is root-scoped; a shopping cart session might be route-scoped; a multi-step form's validation state is component-scoped.

@@ -1,0 +1,237 @@
+---
+title: "Types vs Interfaces"
+slug: "types-and-interfaces"
+order: 1
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["TypeScript", "types", "interfaces", "type aliases"]
+summary: "Understand the subtle but important differences between type aliases and interfaces, and know when Angular developers choose each."
+docsLinks:
+  - label: "TypeScript Handbook: Interfaces"
+    url: "https://www.typescriptlang.org/docs/handbook/2/objects.html"
+  - label: "TypeScript Handbook: Type Aliases"
+    url: "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-aliases"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## The Question Every Angular Interview Asks
+
+"What's the difference between `type` and `interface` in TypeScript?" is one of the most common warm-up questions in Angular interviews. Most candidates know the surface answer — both define shapes for objects — but interviewers are listening for the nuances that separate juniors from mid-level developers.
+
+## Interfaces: The OOP-Friendly Choice
+
+An interface declares the shape of an object and is the classic TypeScript construct for defining contracts:
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: 'admin' | 'user' | 'guest';
+}
+
+// Implementing an interface in a class
+class UserService {
+  getUser(id: number): User {
+    return { id, name: 'Alice', email: 'alice@example.com', role: 'user' };
+  }
+}
+```
+
+The key feature of interfaces is **declaration merging**. You can declare the same interface multiple times and TypeScript merges them:
+
+```typescript
+interface Window {
+  myCustomProp: string;
+}
+
+interface Window {
+  anotherProp: number;
+}
+
+// Result: Window now has both myCustomProp and anotherProp
+// This is how @types/... packages extend built-in types
+```
+
+## Type Aliases: More Flexible, Less Mergeable
+
+A `type` alias can represent anything — objects, primitives, unions, tuples, and more:
+
+```typescript
+// Object shape (like interface)
+type User = {
+  id: number;
+  name: string;
+};
+
+// Union type — impossible with interface
+type Status = 'loading' | 'success' | 'error';
+
+// Tuple type
+type Coordinate = [number, number];
+
+// Intersection type
+type AdminUser = User & { permissions: string[] };
+
+// Computed/mapped type — interface can't do this
+type Readonly<T> = {
+  readonly [K in keyof T]: T[K];
+};
+```
+
+The critical limitation: **type aliases cannot be merged**. Declaring the same type twice is a compile error.
+
+```typescript
+type Config = { apiUrl: string };
+type Config = { timeout: number }; // Error: Duplicate identifier 'Config'
+```
+
+## Side-by-Side: Key Differences
+
+<ComparisonTable
+  headers={["Feature", "interface", "type"]}
+  rows={[
+    ["Object shapes", "✅ Yes", "✅ Yes"],
+    ["Primitives / unions / tuples", "❌ No", "✅ Yes"],
+    ["Declaration merging", "✅ Yes", "❌ No"],
+    ["Extends/implements in classes", "✅ Yes (clean syntax)", "⚠️ Only intersections"],
+    ["Mapped/conditional types", "❌ Limited", "✅ Full support"],
+    ["Error messages clarity", "✅ Better", "⚠️ Can be verbose"],
+    ["Augmenting third-party types", "✅ Primary use case", "❌ Cannot merge"]
+  ]}
+/>
+
+## Extending Shapes
+
+Both can be extended, but the syntax differs:
+
+```typescript
+// Interface extension
+interface Animal {
+  name: string;
+}
+
+interface Dog extends Animal {
+  breed: string;
+}
+
+// Type intersection (equivalent result)
+type Animal = { name: string };
+type Dog = Animal & { breed: string };
+
+// Interfaces can extend types and vice versa
+interface Cat extends Animal {
+  indoor: boolean;
+}
+
+type Kitten = Cat & { ageWeeks: number };
+```
+
+<Callout type="tip">
+In Angular's own source code, the team predominantly uses **interfaces** for data shapes (component inputs, service contracts, API responses) and **type aliases** for unions and utility type transformations. Follow this convention in your projects.
+</Callout>
+
+## When to Use Each in Angular
+
+**Prefer `interface` when:**
+- Defining the shape of a service or class contract
+- Defining Angular component `@Input()` types as objects
+- Creating models for API response shapes (allows augmentation in tests)
+- Writing code that others will `implement` or `extend`
+
+```typescript
+// Good: interface for API models
+interface Product {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+}
+
+// Good: interface for component config objects
+interface ChartConfig {
+  width: number;
+  height: number;
+  animated: boolean;
+}
+```
+
+**Prefer `type` when:**
+- Defining union types for component state or status flags
+- Creating utility/transformed types
+- Combining multiple interfaces into one
+- Defining function signatures
+
+```typescript
+// Good: type for union/state
+type LoadingState = 'idle' | 'loading' | 'success' | 'error';
+
+// Good: type for function signatures
+type HttpHandler = (req: Request, next: NextFn) => Observable<Event>;
+
+// Good: type for computed shapes
+type PartialProduct = Partial<Product>;
+type ProductId = Pick<Product, 'id'>;
+```
+
+## The `implements` Keyword
+
+A powerful pattern in Angular services uses interfaces to enforce contracts:
+
+```typescript
+interface Logger {
+  log(message: string): void;
+  error(message: string, error?: Error): void;
+}
+
+// @Injectable services can implement interfaces
+@Injectable({ providedIn: 'root' })
+class ConsoleLogger implements Logger {
+  log(message: string) {
+    console.log(`[INFO] ${message}`);
+  }
+  error(message: string, error?: Error) {
+    console.error(`[ERROR] ${message}`, error);
+  }
+}
+
+// Swap implementations easily in tests
+class NoopLogger implements Logger {
+  log() {}
+  error() {}
+}
+```
+
+This pattern enables clean dependency injection — you can provide `ConsoleLogger` in production and `NoopLogger` in tests without changing any consuming code.
+
+<Quiz
+  id="types-vs-interfaces-quiz-1"
+  question="Which TypeScript feature allows you to add properties to an existing interface from a third-party library?"
+  options={[
+    "Type intersection using &",
+    "Declaration merging",
+    "Mapped types",
+    "The Partial utility type"
+  ]}
+  correctAnswer={1}
+  explanation="Declaration merging allows multiple interface declarations with the same name to be combined. This is how @types packages add properties to built-in types like Window, HTMLElement, etc. Type aliases cannot be merged — redeclaring a type is a compile error."
+/>
+
+<Quiz
+  id="types-vs-interfaces-quiz-2"
+  question="You need to define a type that can be either a success string with data, or an error string with a message. Which is more appropriate?"
+  options={[
+    "interface — it's cleaner for object shapes",
+    "type alias — union types require type aliases",
+    "Either works identically",
+    "class — for runtime validation"
+  ]}
+  correctAnswer={1}
+  explanation={`Discriminated unions require type aliases because interfaces cannot represent union types. type Result<T> = { status: 'success'; data: T } | { status: 'error'; message: string } is a common pattern in Angular services.`}
+/>
+
+## Senior Insight: The Practical Rule
+
+The TypeScript team's official guidance (as of TypeScript 4+) is: use `interface` for anything that could be extended by library consumers (public API surfaces), and use `type` for everything else. In Angular projects, most teams settle on: **interfaces for models/contracts, types for unions and utilities**. The worst thing to do is debate it endlessly — pick a convention and enforce it with ESLint's `@typescript-eslint/consistent-type-definitions` rule.

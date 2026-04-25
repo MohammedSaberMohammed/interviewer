@@ -1,0 +1,316 @@
+---
+title: "Change Detection Traps"
+slug: "change-detection-traps"
+order: 8
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "traps", "change detection", "Zone.js", "ngDoCheck", "detectChanges", "runOutsideAngular", "stale view"]
+summary: "Change detection traps include unexpected CD triggers from Zone.js, stale views when data changes outside Angular's zone, excessive CD from ngDoCheck, and the ViewDestroyedError from accessing destroyed views. These are the hardest Angular bugs to diagnose."
+docsLinks:
+  - label: "Angular Change Detection"
+    url: "https://angular.dev/guide/change-detection"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Trap 1: Third-Party Libraries Triggering Excessive CD
+
+```typescript
+// A charting library uses setInterval internally for animations
+// Every interval tick → Zone.js → Angular CD cycle on entire component tree
+// 60fps animation = 60 CD cycles per second!
+
+// ❌ Third-party library used inside Angular zone
+@Component({})
+class ChartComponent implements AfterViewInit {
+  ngAfterViewInit() {
+    // D3 or Chart.js internally uses requestAnimationFrame, setInterval, etc.
+    // Zone.js intercepts these → Angular CD fires constantly!
+    this.chart = new Chart(this.canvas.nativeElement, config);
+  }
+}
+```
+
+```typescript
+// ✅ Initialize third-party libraries outside Angular zone
+@Component({})
+class ChartComponent implements AfterViewInit {
+  private ngZone = inject(NgZone);
+
+  ngAfterViewInit() {
+    // All library internals (rAF, setInterval) won't trigger CD
+    this.ngZone.runOutsideAngular(() => {
+      this.chart = new Chart(this.canvas.nativeElement, config);
+    });
+  }
+
+  updateData(data: ChartData) {
+    // Re-enter zone only for UI updates
+    this.ngZone.run(() => {
+      this.chart.data = data;
+      this.chart.update();
+    });
+  }
+}
+```
+
+## Trap 2: ngDoCheck — The Performance Destroyer
+
+```typescript
+// ngDoCheck is called on EVERY CD cycle — even when OnPush is used!
+// (OnPush skips ngOnChanges but still calls ngDoCheck for the parent check)
+
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class BadComponent {
+  // ❌ Called hundreds of times per second in active UIs
+  ngDoCheck() {
+    console.log('Checking...'); // Don't put expensive logic here!
+    this.recalculateEverything(); // Expensive! Called constantly!
+  }
+}
+
+// ✅ ngDoCheck should be extremely lightweight
+// Only used for custom dirty-checking when @Input doesn't change reference
+// (e.g., checking if a property inside an object has changed)
+ngDoCheck() {
+  // Only assign a simple variable — no function calls, no computations
+  if (this.user !== this._lastUser) {
+    this._nameChanged = true;
+    this._lastUser = this.user;
+  }
+}
+```
+
+## Trap 3: ViewDestroyedError
+
+```typescript
+// ❌ Accessing ChangeDetectorRef after component is destroyed
+@Component({})
+class AsyncComponent implements OnInit {
+  private cdr = inject(ChangeDetectorRef);
+
+  ngOnInit() {
+    this.someService.longRunningOperation().subscribe(result => {
+      this.data = result;
+      this.cdr.markForCheck(); // ❌ Component may have been destroyed by the time this runs!
+      // Error: ViewDestroyedError: Attempt to use a destroyed view: detectChanges
+    });
+  }
+}
+```
+
+```typescript
+// ✅ Fix 1: Use takeUntilDestroyed
+ngOnInit() {
+  this.someService.longRunningOperation().pipe(
+    takeUntilDestroyed(this.destroyRef)
+  ).subscribe(result => {
+    this.data = result;
+    this.cdr.markForCheck(); // Safe — unsubscribed before destroy
+  });
+}
+
+// ✅ Fix 2: Use markForCheck() — it's actually safe after destroy (no-op)
+// detectChanges() is the problematic one
+// markForCheck() is safe to call post-destroy (Angular 14+)
+```
+
+## Trap 4: setTimeout Breaking OnPush
+
+```typescript
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class TimerComponent implements OnInit {
+  count = 0;
+
+  ngOnInit() {
+    // ❌ setTimeout runs inside Angular zone — triggers CD at root
+    // But with OnPush, this component is skipped unless marked!
+    setTimeout(() => {
+      this.count = 10; // Property changed...
+      // setTimeout IS in Angular zone → CD runs from root
+      // BUT: OnPush skips this component (no markForCheck!)
+      // View still shows 0!
+    }, 1000);
+  }
+}
+```
+
+```typescript
+// ✅ Fix: markForCheck() or use signals
+ngOnInit() {
+  setTimeout(() => {
+    this.count = 10;
+    this.cdr.markForCheck(); // Tell Angular this component needs checking
+  }, 1000);
+
+  // ✅ Or use a signal:
+  // count = signal(0);
+  // setTimeout(() => this.count.set(10), 1000); // Signal update triggers CD automatically
+}
+```
+
+## Trap 5: Event Listeners Outside Angular
+
+```typescript
+@Component({})
+class MapComponent implements AfterViewInit, OnDestroy {
+  selectedLocation?: Coordinates;
+
+  private mapListener?: () => void;
+
+  ngAfterViewInit() {
+    // ❌ Direct DOM event listener — Zone.js may or may not intercept
+    // (Zone.js intercepts addEventListener, but external map SDKs may use custom event systems)
+    this.mapInstance.on('click', (coords: Coordinates) => {
+      this.selectedLocation = coords; // May not trigger CD!
+    });
+  }
+}
+```
+
+```typescript
+// ✅ Ensure Angular knows about external events
+ngAfterViewInit() {
+  this.ngZone.runOutsideAngular(() => {
+    // Map events outside zone for performance
+    this.mapInstance.on('click', (coords: Coordinates) => {
+      if (this.shouldUpdate(coords)) {
+        // Re-enter zone only when UI update needed
+        this.ngZone.run(() => {
+          this.selectedLocation = coords;
+          // Now Zone.js knows → CD triggered
+        });
+      }
+    });
+  });
+}
+```
+
+## Trap 6: Detached View Not Reattached
+
+```typescript
+@Component({})
+class OptimizedComponent implements OnInit {
+  private cdr = inject(ChangeDetectorRef);
+
+  ngOnInit() {
+    // Detach from CD tree for maximum control
+    this.cdr.detach();
+
+    this.dataService.data$.subscribe(data => {
+      this.data = data;
+      this.cdr.detectChanges(); // Manually check just this component
+    });
+
+    // ❌ Forgot to reattach!
+    // If the component needs to respond to parent changes later,
+    // it won't — it's permanently detached
+  }
+
+  // If you need to temporarily detach then reattach:
+  temporarilyDetach() {
+    this.cdr.detach();
+    // ... do expensive work ...
+    this.cdr.reattach(); // ← Must remember to reattach!
+  }
+}
+```
+
+## Trap 7: Signal Reads Outside Template and effect()
+
+```typescript
+@Component({})
+class SignalTrap {
+  count = signal(0);
+  doubled = computed(() => this.count() * 2);
+
+  someMethod() {
+    // ❌ Accessing a signal in a method doesn't create a reactive dependency
+    // This is just a synchronous value read — count changing won't re-call this
+    const current = this.count();
+    console.log('Count is:', current);
+    // count() called here doesn't register a subscriber
+
+    // ✅ For reactive side effects, use effect():
+    // effect(() => {
+    //   console.log('Count changed to:', this.count()); // Reactive!
+    // });
+  }
+}
+```
+
+<CodeChallenge
+  id="cd-outside-zone"
+  difficulty="advanced"
+  description="A WebSocket message handler runs outside Angular's zone (Zone.js not intercepting it). The handler does this.data = newValue. An OnPush component has this.data bound in its template. What is the state of the template?"
+  options={[
+    "Template updates immediately — Zone.js isn't needed for property assignments",
+    "Template is stale — Zone.js didn't trigger CD, and OnPush didn't mark the component for check",
+    "Template updates on the next user interaction",
+    "Angular throws an error: cannot modify component outside zone"
+  ]}
+  correctAnswer={1}
+  explanation="Two problems compound: (1) Zone.js didn't intercept the callback, so no global CD was triggered at all. (2) OnPush requires explicit marking (markForCheck) for non-standard update paths. The result: this.data has the new value in memory, but Angular never ran change detection on this component, so the template still shows the old value. The fix requires both: ensure Angular's CD runs (either use ngZone.run() to re-enter zone, or call markForCheck()) AND ensure the value is properly bound. Using signals in this scenario is the cleanest solution — signal.set(newValue) schedules CD appropriately regardless of zone context."
+/>
+
+## Trap 8: Multiple CD Cycles from Chained Effects
+
+```typescript
+// ❌ Effect modifying signal → triggers another effect → infinite loop risk
+count = signal(0);
+doubled = signal(0);
+
+constructor() {
+  effect(() => {
+    // This effect reads count and writes doubled
+    this.doubled.set(this.count() * 2);
+    // ❌ Bad pattern: effects should NOT write to signals that trigger other effects
+    // Use computed() instead!
+  });
+}
+
+// ✅ Use computed for derived values:
+doubled = computed(() => this.count() * 2); // No side effects, no loops
+```
+
+## The CD Debug Toolkit
+
+```typescript
+// 1. Profile CD cycles in Angular DevTools
+// Install Angular DevTools → Angular tab → Profiler → Record
+
+// 2. Count how often a component checks:
+ngDoCheck() {
+  console.count(`${this.constructor.name} checked`);
+}
+
+// 3. Find what triggered CD (Zone.js tasks):
+// Chrome DevTools → Performance → record → look for Zone.run calls
+
+// 4. Verify OnPush is working:
+// Component should NOT appear in DevTools profiler after unrelated parent events
+
+// 5. Check for zone-outside callbacks:
+// If component has stale data, ngZone.run() is probably needed
+```
+
+## Senior Insight: The CD Mental Model
+
+Angular's change detection model in 2024 has two paradigms:
+
+**Zone.js model** (legacy):
+- Zone.js triggers CD after any async operation
+- Angular walks the entire component tree (or subtree with OnPush)
+- Developer responsibility: use OnPush, avoid expensive templates
+
+**Signals model** (modern):
+- No Zone.js needed
+- Angular tracks which templates depend on which signals
+- When a signal changes, only dependent templates update
+- Developer responsibility: use signals for all reactive state
+
+Understanding both models — and which is in use in a given codebase — is the key to diagnosing any CD issue. The question "why isn't my view updating?" always has one of these answers:
+1. The data changed but Angular didn't run CD (Zone.js not triggered, need `markForCheck()` or `ngZone.run()`)
+2. Angular ran CD but skipped this component (OnPush, need new reference or `markForCheck()`)
+3. Angular ran CD and checked this component, but the template expression is wrong

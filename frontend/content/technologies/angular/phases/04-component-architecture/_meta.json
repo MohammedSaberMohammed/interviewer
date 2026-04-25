@@ -1,0 +1,21 @@
+{
+  "slug": "04-component-architecture",
+  "number": 4,
+  "title": "Component Architecture",
+  "subtitle": "Inputs, outputs, signals, change detection, and dynamic components",
+  "level": "mid",
+  "estimatedHours": 10,
+  "emoji": "🏗️",
+  "color": "violet",
+  "description": "Go beyond basic components to master Angular's component communication patterns, change detection strategies, Angular 17+ signals, and dynamic component loading. These topics dominate mid-to-senior Angular interviews.",
+  "prerequisites": ["02-angular-fundamentals", "03-dependency-injection"],
+  "learningOutcomes": [
+    "Use @Input/@Output and signal-based inputs for component communication",
+    "Query the DOM and child components with @ViewChild and @ContentChild",
+    "Implement multi-slot content projection with ng-content",
+    "Explain how Zone.js and change detection work together",
+    "Apply OnPush strategy correctly and understand when it breaks",
+    "Use signals, computed, and effect for reactive state management",
+    "Dynamically create and attach components with ViewContainerRef"
+  ]
+}

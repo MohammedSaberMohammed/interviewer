@@ -1,0 +1,306 @@
+---
+title: "HTTP Testing"
+slug: "http-testing"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "testing", "HttpClient", "HttpTestingController", "HttpClientTestingModule", "HTTP interceptors"]
+summary: "Angular's HttpClientTestingModule replaces real HTTP with an in-memory mock. HttpTestingController lets you assert what requests were made, verify their parameters, and control their responses — including errors and network failures."
+docsLinks:
+  - label: "HTTP Testing"
+    url: "https://angular.dev/guide/http/testing"
+  - label: "HttpTestingController"
+    url: "https://angular.dev/api/common/http/testing/HttpTestingController"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## HttpClientTestingModule
+
+In tests, you never want to make real HTTP requests — they're slow, unreliable, and depend on network/server state. Angular provides `HttpClientTestingModule` which intercepts all HTTP calls before they reach the network:
+
+```typescript
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+
+describe('UserService', () => {
+  let service: UserService;
+  let httpMock: HttpTestingController;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule], // No real HTTP!
+      providers: [UserService]
+    });
+
+    service = TestBed.inject(UserService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    // Fails if any unexpected requests were made
+    // or expected requests were never made
+    httpMock.verify();
+  });
+});
+```
+
+<Callout type="warning">
+Always call `httpMock.verify()` in `afterEach`. This assertion fails if there are any outstanding (unflushed) requests, catching cases where code made unexpected HTTP calls or your test didn't flush all expected requests.
+</Callout>
+
+## Basic GET Request Test
+
+```typescript
+it('should fetch users', () => {
+  const mockUsers: User[] = [
+    { id: '1', name: 'Alice', email: 'alice@test.com' },
+    { id: '2', name: 'Bob', email: 'bob@test.com' }
+  ];
+
+  // Trigger the service call
+  let actualUsers: User[] = [];
+  service.getUsers().subscribe(users => {
+    actualUsers = users;
+  });
+
+  // Assert the request was made
+  const req = httpMock.expectOne('/api/users');
+
+  // Assert request properties
+  expect(req.request.method).toBe('GET');
+
+  // Flush the mock response (this is when the Observable emits)
+  req.flush(mockUsers);
+
+  // Now assert the service processed the response correctly
+  expect(actualUsers).toEqual(mockUsers);
+  expect(actualUsers.length).toBe(2);
+});
+```
+
+## POST/PUT/DELETE Tests
+
+```typescript
+describe('UserService CRUD', () => {
+  it('should create user via POST', () => {
+    const newUser = { name: 'Carol', email: 'carol@test.com' };
+    const createdUser = { id: '3', ...newUser };
+
+    service.createUser(newUser).subscribe(user => {
+      expect(user).toEqual(createdUser);
+    });
+
+    const req = httpMock.expectOne('/api/users');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual(newUser); // Assert request body
+    req.flush(createdUser); // Server responds with created entity
+  });
+
+  it('should update user via PUT', () => {
+    const updatedUser = { id: '1', name: 'Alice Updated', email: 'alice@test.com' };
+
+    service.updateUser(updatedUser).subscribe();
+
+    const req = httpMock.expectOne('/api/users/1');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual(updatedUser);
+    req.flush(updatedUser);
+  });
+
+  it('should delete user via DELETE', () => {
+    service.deleteUser('1').subscribe();
+
+    const req = httpMock.expectOne('/api/users/1');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null); // DELETE often returns 204 No Content
+  });
+});
+```
+
+## Testing Query Parameters
+
+```typescript
+it('should include query params in search', () => {
+  service.searchUsers({ query: 'alice', page: 2, pageSize: 10 }).subscribe();
+
+  // Match by URL with params
+  const req = httpMock.expectOne(r =>
+    r.url === '/api/users/search' &&
+    r.params.get('query') === 'alice' &&
+    r.params.get('page') === '2'
+  );
+
+  expect(req.request.params.get('pageSize')).toBe('10');
+  req.flush([]);
+});
+```
+
+## Testing Request Headers
+
+```typescript
+it('should include Authorization header', () => {
+  service.getProtectedResource().subscribe();
+
+  const req = httpMock.expectOne('/api/protected');
+  expect(req.request.headers.get('Authorization')).toBe('Bearer mock-token');
+  req.flush({ data: 'protected content' });
+});
+```
+
+## Testing Error Handling
+
+```typescript
+it('should handle 404 error', () => {
+  let error: any;
+  service.getUser('999').subscribe({
+    next: () => fail('Should have failed'),
+    error: (e) => { error = e; }
+  });
+
+  const req = httpMock.expectOne('/api/users/999');
+  req.flush('User not found', {
+    status: 404,
+    statusText: 'Not Found'
+  });
+
+  expect(error.status).toBe(404);
+});
+
+it('should retry on server error and eventually fail', () => {
+  // Service has retry(2) — tries 3 times total
+  let errors: any[] = [];
+  service.getUsers().subscribe({
+    error: (e) => errors.push(e)
+  });
+
+  // Flush 3 requests with errors (original + 2 retries)
+  for (let i = 0; i < 3; i++) {
+    const req = httpMock.expectOne('/api/users');
+    req.flush('Server Error', { status: 500, statusText: 'Server Error' });
+  }
+
+  expect(errors.length).toBe(1); // One final error emitted
+  expect(errors[0].status).toBe(500);
+});
+
+it('should handle network error', () => {
+  let networkError: any;
+  service.getUsers().subscribe({
+    error: (e) => { networkError = e; }
+  });
+
+  const req = httpMock.expectOne('/api/users');
+  req.error(new ProgressEvent('Network Error')); // Simulate network failure
+
+  expect(networkError.type).toBe('error');
+});
+```
+
+## Testing Multiple Simultaneous Requests
+
+```typescript
+it('should load dashboard data in parallel', () => {
+  let result: any;
+  service.getDashboardData().subscribe(data => { result = data; });
+
+  // Two requests made simultaneously
+  const userReq = httpMock.expectOne('/api/users');
+  const statsReq = httpMock.expectOne('/api/stats');
+
+  // Order of flushing doesn't matter
+  statsReq.flush({ totalUsers: 100 });
+  userReq.flush([{ id: '1', name: 'Alice' }]);
+
+  expect(result.users.length).toBe(1);
+  expect(result.stats.totalUsers).toBe(100);
+});
+```
+
+## Testing Interceptors
+
+HTTP interceptors are tested by checking their effect on requests passing through:
+
+```typescript
+describe('AuthInterceptor', () => {
+  let httpMock: HttpTestingController;
+  let http: HttpClient;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule],
+      providers: [
+        // Register the interceptor
+        provideHttpClient(withInterceptors([authInterceptor])),
+      ]
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+    http = TestBed.inject(HttpClient);
+  });
+
+  it('should add Authorization header to every request', () => {
+    // Mock the token source (e.g., from AuthService signal)
+    // ...
+
+    http.get('/api/data').subscribe();
+
+    const req = httpMock.expectOne('/api/data');
+    expect(req.request.headers.has('Authorization')).toBeTrue();
+    expect(req.request.headers.get('Authorization')).toContain('Bearer ');
+    req.flush({});
+  });
+
+  it('should redirect to login on 401', fakeAsync(() => {
+    const router = TestBed.inject(Router);
+    const navigateSpy = spyOn(router, 'navigate');
+
+    http.get('/api/protected').subscribe({ error: () => {} });
+
+    const req = httpMock.expectOne('/api/protected');
+    req.flush('Unauthorized', { status: 401, statusText: 'Unauthorized' });
+
+    tick();
+    expect(navigateSpy).toHaveBeenCalledWith(['/login']);
+  }));
+});
+```
+
+<CodeChallenge
+  id="http-testing-verify"
+  difficulty="intermediate"
+  description="A test calls service.getUser('1').subscribe() then immediately calls httpMock.verify() without flushing the request. What happens?"
+  options={[
+    "verify() passes because no response was needed",
+    "verify() throws an error: Expected no open requests, found 1: GET /api/users/1",
+    "The Observable stays pending forever without error",
+    "verify() cancels the outstanding request automatically"
+  ]}
+  correctAnswer={1}
+  explanation="httpMock.verify() fails if there are any outstanding (unflushed) requests. When your code makes an HTTP call, the request is captured by HttpTestingController and waits for you to call req.flush() or req.error() to complete it. Calling verify() before flushing tells you: 'You made HTTP requests in your code that your test never handled.' This catches both forgetting to flush AND unexpected HTTP calls you didn't know your service was making."
+/>
+
+## Angular 18+: HttpClientTestingModule Deprecation
+
+```typescript
+// Angular 18+ — use provideHttpClientTesting() instead
+TestBed.configureTestingModule({
+  providers: [
+    provideHttpClient(),
+    provideHttpClientTesting(), // Replaces HttpClientTestingModule
+    UserService,
+  ]
+});
+```
+
+## Senior Insight: What to Actually Test
+
+For HTTP services, focus tests on:
+1. **URL construction**: Are path params and query params built correctly?
+2. **Request payload**: Is the body serialized/transformed correctly?
+3. **Response transformation**: Is the response mapped to the expected shape?
+4. **Error mapping**: Are HTTP errors mapped to meaningful domain errors?
+5. **Retry/resilience**: Does retry logic work correctly?
+
+Don't test: that `HttpClient.get()` itself works (Angular tests that), or that HTTP requests eventually arrive at the server (integration/E2E tests handle that).

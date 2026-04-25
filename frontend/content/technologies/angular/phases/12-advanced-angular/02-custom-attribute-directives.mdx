@@ -1,0 +1,339 @@
+---
+title: "Custom Attribute Directives"
+slug: "custom-attribute-directives"
+order: 2
+difficulty: "intermediate"
+readingTime: 9
+status: "published"
+tags: ["Angular", "advanced", "attribute directives", "HostListener", "HostBinding", "Renderer2", "ElementRef"]
+summary: "Custom attribute directives add behavior or appearance to existing elements without changing their structure. They're ideal for cross-cutting concerns like click tracking, tooltip behavior, drag-and-drop, and form control enhancements."
+docsLinks:
+  - label: "Attribute Directives"
+    url: "https://angular.dev/guide/directives/attribute-directives"
+  - label: "Renderer2"
+    url: "https://angular.dev/api/core/Renderer2"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Attribute vs Structural Directives
+
+- **Structural directives** (`*ngIf`, `*ngFor`) — add/remove DOM elements
+- **Attribute directives** — modify existing elements: appearance, behavior, accessibility
+
+Attribute directives don't use `*` prefix — they're applied like HTML attributes:
+
+```html
+<!-- Attribute directive on a button -->
+<button appRipple appTrackClick="'purchase-button'">Buy Now</button>
+
+<!-- vs structural: -->
+<div *ngIf="show">Content</div>
+```
+
+## Basic Directive with ElementRef
+
+```typescript
+@Directive({
+  selector: '[appHighlight]',
+  standalone: true,
+})
+export class HighlightDirective {
+  private el = inject(ElementRef);
+
+  @Input('appHighlight') color = 'yellow';
+
+  @HostListener('mouseenter')
+  onMouseEnter() {
+    this.el.nativeElement.style.backgroundColor = this.color;
+  }
+
+  @HostListener('mouseleave')
+  onMouseLeave() {
+    this.el.nativeElement.style.backgroundColor = '';
+  }
+}
+```
+
+```html
+<p appHighlight="lightblue">Hover over me!</p>
+<p appHighlight>Uses default yellow color</p>
+```
+
+<Callout type="warning">
+Avoid direct `ElementRef.nativeElement` manipulation when possible — it bypasses Angular's rendering model and breaks server-side rendering (Node.js has no DOM). Use `Renderer2` instead for platform-safe DOM manipulation.
+</Callout>
+
+## Using Renderer2 (Platform-Safe)
+
+```typescript
+@Directive({
+  selector: '[appHighlight]',
+  standalone: true,
+})
+export class HighlightDirective {
+  private el = inject(ElementRef);
+  private renderer = inject(Renderer2);
+
+  @Input('appHighlight') color = 'yellow';
+
+  @HostListener('mouseenter')
+  onMouseEnter() {
+    // Renderer2 works in all platforms (browser, SSR, Web Worker)
+    this.renderer.setStyle(this.el.nativeElement, 'background-color', this.color);
+  }
+
+  @HostListener('mouseleave')
+  onMouseLeave() {
+    this.renderer.removeStyle(this.el.nativeElement, 'background-color');
+  }
+}
+```
+
+## @HostBinding: Binding to Host Element
+
+```typescript
+@Directive({
+  selector: '[appActiveState]',
+  standalone: true,
+})
+export class ActiveStateDirective {
+  // Adds/removes CSS class on the host element
+  @HostBinding('class.is-active')
+  isActive = false;
+
+  // Controls the host element's disabled attribute
+  @HostBinding('attr.disabled')
+  disabled: string | null = null;
+
+  // Controls the host element's aria attribute
+  @HostBinding('attr.aria-pressed')
+  get ariaPressed() { return this.isActive ? 'true' : 'false'; }
+
+  @HostListener('click')
+  toggle() {
+    this.isActive = !this.isActive;
+  }
+}
+```
+
+```html
+<!-- The directive adds aria-pressed, class.is-active, etc. to the button -->
+<button appActiveState>Toggle</button>
+```
+
+## Real-World Example: Click Tracker
+
+```typescript
+@Directive({
+  selector: '[appTrackClick]',
+  standalone: true,
+})
+export class TrackClickDirective {
+  private analyticsService = inject(AnalyticsService);
+  private el = inject(ElementRef);
+
+  @Input('appTrackClick') eventName = '';
+  @Input() trackProperties: Record<string, unknown> = {};
+
+  @HostListener('click', ['$event'])
+  onClick(event: MouseEvent) {
+    this.analyticsService.track(this.eventName || this.getDefaultEventName(), {
+      ...this.trackProperties,
+      element: this.el.nativeElement.tagName,
+      text: this.el.nativeElement.textContent?.trim(),
+      timestamp: Date.now(),
+    });
+  }
+
+  private getDefaultEventName(): string {
+    return `click_${this.el.nativeElement.tagName.toLowerCase()}`;
+  }
+}
+```
+
+```html
+<button appTrackClick="purchase_button"
+        [trackProperties]="{ product: product.id, price: product.price }">
+  Buy Now
+</button>
+```
+
+## Tooltip Directive
+
+```typescript
+@Directive({
+  selector: '[appTooltip]',
+  standalone: true,
+})
+export class TooltipDirective implements OnDestroy {
+  private el = inject(ElementRef);
+  private renderer = inject(Renderer2);
+  private document = inject(DOCUMENT);
+
+  @Input('appTooltip') tooltipText = '';
+  @Input() tooltipPosition: 'top' | 'bottom' | 'left' | 'right' = 'top';
+
+  private tooltipElement: HTMLElement | null = null;
+
+  @HostListener('mouseenter')
+  showTooltip() {
+    this.tooltipElement = this.renderer.createElement('div');
+    this.renderer.addClass(this.tooltipElement, 'tooltip');
+    this.renderer.addClass(this.tooltipElement, `tooltip-${this.tooltipPosition}`);
+    this.renderer.setProperty(this.tooltipElement, 'textContent', this.tooltipText);
+
+    // Position relative to the host element
+    const rect = this.el.nativeElement.getBoundingClientRect();
+    this.renderer.setStyle(this.tooltipElement, 'position', 'fixed');
+    this.renderer.setStyle(this.tooltipElement, 'top', `${rect.top - 40}px`);
+    this.renderer.setStyle(this.tooltipElement, 'left', `${rect.left}px`);
+
+    this.renderer.appendChild(this.document.body, this.tooltipElement);
+  }
+
+  @HostListener('mouseleave')
+  hideTooltip() {
+    if (this.tooltipElement) {
+      this.renderer.removeChild(this.document.body, this.tooltipElement);
+      this.tooltipElement = null;
+    }
+  }
+
+  ngOnDestroy() {
+    this.hideTooltip(); // Clean up if directive is destroyed while hovering
+  }
+}
+```
+
+## Directive with Output Events
+
+```typescript
+@Directive({
+  selector: '[appLongPress]',
+  standalone: true,
+})
+export class LongPressDirective implements OnDestroy {
+  @Input() longPressDuration = 500; // ms
+  @Output() longPress = new EventEmitter<MouseEvent>();
+
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  @HostListener('mousedown', ['$event'])
+  onMouseDown(event: MouseEvent) {
+    this.timer = setTimeout(() => {
+      this.longPress.emit(event);
+    }, this.longPressDuration);
+  }
+
+  @HostListener('mouseup')
+  @HostListener('mouseleave')
+  onMouseUp() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  ngOnDestroy() {
+    if (this.timer) clearTimeout(this.timer);
+  }
+}
+```
+
+```html
+<button appLongPress [longPressDuration]="800" (longPress)="onLongPress($event)">
+  Press and Hold
+</button>
+```
+
+## Form Control Directive: Input Mask
+
+```typescript
+@Directive({
+  selector: 'input[appPhoneMask]',
+  standalone: true,
+})
+export class PhoneMaskDirective {
+  private el = inject(ElementRef);
+
+  @HostListener('input', ['$event'])
+  onInput(event: InputEvent) {
+    const input = this.el.nativeElement as HTMLInputElement;
+    let value = input.value.replace(/\D/g, ''); // Remove non-digits
+
+    // Format as (XXX) XXX-XXXX
+    if (value.length > 10) value = value.slice(0, 10);
+    if (value.length > 6) {
+      value = `(${value.slice(0, 3)}) ${value.slice(3, 6)}-${value.slice(6)}`;
+    } else if (value.length > 3) {
+      value = `(${value.slice(0, 3)}) ${value.slice(3)}`;
+    } else if (value.length > 0) {
+      value = `(${value}`;
+    }
+
+    input.value = value;
+    // Dispatch input event so Angular's form bindings pick up the change
+    input.dispatchEvent(new Event('input'));
+  }
+}
+```
+
+```html
+<input appPhoneMask type="text" placeholder="(555) 555-5555">
+```
+
+<CodeChallenge
+  id="directive-renderer2"
+  difficulty="intermediate"
+  description="A directive uses ElementRef.nativeElement.style.color = 'red' to change color on hover. The app is migrated to Angular Universal (SSR). What problem occurs?"
+  options={[
+    "No problem — ElementRef works the same in SSR as in the browser",
+    "During server-side rendering, nativeElement is a platform-server element with no 'style' property — accessing it throws an error or produces undefined behavior",
+    "SSR ignores all directive effects and only renders static HTML",
+    "The style is applied on the server but stripped before sending to the client"
+  ]}
+  correctAnswer={1}
+  explanation="During Angular SSR, the platform is Node.js — there is no real DOM. Angular's @angular/platform-server provides stub elements that don't have the same properties as browser DOM elements. Accessing nativeElement.style.color = 'red' may throw 'Cannot set properties of undefined' or silently fail, preventing the server-rendered page from being generated correctly. Renderer2 is the solution: it has a platform-specific implementation for both browser (manipulates real DOM) and server (manipulates the server rendering model). Always prefer Renderer2.setStyle() over nativeElement.style in directives that should work with SSR."
+/>
+
+## Senior Insight: Directive Composition API
+
+Angular 15+ introduced Directive Composition — applying directives to component hosts without wrapping:
+
+```typescript
+// Apply existing directives to a component's host element
+@Component({
+  selector: 'app-submit-button',
+  template: `<ng-content></ng-content>`,
+  // These directives are applied to the component's host element
+  hostDirectives: [
+    {
+      directive: TrackClickDirective,
+      inputs: ['appTrackClick: eventName'], // Map directive input to component input
+    },
+    {
+      directive: RippleDirective,
+    },
+    {
+      directive: TooltipDirective,
+      inputs: ['appTooltip: tooltip'],
+    }
+  ]
+})
+class SubmitButtonComponent {
+  @Input() tooltip = '';
+  @Input() eventName = '';
+}
+```
+
+```html
+<!-- All three directives are active on this element: -->
+<app-submit-button
+  tooltip="Submit the form"
+  eventName="form_submit">
+  Submit
+</app-submit-button>
+```
+
+Host directives make it easy to compose reusable behaviors without inheritance — a cleaner alternative to `extends` or manual `@HostListener` duplication.

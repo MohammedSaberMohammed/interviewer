@@ -1,0 +1,222 @@
+---
+title: "Templates & Data Binding"
+slug: "templates-data-binding"
+order: 2
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["Angular", "data binding", "interpolation", "property binding", "event binding", "two-way binding"]
+summary: "Angular's four data binding types connect your component class to the DOM. Mastering interpolation, property binding, event binding, and two-way binding is the foundation of all Angular templating."
+docsLinks:
+  - label: "Angular Template Syntax"
+    url: "https://angular.dev/guide/templates"
+  - label: "Angular Data Binding"
+    url: "https://angular.dev/guide/templates/binding"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## The Four Binding Syntaxes
+
+Angular's template syntax uses special brackets and parentheses that encode the direction of data flow. Once you understand the pattern, you'll never confuse them:
+
+```
+{{ expression }}     → Interpolation (component → DOM, as text)
+[target]="expr"     → Property binding (component → DOM)
+(event)="handler"   → Event binding (DOM → component)
+[(target)]="prop"   → Two-way binding (both directions)
+```
+
+The visual metaphor: `[]` means "data flows in" (to the element), `()` means "data flows out" (from the element), and `[()]` is the combination — the "banana in a box" syntax.
+
+## Interpolation `{{ }}`
+
+Interpolation renders a component expression as text content:
+
+```typescript
+@Component({
+  template: `
+    <h1>Hello, {{ user.name }}!</h1>
+    <p>Account created: {{ user.createdAt | date:'longDate' }}</p>
+    <p>Items: {{ cart.length }}</p>
+    <p>Total: {{ cart.total | currency }}</p>
+    <!-- Expressions are evaluated -->
+    <p>{{ isAdmin ? 'Admin Panel' : 'User Dashboard' }}</p>
+    <!-- Method calls are allowed but discouraged (runs on every CD cycle) -->
+    <p>{{ formatPrice(product.price) }}</p>
+  `
+})
+class DashboardComponent {
+  user = { name: 'Alice', createdAt: new Date() };
+  cart = { length: 3, total: 49.99 };
+  isAdmin = true;
+}
+```
+
+<Callout type="warning">
+Avoid calling methods in templates like `{{ formatPrice(product.price) }}`. Angular calls this on every change detection cycle. Use pipes instead — they're pure by default and Angular memoizes their results. If you must call a method, consider converting it to a signal: `formattedPrice = computed(() => formatPrice(this.product().price))`.
+</Callout>
+
+## Property Binding `[property]`
+
+Binds a component expression to a DOM property (not attribute):
+
+```html
+<!-- Boolean property binding -->
+<button [disabled]="isSubmitting">Submit</button>
+
+<!-- String property binding -->
+<img [src]="user.avatarUrl" [alt]="user.name + ' avatar'">
+
+<!-- Style and class binding -->
+<div [class.active]="isActive" [class.error]="hasError">Content</div>
+<div [style.color]="textColor" [style.fontSize.px]="fontSize">Text</div>
+
+<!-- Component input binding -->
+<app-progress-bar [value]="uploadProgress" [max]="100"></app-progress-bar>
+
+<!-- Attribute binding for ARIA (use attr. prefix for HTML attributes, not DOM properties) -->
+<button [attr.aria-label]="'Delete ' + item.name">🗑</button>
+```
+
+**Property vs Attribute**: DOM *properties* are JavaScript object properties (`element.disabled`). HTML *attributes* are the initial values in the HTML string (`disabled="disabled"`). Angular's `[]` binding targets **properties** by default. Use `[attr.x]` for attributes that don't have corresponding properties.
+
+## Event Binding `(event)`
+
+Binds a DOM event to a component method:
+
+```html
+<!-- Basic event binding -->
+<button (click)="onSubmit()">Submit</button>
+
+<!-- $event gives the native DOM event -->
+<input (input)="onInput($event)">
+<form (submit)="onSubmit($event)">
+
+<!-- Template reference variable -->
+<input #nameInput (blur)="onBlur(nameInput.value)">
+
+<!-- Custom event from child component -->
+<app-datepicker (dateSelected)="onDateSelected($event)"></app-datepicker>
+
+<!-- Key events -->
+<input (keydown.enter)="search()" (keydown.escape)="clearSearch()">
+```
+
+```typescript
+class FormComponent {
+  onInput(event: Event) {
+    const value = (event.target as HTMLInputElement).value;
+    this.searchQuery = value;
+  }
+
+  onSubmit(event: SubmitEvent) {
+    event.preventDefault(); // Prevent default form submission
+    this.submitForm();
+  }
+}
+```
+
+## Two-Way Binding `[(ngModel)]`
+
+Two-way binding combines property and event binding. The `[(x)]` syntax is syntactic sugar for `[x]="value" (xChange)="value = $event"`:
+
+```html
+<!-- Requires FormsModule -->
+<input [(ngModel)]="searchQuery" placeholder="Search...">
+
+<!-- This is equivalent to: -->
+<input [ngModel]="searchQuery" (ngModelChange)="searchQuery = $event">
+
+<!-- With custom component that has @Input() value and @Output() valueChange -->
+<app-color-picker [(color)]="selectedColor"></app-color-picker>
+<!-- Equivalent to: -->
+<app-color-picker [color]="selectedColor" (colorChange)="selectedColor = $event"></app-color-picker>
+```
+
+To support `[(x)]` binding in your own components, follow the naming convention — the input is `x` and the output is `xChange`:
+
+```typescript
+@Component({ selector: 'app-counter' })
+class CounterComponent {
+  @Input() count = 0;
+  @Output() countChange = new EventEmitter<number>();
+
+  increment() {
+    this.countChange.emit(this.count + 1);
+  }
+}
+// Parent can now use [(count)]="myCount"
+```
+
+## Signal-Based Binding (Angular 17+)
+
+With signals, the template automatically tracks dependencies:
+
+```typescript
+@Component({
+  template: `
+    <p>Count: {{ count() }}</p>
+    <button (click)="increment()">+</button>
+  `
+})
+class CounterComponent {
+  count = signal(0); // WritableSignal<number>
+
+  increment() {
+    this.count.update(c => c + 1);
+    // or: this.count.set(this.count() + 1);
+  }
+}
+```
+
+Notice `count()` — signals are functions, so you call them to read their value. No `async` pipe, no subscription management.
+
+<ComparisonTable
+  headers={["Binding Type", "Syntax", "Direction", "Use Case"]}
+  rows={[
+    ["Interpolation", "{{ expr }}", "Class → DOM (text)", "Display values as text content"],
+    ["Property binding", "[prop]='expr'", "Class → DOM", "Set element/component properties"],
+    ["Event binding", "(event)='handler'", "DOM → Class", "Respond to user interactions"],
+    ["Two-way binding", "[(prop)]='val'", "Both directions", "Form inputs, controlled components"],
+    ["Attribute binding", "[attr.x]='expr'", "Class → DOM attr", "Non-property DOM attributes (ARIA)"],
+    ["Class binding", "[class.x]='bool'", "Class → DOM", "Conditional CSS classes"],
+    ["Style binding", "[style.x]='val'", "Class → DOM", "Dynamic inline styles"]
+  ]}
+/>
+
+<CodeChallenge
+  id="data-binding-syntax"
+  difficulty="foundation"
+  description="What is the correct way to bind an Angular component's 'isLoading' boolean property to a button's 'disabled' DOM property?"
+  options={[
+    "<button disabled='{{ isLoading }}'>",
+    "<button [disabled]='isLoading'>",
+    "<button (disabled)='isLoading'>",
+    "<button disabled='isLoading'>"
+  ]}
+  correctAnswer={1}
+  explanation="Property binding uses square brackets: [disabled]='isLoading'. This binds the JavaScript boolean directly to the DOM property. Option A uses interpolation which produces a string ('true'/'false'), not a boolean — disabled='false' still disables the button because any string is truthy. Option C is event binding (wrong direction). Option D is a static attribute assignment."
+/>
+
+## Senior Insight: Template Expressions vs Statements
+
+Angular distinguishes between **expressions** (used in `{{ }}` and `[binding]`) and **statements** (used in `(event)` handlers):
+
+- Expressions must be **side-effect free** — no assignments, no increment operators
+- Statements are **allowed to have side effects** — they're meant to change state
+
+```html
+<!-- Expression — no side effects allowed -->
+{{ user.name }}                    ✅
+{{ user.name.toUpperCase() }}      ✅
+{{ users.length > 0 ? 'Yes' : 'No' }} ✅
+{{ count = 5 }}                    ❌ Assignment in expression
+
+<!-- Statement — side effects are expected -->
+(click)="count = 5"               ✅ Assignment OK in event handler
+(click)="saveUser()"              ✅
+(click)="count++"                 ✅ Increment OK in event handler
+```
+
+This separation makes Angular templates predictable — you always know that expressions are reads and event handlers are writes.
