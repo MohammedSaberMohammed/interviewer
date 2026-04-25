@@ -1,0 +1,353 @@
+---
+title: "Caching Strategies: Cache-Aside, Write-Through, Write-Behind, Read-Through"
+slug: "caching-strategies"
+order: 3
+difficulty: "advanced"
+readingTime: 16
+status: "published"
+tags: ["caching", "cache-aside", "write-through", "write-behind", "read-through", "Redis", "performance", "system design"]
+summary: "Choosing the wrong caching strategy causes stale data, cache stampedes, or data loss — know the trade-offs of each pattern before your next system design interview."
+docsLinks:
+  - label: "Caching guidance — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching"
+  - label: "Azure Cache for Redis — overview"
+    url: "https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-overview"
+  - label: "IDistributedCache in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## Why Caching Strategy Matters
+
+Adding a cache without choosing a strategy is like adding a lock without knowing what it protects. The four fundamental caching strategies differ in:
+
+1. **Who populates the cache** — the application or the cache layer itself
+2. **When writes go to the database** — synchronously or asynchronously
+3. **What happens on a cache miss** — who fetches and stores the data
+4. **Consistency guarantees** — how stale the cached data can become
+
+---
+
+## Cache-Aside (Lazy Loading)
+
+The application is **responsible for both reads and writes**. The cache sits beside the data store — hence "aside."
+
+<ArchDiagram
+  title="Cache-Aside: Read Path"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', sublabel: 'your service', type: 'service' }] },
+    { nodes: [
+      { id: 'cache', label: 'Redis Cache', sublabel: 'fast, volatile', type: 'cache' },
+      { id: 'db', label: 'Database', sublabel: 'authoritative', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'check cache → on miss, query DB', dashed: false },
+  ]}
+  caption="Cache miss: app queries DB and populates the cache. Cache hit: DB is never touched."
+/>
+
+**Read path**:
+1. Check cache. If hit, return cached value.
+2. If miss, query the database.
+3. Store result in cache with a TTL.
+4. Return result.
+
+**Write path**: Write to the database only. Invalidate or update the cache entry (or let it expire via TTL).
+
+```csharp
+public class ProductService
+{
+    private readonly IDistributedCache _cache;
+    private readonly IProductRepository _repo;
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
+
+    public async Task<Product?> GetProductAsync(Guid id)
+    {
+        var cacheKey = \$"product:{id}";
+
+        // 1. Try cache first
+        var cached = await _cache.GetStringAsync(cacheKey);
+        if (cached is not null)
+            return JsonSerializer.Deserialize<Product>(cached);
+
+        // 2. Cache miss — hit the database
+        var product = await _repo.FindByIdAsync(id);
+        if (product is null) return null;
+
+        // 3. Populate cache for next time
+        var serialized = JsonSerializer.Serialize(product);
+        await _cache.SetStringAsync(cacheKey, serialized, new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = CacheTtl
+        });
+
+        return product;
+    }
+
+    public async Task UpdateProductAsync(Product product)
+    {
+        await _repo.UpdateAsync(product);
+
+        // Invalidate cache — next read will repopulate from DB
+        await _cache.RemoveAsync(\$"product:{product.Id}");
+    }
+}
+```
+
+**Trade-offs**:
+- Cache only contains data that was actually requested (no wasted memory)
+- First request after miss or expiry is slow (cold start)
+- **Cache stampede risk**: If 1,000 requests hit simultaneously after a cold cache, they all go to the database. Mitigate with a distributed lock or probabilistic early expiration.
+- Application code is responsible for consistency — easy to forget to invalidate
+
+---
+
+## Read-Through
+
+The **cache itself fetches from the database** on a miss. The application always talks to the cache layer only.
+
+```
+Application → Cache → (on miss) → Database
+                ↑_________________|
+```
+
+```csharp
+// Read-through is typically provided by the cache library/service
+// Example: NCache or a custom decorator pattern
+
+public class ReadThroughCache<TKey, TValue> : ICache<TKey, TValue>
+{
+    private readonly ICache<TKey, TValue> _inner;
+    private readonly Func<TKey, Task<TValue?>> _loader;
+
+    public async Task<TValue?> GetAsync(TKey key)
+    {
+        var cached = await _inner.GetAsync(key);
+        if (cached is not null) return cached;
+
+        // Cache fetches from source on miss — application doesn't know
+        var value = await _loader(key);
+        if (value is not null)
+            await _inner.SetAsync(key, value, TimeSpan.FromMinutes(10));
+
+        return value;
+    }
+}
+```
+
+**Trade-offs vs Cache-Aside**:
+- Application code is simpler — no cache logic scattered in services
+- First request per key is always slow (same as cache-aside)
+- Cache stampede risk remains — use a coalescing pattern (deduplicate in-flight requests)
+- Harder to customize per-key TTLs
+
+---
+
+## Write-Through
+
+Every write goes to **both the cache and the database synchronously** before returning to the caller.
+
+<ArchDiagram
+  title="Write-Through: Synchronous Write to Both Stores"
+  layers={[
+    { nodes: [{ id: 'app', label: 'Application', type: 'service' }] },
+    { nodes: [{ id: 'cache', label: 'Redis Cache', sublabel: 'always warm', type: 'cache' }] },
+    { nodes: [{ id: 'db', label: 'Database', sublabel: 'authoritative', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: '1. write (sync)', step: undefined },
+    { label: '2. write (sync)', step: undefined },
+  ]}
+  caption="Both stores are updated synchronously before acknowledging the write. Reads always hit a warm cache."
+/>
+
+```
+Write: Application → Cache → Database (both, synchronously)
+Read:  Application → Cache (always warm after first write)
+```
+
+```csharp
+public class WriteThroughProductService
+{
+    private readonly IDistributedCache _cache;
+    private readonly IProductRepository _repo;
+
+    public async Task UpdateProductAsync(Product product)
+    {
+        // Write to database first (authoritative store)
+        await _repo.UpdateAsync(product);
+
+        // Immediately update cache — no stale window
+        var cacheKey = \$"product:{product.Id}";
+        var serialized = JsonSerializer.Serialize(product);
+        await _cache.SetStringAsync(cacheKey, serialized, new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1)
+        });
+    }
+}
+```
+
+**Trade-offs**:
+- Cache always consistent with database — no stale reads after a write
+- Higher write latency (write to two stores, though often parallelizable)
+- Cache may fill with data that is never read (wasteful)
+- Best paired with Read-Through so the cache is always the primary access path
+
+---
+
+## Write-Behind (Write-Back)
+
+Writes go to the cache first and are **asynchronously flushed to the database**. The application gets a fast write acknowledgment but the database update is deferred.
+
+```
+Write: Application → Cache (fast ack) ~~async~~> Database (later)
+```
+
+```csharp
+// Write-behind is typically built into specialized cache solutions
+// (Redis with AOF + background flush, NCache, Hazelcast)
+// Conceptual implementation:
+
+public class WriteBehindBuffer
+{
+    private readonly Channel<WriteOperation> _buffer =
+        Channel.CreateBounded<WriteOperation>(1000);
+
+    public async Task WriteAsync(Product product)
+    {
+        // Fast: write to cache and enqueue DB write
+        await _cache.SetAsync(\$"product:{product.Id}", product);
+        await _buffer.Writer.WriteAsync(new WriteOperation(product));
+        // Return immediately — DB write happens asynchronously
+    }
+
+    // Background service flushes to DB
+    protected async Task FlushLoopAsync(CancellationToken ct)
+    {
+        await foreach (var op in _buffer.Reader.ReadAllAsync(ct))
+        {
+            try { await _repo.UpdateAsync(op.Product); }
+            catch { /* retry logic, DLQ */ }
+        }
+    }
+}
+```
+
+**Trade-offs**:
+- Lowest write latency — application isn't blocked on DB write
+- **Data loss risk**: If the cache node crashes before flushing, writes are lost
+- Complex failure handling (retries, dead-letter queue, ordering)
+- Appropriate for analytics writes, audit logs, shopping cart updates — anything where slight data loss is tolerable
+
+---
+
+<ComparisonTable
+  headers={["Strategy", "Who Loads Cache", "Write Sync", "Consistency", "Best For"]}
+  rows={[
+    ["Cache-Aside", "Application on miss", "DB only (invalidate cache)", "Eventual (TTL)", "General purpose, read-heavy workloads"],
+    ["Read-Through", "Cache layer on miss", "DB only (invalidate cache)", "Eventual (TTL)", "Simplified app code, read-heavy"],
+    ["Write-Through", "Application or cache", "DB + Cache synchronously", "Strong after write", "Read-heavy with frequent updates"],
+    ["Write-Behind", "Application or cache", "Cache first, DB async", "Eventual (async flush)", "Write-heavy, tolerate some data loss"],
+  ]}
+/>
+
+---
+
+## The Cache Stampede Problem
+
+Cache stampede (also called "thundering herd") occurs when a popular cache entry expires and hundreds of concurrent requests all miss the cache simultaneously, all hitting the database.
+
+```csharp
+// Mitigation 1: Distributed lock (only one request populates cache)
+public async Task<Product?> GetWithLockAsync(Guid id)
+{
+    var cacheKey = \$"product:{id}";
+    var cached = await _cache.GetStringAsync(cacheKey);
+    if (cached is not null)
+        return JsonSerializer.Deserialize<Product>(cached);
+
+    var lockKey = \$"lock:product:{id}";
+    await using var redisLock = await _lockFactory.CreateLockAsync(lockKey, TimeSpan.FromSeconds(5));
+
+    // Double-check after acquiring lock — another request may have populated it
+    cached = await _cache.GetStringAsync(cacheKey);
+    if (cached is not null)
+        return JsonSerializer.Deserialize<Product>(cached);
+
+    var product = await _repo.FindByIdAsync(id);
+    if (product is not null)
+    {
+        await _cache.SetStringAsync(cacheKey,
+            JsonSerializer.Serialize(product),
+            new DistributedCacheEntryOptions
+            {
+                // Mitigation 2: Probabilistic early expiration — jitter TTL
+                AbsoluteExpirationRelativeToNow =
+                    TimeSpan.FromMinutes(10) + TimeSpan.FromSeconds(Random.Shared.Next(0, 60))
+            });
+    }
+
+    return product;
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Stale-While-Revalidate Is Often the Best UX**
+
+For read-heavy, user-facing data (product listings, article content), neither "always fresh" nor "possibly stale" is ideal. The pattern that wins in practice is **stale-while-revalidate**:
+
+1. Return the cached (possibly stale) value immediately
+2. Asynchronously trigger a background refresh if the entry is "close to expiry"
+3. Next request gets the fresh value
+
+This is what CDNs and browsers do with `Cache-Control: stale-while-revalidate`. You can implement it in .NET with a background `Task.Run` or a hosted service:
+
+```csharp
+if (cacheEntry.IsNearExpiry())
+{
+    // Return stale immediately, refresh in background
+    _ = Task.Run(() => RefreshCacheAsync(id));
+}
+return cacheEntry.Value;
+```
+
+The result: zero cold-start penalty for any user, near-zero database amplification during cache misses, and no stampede. This is the approach used by high-traffic e-commerce sites for product catalog data.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Adding a cache with a long TTL solves performance problems without any downsides."
+  reality="Long TTLs reduce cache miss frequency but increase the maximum staleness window. If a product price changes, customers may see the wrong price for up to the TTL duration. More subtly, long TTLs hide bugs — your application may work fine until a cache flush during deployment exposes an N+1 query or a missing index. Cache-aside with proper invalidation on write is almost always better than relying on TTL expiry alone."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/caching-strategies/challenge-1"
+  question="Your checkout service writes order confirmations and also needs to display order history. Order history reads are 100x more frequent than writes. Which caching strategy minimizes database load while keeping order data consistent?"
+  options={[
+    "Write-behind — write to cache first, flush to DB asynchronously",
+    "Write-through — write to DB and cache together, reads always hit warm cache",
+    "Cache-aside with no invalidation — rely on TTL expiry",
+    "No caching — order data must always be fresh"
+  ]}
+  correctAnswer={1}
+  explanation="Write-through is ideal here. Writes go to both the database and cache synchronously, so the cache is always warm after a write. Subsequent reads hit the cache (100x the frequency) with no database load. Write-behind (A) risks data loss for financial records — unacceptable for orders. Cache-aside with TTL-only (C) means stale data can persist for the TTL duration. No caching (D) ignores the requirement to minimize database load."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Caching guidance — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching" },
+    { label: "Azure Cache for Redis — overview and tiers", url: "https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-overview" },
+    { label: "IDistributedCache in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed" },
+    { label: "Response caching middleware in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/performance/caching/middleware" },
+  ]}
+/>

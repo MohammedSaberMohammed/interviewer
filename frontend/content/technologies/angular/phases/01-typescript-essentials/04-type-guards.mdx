@@ -1,0 +1,245 @@
+---
+title: "Type Guards"
+slug: "type-guards"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["TypeScript", "type guards", "narrowing", "typeof", "instanceof"]
+summary: "Type guards let you safely narrow union types at runtime. Understanding typeof, instanceof, in, and custom type predicates is essential for working with real-world Angular data."
+docsLinks:
+  - label: "TypeScript: Narrowing"
+    url: "https://www.typescriptlang.org/docs/handbook/2/narrowing.html"
+  - label: "TypeScript: Type Predicates"
+    url: "https://www.typescriptlang.org/docs/handbook/2/narrowing.html#using-type-predicates"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Type Guards Exist
+
+When you have a union type like `string | number | null`, TypeScript won't let you call string methods on it without first proving it's a string. Type guards are the runtime checks that let TypeScript narrow the type within a block — giving you the safety of static types combined with the flexibility of runtime inspection.
+
+## Built-in Type Guards
+
+### `typeof` — For Primitives
+
+```typescript
+function formatValue(value: string | number | boolean): string {
+  if (typeof value === 'string') {
+    return value.toUpperCase(); // TypeScript knows: string
+  } else if (typeof value === 'number') {
+    return value.toFixed(2);    // TypeScript knows: number
+  } else {
+    return value ? 'Yes' : 'No'; // TypeScript knows: boolean
+  }
+}
+```
+
+`typeof` works for: `'string'`, `'number'`, `'bigint'`, `'boolean'`, `'symbol'`, `'undefined'`, `'object'`, `'function'`.
+
+<Callout type="warning">
+`typeof null === 'object'` — this infamous JavaScript quirk means `typeof` alone cannot distinguish `null` from objects. Always check for null separately: `if (value !== null && typeof value === 'object')`.
+</Callout>
+
+### `instanceof` — For Classes
+
+```typescript
+class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+class NetworkError extends Error {
+  constructor(public retryable: boolean) {
+    super('Network unavailable');
+  }
+}
+
+function handleError(error: HttpError | NetworkError | Error): void {
+  if (error instanceof HttpError) {
+    console.error(`HTTP ${error.status}: ${error.message}`);
+    // error.status is accessible here
+  } else if (error instanceof NetworkError) {
+    if (error.retryable) retry();
+    // error.retryable is accessible here
+  } else {
+    console.error('Unknown error:', error.message);
+  }
+}
+```
+
+In Angular, `instanceof` is commonly used to handle different Angular Router event types.
+
+### `in` — For Property Existence
+
+```typescript
+interface Cat { meow(): void }
+interface Dog { bark(): void }
+interface Bird { fly(): void; wingspan: number }
+
+type Pet = Cat | Dog | Bird;
+
+function interact(pet: Pet): void {
+  if ('meow' in pet) {
+    pet.meow(); // TypeScript narrows to Cat
+  } else if ('bark' in pet) {
+    pet.bark(); // TypeScript narrows to Dog
+  } else {
+    console.log(`Wingspan: ${pet.wingspan}`); // TypeScript narrows to Bird
+  }
+}
+```
+
+## Custom Type Predicates
+
+The most powerful pattern: a function that returns a **type predicate** (`value is Type`):
+
+```typescript
+// Type predicate: return type is 'value is Type'
+function isUser(value: unknown): value is User {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'id' in value &&
+    'name' in value &&
+    typeof (value as any).id === 'number' &&
+    typeof (value as any).name === 'string'
+  );
+}
+
+// Now TypeScript narrows inside the if block
+function processApiResponse(data: unknown): void {
+  if (isUser(data)) {
+    console.log(data.name); // TypeScript knows: data is User
+    console.log(data.id);   // Fully typed
+  } else {
+    console.error('Invalid user data received');
+  }
+}
+```
+
+This is invaluable when parsing API responses typed as `unknown`.
+
+## Angular-Specific Type Guard Patterns
+
+### Validating HTTP Responses
+
+```typescript
+interface ApiError {
+  code: string;
+  message: string;
+  details?: Record<string, string[]>;
+}
+
+function isApiError(error: unknown): error is ApiError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    'message' in error
+  );
+}
+
+@Injectable({ providedIn: 'root' })
+class UserService {
+  constructor(private http: HttpClient) {}
+
+  getUser(id: number): Observable<User> {
+    return this.http.get<User>(`/api/users/${id}`).pipe(
+      catchError((err: unknown) => {
+        if (isApiError(err)) {
+          // Fully typed — err.code and err.message available
+          return throwError(() => new Error(`[${err.code}] ${err.message}`));
+        }
+        return throwError(() => new Error('Unknown error'));
+      })
+    );
+  }
+}
+```
+
+### Discriminated Union Guards
+
+```typescript
+type SuccessEvent = { type: 'success'; data: User };
+type ErrorEvent = { type: 'error'; message: string };
+type AppEvent = SuccessEvent | ErrorEvent;
+
+// Using a type guard function
+function isSuccessEvent(event: AppEvent): event is SuccessEvent {
+  return event.type === 'success';
+}
+
+// In a component
+events$.pipe(
+  filter(isSuccessEvent) // pipe(filter()) narrows the Observable type!
+).subscribe(event => {
+  console.log(event.data.name); // Fully typed as SuccessEvent
+});
+```
+
+<Callout type="tip">
+When you pass a type predicate function to `filter()`, RxJS propagates the narrowed type through the Observable chain. `filter(isSuccessEvent)` returns `Observable<SuccessEvent>` instead of `Observable<AppEvent>`.
+</Callout>
+
+## Assertion Functions
+
+TypeScript 3.7+ introduced assertion functions — they throw instead of returning false:
+
+```typescript
+function assertIsString(value: unknown): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new Error(`Expected string, got ${typeof value}`);
+  }
+}
+
+function assertIsDefined<T>(value: T): asserts value is NonNullable<T> {
+  if (value === null || value === undefined) {
+    throw new Error('Value is null or undefined');
+  }
+}
+
+// Usage — TypeScript narrows after the assertion
+const config = getConfig(); // Returns string | undefined
+assertIsDefined(config);
+config.toUpperCase(); // Safe — TypeScript knows config is string here
+```
+
+<CodeChallenge
+  id="type-guard-predicate"
+  difficulty="intermediate"
+  description="A function has return type 'value is User'. What does TypeScript do when this function returns true in an if-statement condition?"
+  options={[
+    "Nothing — it's just documentation",
+    "It narrows the type of 'value' to 'User' inside the if block",
+    "It throws an error if the runtime type doesn't match",
+    "It casts 'value' to 'User' everywhere in the file"
+  ]}
+  correctAnswer={1}
+  explanation="A type predicate (value is User) is a compile-time hint to TypeScript's control flow analysis. When the function returns true, TypeScript narrows the variable's type to User inside the if block. It does NOT add runtime validation — the developer is responsible for making the implementation correct. It also doesn't affect code outside the if block."
+/>
+
+## Senior Insight: `unknown` Over `any`
+
+When receiving data from outside TypeScript's type system (HTTP responses, localStorage, WebSocket messages), always type it as `unknown` rather than `any`. Then use type guards to safely narrow:
+
+```typescript
+// ❌ Dangerous — any bypasses all type checking
+this.http.get<any>('/api/data').subscribe(data => {
+  data.nonExistent.deepProperty; // No TypeScript error, runtime crash
+});
+
+// ✅ Safe — unknown forces you to validate before use
+this.http.get('/api/data').pipe(
+  map((data: unknown) => {
+    if (!isUser(data)) throw new Error('Invalid response shape');
+    return data; // Now typed as User
+  })
+).subscribe(user => {
+  user.name; // Fully typed
+});
+```
+
+The discipline of using `unknown` + type guards is the difference between TypeScript as a documentation tool and TypeScript as a safety net.

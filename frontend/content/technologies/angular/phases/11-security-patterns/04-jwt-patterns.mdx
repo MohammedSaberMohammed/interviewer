@@ -1,0 +1,334 @@
+---
+title: "JWT Authentication Patterns"
+slug: "jwt-patterns"
+order: 4
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["Angular", "security", "JWT", "tokens", "refresh tokens", "localStorage", "httpOnly cookies", "authentication"]
+summary: "JWT-based authentication in Angular involves token storage strategy (localStorage vs httpOnly cookies), automatic token attachment via interceptors, refresh token rotation, and handling token expiry. Each decision has security tradeoffs."
+docsLinks:
+  - label: "Angular Security"
+    url: "https://angular.dev/best-practices/security"
+  - label: "HttpClient Interceptors"
+    url: "https://angular.dev/guide/http/interceptors"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Token Storage: The Core Decision
+
+Where you store JWTs is one of the most important security decisions in Angular auth:
+
+### localStorage / sessionStorage
+
+```typescript
+// Storing in localStorage
+localStorage.setItem('access_token', jwt);
+const token = localStorage.getItem('access_token');
+
+// ✅ Pros:
+// - Persists across page refreshes (localStorage)
+// - Easy to implement
+// - Works with any CORS configuration
+
+// ❌ Cons:
+// - Accessible to JavaScript — XSS can steal tokens
+// - If XSS vulnerability exists, attacker steals ALL user tokens
+// - No protection from malicious scripts (third-party, injected)
+```
+
+### httpOnly Cookies
+
+```typescript
+// Tokens set by server as httpOnly cookies
+// Angular CANNOT read or write httpOnly cookies
+// They're sent automatically by the browser with every request
+
+// ✅ Pros:
+// - Inaccessible to JavaScript — XSS cannot steal tokens
+// - Browser handles sending automatically
+// - Secure + SameSite attributes provide additional protection
+
+// ❌ Cons:
+// - CSRF vulnerability (requires CSRF tokens)
+// - More complex CORS configuration
+// - Server must set cookie domain correctly
+```
+
+<Callout type="warning">
+The Angular security guide recommends httpOnly cookies over localStorage when possible. If you must use localStorage, Angular's XSS protection becomes critical — any XSS vulnerability directly leads to token theft and account takeover.
+</Callout>
+
+## Auth Service with Signal State
+
+```typescript
+export interface AuthState {
+  user: User | null;
+  accessToken: string | null;
+  refreshToken: string | null;
+  isLoading: boolean;
+}
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private state = signal<AuthState>({
+    user: null,
+    accessToken: this.loadTokenFromStorage(),
+    refreshToken: this.loadRefreshFromStorage(),
+    isLoading: false,
+  });
+
+  readonly user = computed(() => this.state().user);
+  readonly accessToken = computed(() => this.state().accessToken);
+  readonly isAuthenticated = computed(() => this.state().accessToken !== null);
+
+  private http = inject(HttpClient);
+  private router = inject(Router);
+
+  login(credentials: LoginCredentials): Observable<void> {
+    return this.http.post<LoginResponse>('/api/auth/login', credentials).pipe(
+      tap(response => {
+        this.state.update(s => ({
+          ...s,
+          user: response.user,
+          accessToken: response.accessToken,
+          refreshToken: response.refreshToken,
+        }));
+
+        // Store refresh token (access token is in memory only)
+        sessionStorage.setItem('refresh_token', response.refreshToken);
+      }),
+      map(() => void 0)
+    );
+  }
+
+  logout(): void {
+    this.state.update(s => ({
+      ...s,
+      user: null,
+      accessToken: null,
+      refreshToken: null,
+    }));
+
+    sessionStorage.removeItem('refresh_token');
+    this.router.navigate(['/login']);
+  }
+
+  refreshToken(): Observable<string> {
+    const refreshToken = this.state().refreshToken;
+    if (!refreshToken) {
+      return throwError(() => new Error('No refresh token'));
+    }
+
+    return this.http.post<{ accessToken: string }>('/api/auth/refresh', { refreshToken }).pipe(
+      tap(response => {
+        this.state.update(s => ({ ...s, accessToken: response.accessToken }));
+      }),
+      map(response => response.accessToken)
+    );
+  }
+
+  private loadTokenFromStorage(): string | null {
+    // Access tokens are kept in memory only (not localStorage)
+    // Refresh tokens in sessionStorage survive page refresh but not browser close
+    return null;
+  }
+
+  private loadRefreshFromStorage(): string | null {
+    return sessionStorage.getItem('refresh_token');
+  }
+}
+```
+
+## JWT Decoding (Without Library)
+
+```typescript
+// Decode JWT payload (without verification — that's the server's job)
+function decodeJwt(token: string): Record<string, unknown> {
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new Error('Invalid JWT format');
+
+  // Decode base64url payload
+  const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(atob(payload));
+}
+
+@Injectable({ providedIn: 'root' })
+class TokenService {
+  isTokenExpired(token: string): boolean {
+    try {
+      const payload = decodeJwt(token);
+      const exp = payload['exp'] as number;
+      // exp is in seconds, Date.now() in milliseconds
+      return exp * 1000 < Date.now();
+    } catch {
+      return true; // Treat invalid token as expired
+    }
+  }
+
+  getExpiryTime(token: string): Date | null {
+    try {
+      const payload = decodeJwt(token);
+      return new Date((payload['exp'] as number) * 1000);
+    } catch {
+      return null;
+    }
+  }
+
+  getUserId(token: string): string | null {
+    try {
+      return decodeJwt(token)['sub'] as string;
+    } catch {
+      return null;
+    }
+  }
+}
+```
+
+## Proactive Token Refresh
+
+Instead of waiting for a 401, refresh the token before it expires:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class TokenRefreshService {
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  scheduleRefresh(token: string) {
+    this.cancelRefresh();
+
+    const payload = decodeJwt(token);
+    const expiresIn = (payload['exp'] as number) * 1000 - Date.now();
+
+    // Refresh 1 minute before expiry
+    const refreshIn = expiresIn - 60_000;
+
+    if (refreshIn <= 0) {
+      // Token already expired or expiring very soon — refresh immediately
+      this.authService.refreshToken().subscribe();
+      return;
+    }
+
+    this.refreshTimer = setTimeout(() => {
+      this.authService.refreshToken().subscribe({
+        next: (newToken) => this.scheduleRefresh(newToken),
+        error: () => this.authService.logout()
+      });
+    }, refreshIn);
+  }
+
+  cancelRefresh() {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+}
+```
+
+## PKCE for OAuth 2.0 (SPA Best Practice)
+
+For OAuth 2.0 flows (login with Google, Microsoft, etc.), SPAs should use PKCE (Proof Key for Code Exchange):
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class OAuthService {
+  async initiateLogin(provider: 'google' | 'microsoft') {
+    // Generate code verifier and challenge (PKCE)
+    const codeVerifier = this.generateCodeVerifier();
+    const codeChallenge = await this.generateCodeChallenge(codeVerifier);
+
+    // Store verifier for when the redirect comes back
+    sessionStorage.setItem('pkce_verifier', codeVerifier);
+
+    const authUrl = new URL(`https://${provider}.com/oauth/authorize`);
+    authUrl.searchParams.set('client_id', 'your-client-id');
+    authUrl.searchParams.set('redirect_uri', `${window.location.origin}/auth/callback`);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('code_challenge', codeChallenge);
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    authUrl.searchParams.set('scope', 'openid email profile');
+
+    window.location.href = authUrl.toString();
+  }
+
+  private generateCodeVerifier(): string {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    return btoa(String.fromCharCode(...array))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+
+  private async generateCodeChallenge(verifier: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(verifier);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return btoa(String.fromCharCode(...new Uint8Array(digest)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+}
+```
+
+<CodeChallenge
+  id="jwt-storage"
+  difficulty="advanced"
+  description="An Angular app stores JWTs in localStorage. A third-party analytics script on the same domain contains an XSS vulnerability. What's the security risk?"
+  options={[
+    "No risk — localStorage is sandboxed per domain and inaccessible to scripts",
+    "The malicious script can read localStorage and steal the JWT, gaining full access to the user's account",
+    "The risk only applies if the JWT contains PII data",
+    "The browser blocks localStorage access from third-party scripts"
+  ]}
+  correctAnswer={1}
+  explanation="Any JavaScript executing on your page — whether your code, third-party analytics, chat widgets, or injected malicious code — can access localStorage via localStorage.getItem('access_token'). Third-party scripts run in the same JavaScript context as your app. An XSS vulnerability in ANY script on your domain (including third-party) can steal localStorage tokens. This is why security-conscious applications store access tokens in memory only (JavaScript variable) and refresh tokens in httpOnly cookies — httpOnly cookies are inaccessible to JavaScript, so XSS cannot steal them even with full script execution."
+/>
+
+## The Token Storage Strategy Matrix
+
+| Strategy | XSS Safe | CSRF Safe | Survives Refresh | Survives Tab Close |
+|----------|----------|-----------|-----------------|-------------------|
+| Memory only | ✅ | ✅ | ❌ | ❌ |
+| sessionStorage | ❌ | ✅ | ✅ | ❌ |
+| localStorage | ❌ | ✅ | ✅ | ✅ |
+| httpOnly cookie | ✅ | ❌ (needs CSRF token) | ✅ | ✅ |
+
+**Recommended for most SPAs**: Access token in memory (JS variable/signal) + Refresh token in httpOnly cookie or sessionStorage. This means users re-authenticate when they open a new tab (acceptable) but are protected from XSS token theft.
+
+## Senior Insight: Silent Refresh
+
+For applications where users should stay logged in across page refreshes without httpOnly cookies:
+
+```typescript
+// On app initialization, attempt to silently get new tokens
+// using a refresh token from sessionStorage
+@Injectable({ providedIn: 'root' })
+class AppInitializerService {
+  initialize(): Observable<void> {
+    const refreshToken = sessionStorage.getItem('refresh_token');
+    if (!refreshToken) return of(void 0);
+
+    return this.authService.refreshToken().pipe(
+      catchError(() => {
+        // Refresh failed — user needs to log in again
+        sessionStorage.removeItem('refresh_token');
+        return of(void 0);
+      }),
+      map(() => void 0)
+    );
+  }
+}
+
+// Register as app initializer
+export const appConfig: ApplicationConfig = {
+  providers: [
+    {
+      provide: APP_INITIALIZER,
+      useFactory: (appInit: AppInitializerService) =>
+        () => appInit.initialize(),
+      deps: [AppInitializerService],
+      multi: true
+    }
+  ]
+};
+```

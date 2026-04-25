@@ -1,0 +1,204 @@
+---
+title: "Async Validators"
+slug: "async-validators"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "async validators", "AsyncValidatorFn", "pending state", "debouncing"]
+summary: "Async validators check values against server-side constraints like username uniqueness. They return Observables and must handle debouncing to avoid excessive API calls."
+docsLinks:
+  - label: "Async Validation"
+    url: "https://angular.dev/guide/forms/form-validation#implementing-custom-async-validator"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Async Validators?
+
+Some validation rules require a server check — is this username taken? Does this coupon code exist? Is this email registered? Synchronous validators can't make HTTP calls, so Angular provides `AsyncValidatorFn` which returns a `Promise` or `Observable`.
+
+## Basic Async Validator
+
+```typescript
+import { AbstractControl, AsyncValidatorFn, ValidationErrors } from '@angular/forms';
+import { Observable, timer } from 'rxjs';
+import { switchMap, map, catchError } from 'rxjs/operators';
+import { of } from 'rxjs';
+
+// Async validator that checks username availability
+export function usernameAvailable(userService: UserService): AsyncValidatorFn {
+  return (control: AbstractControl): Observable<ValidationErrors | null> => {
+    if (!control.value) return of(null); // Skip validation for empty
+
+    return timer(400).pipe( // Debounce: wait 400ms after last change
+      switchMap(() => userService.checkUsername(control.value)),
+      map(isAvailable => isAvailable ? null : { usernameTaken: true }),
+      catchError(() => of(null)) // Don't block submission on API errors
+    );
+  };
+}
+
+// Usage — async validators are the THIRD argument to FormControl
+const usernameControl = new FormControl(
+  '',
+  [Validators.required, Validators.minLength(3)], // Sync validators (2nd arg)
+  [usernameAvailable(inject(UserService))]          // Async validators (3rd arg)
+);
+```
+
+<Callout type="warning">
+Angular runs async validators only when all synchronous validators pass. This is an optimization — no point making an HTTP call if the value is already invalid. Always combine async validators with appropriate sync validators (required, minLength, etc.).
+</Callout>
+
+## The `pending` State
+
+While an async validator is running, the control is in `'PENDING'` status:
+
+```html
+<div>
+  <input formControlName="username">
+
+  @if (username.pending) {
+    <span class="checking">Checking availability...</span>
+  }
+  @if (username.valid && !username.pending) {
+    <span class="available">✓ Available</span>
+  }
+  @if (username.errors?.['usernameTaken'] && username.touched) {
+    <span class="taken">✗ Username already taken</span>
+  }
+</div>
+```
+
+```typescript
+// In component
+get username() { return this.form.controls.username; }
+
+// Access status programmatically
+this.username.statusChanges.subscribe(status => {
+  // 'VALID' | 'INVALID' | 'PENDING'
+  this.checkingAvailability = status === 'PENDING';
+});
+```
+
+## Debouncing in Async Validators
+
+Without debouncing, every keystroke triggers an HTTP request:
+
+```typescript
+// ❌ No debounce — HTTP request on every keystroke
+export function checkEmail(http: HttpClient): AsyncValidatorFn {
+  return (control: AbstractControl) =>
+    http.get<{ exists: boolean }>(`/api/check-email?email=${control.value}`).pipe(
+      map(res => res.exists ? { emailTaken: true } : null)
+    );
+}
+
+// ✅ With debounce — waits for user to stop typing
+export function checkEmail(http: HttpClient): AsyncValidatorFn {
+  return (control: AbstractControl) =>
+    timer(400).pipe( // Wait 400ms after the last change
+      switchMap(() =>
+        http.get<{ exists: boolean }>(`/api/check-email?email=${control.value}`)
+      ),
+      map(res => res.exists ? { emailTaken: true } : null),
+      catchError(() => of(null))
+    );
+}
+```
+
+The `timer(400)` technique works because `switchMap` cancels the previous Observable (and thus the previous timer) when a new control value arrives. Only when the user stops typing for 400ms does the HTTP call fire.
+
+## Using `inject()` in Async Validators
+
+```typescript
+// Modern pattern — validator factory using inject() in class field initializer
+@Component({ selector: 'app-register' })
+class RegisterComponent {
+  private userService = inject(UserService);
+
+  // Create the validator inside the injection context
+  private checkUsername: AsyncValidatorFn = (control) =>
+    timer(400).pipe(
+      switchMap(() => this.userService.isUsernameAvailable(control.value)),
+      map(available => available ? null : { usernameTaken: true })
+    );
+
+  form = new FormGroup({
+    username: new FormControl(
+      '',
+      [Validators.required, Validators.minLength(3)],
+      [this.checkUsername]
+    ),
+  });
+}
+```
+
+## Async Validator with caching
+
+```typescript
+// Avoid re-checking the same value
+export function cachedUsernameCheck(userService: UserService): AsyncValidatorFn {
+  const cache = new Map<string, ValidationErrors | null>();
+
+  return (control: AbstractControl): Observable<ValidationErrors | null> => {
+    const value = control.value;
+    if (!value) return of(null);
+
+    // Return cached result immediately
+    if (cache.has(value)) return of(cache.get(value)!);
+
+    return timer(400).pipe(
+      switchMap(() => userService.isAvailable(value)),
+      map(available => {
+        const result = available ? null : { usernameTaken: true };
+        cache.set(value, result); // Cache the result
+        return result;
+      })
+    );
+  };
+}
+```
+
+<CodeChallenge
+  id="async-validator-pending"
+  difficulty="intermediate"
+  description="An async validator returns an Observable. The user types 'alice', triggering the validator. Before the HTTP request completes, they type 'alicex'. What happens to the first HTTP request?"
+  options={[
+    "Both requests complete and the latest result wins",
+    "The first request is cancelled because switchMap cancels the previous Observable",
+    "Both results are stored and compared — whichever is worse shows the error",
+    "Angular queues them — the second doesn't start until the first completes"
+  ]}
+  correctAnswer={1}
+  explanation="The timer(400) + switchMap combination means each new keystroke triggers switchMap to unsubscribe from the previous timer Observable. If 'alice' was typed and then 'alicex' before 400ms passes, the 'alice' timer is cancelled before it fires — no HTTP request for 'alice'. Only 'alicex' triggers the HTTP call after its 400ms. This is the exact debouncing mechanism that prevents excessive API calls."
+/>
+
+## `updateOn` — Control When Validation Runs
+
+By default, validation (sync and async) runs on every value change. For expensive validators, change this:
+
+```typescript
+// Run validators only on blur (when user leaves the field)
+const emailControl = new FormControl('', {
+  validators: [Validators.required, Validators.email],
+  asyncValidators: [checkEmailAvailability(userService)],
+  updateOn: 'blur', // 'change' (default) | 'blur' | 'submit'
+});
+
+// Or on the entire form group
+const form = new FormGroup({
+  email: new FormControl('', [Validators.required]),
+  username: new FormControl(''),
+}, { updateOn: 'blur' });
+```
+
+## Senior Insight: Async Validator UX Patterns
+
+Good async validation UX:
+1. **Show "checking..." indicator** during the pending state
+2. **Don't show errors until touched** — same as sync validators
+3. **Fail gracefully** — if the API call fails, return `null` (valid) rather than blocking the user
+4. **Cache results** — avoid re-checking values the user already tried
+5. **Only check when necessary** — apply sync validators first; async runs only if sync passes

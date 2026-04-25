@@ -1,0 +1,297 @@
+---
+title: "Performance Profiling"
+slug: "profiling"
+order: 7
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "performance", "profiling", "Angular DevTools", "flame chart", "Core Web Vitals", "Lighthouse"]
+summary: "Profiling before optimizing is essential — Angular DevTools shows change detection cycles, flame charts identify expensive operations, and Core Web Vitals measure real-user impact. Optimization without measurement is guesswork."
+docsLinks:
+  - label: "Angular DevTools"
+    url: "https://angular.dev/tools/devtools"
+  - label: "Angular Performance"
+    url: "https://angular.dev/best-practices/runtime-performance"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Profiling Mindset
+
+> "Premature optimization is the root of all evil" — Donald Knuth
+
+Before optimizing, measure. Common profiling mistakes:
+- Adding `OnPush` everywhere without checking if CD is actually the bottleneck
+- Switching to signals when HTTP response time is the real issue
+- Micro-optimizing template expressions when bundle size is the actual problem
+
+Profiling tools tell you **where** time is actually being spent.
+
+## Angular DevTools
+
+The Angular DevTools browser extension is the primary tool for Angular-specific performance issues.
+
+**Installation:** Chrome/Edge → Extensions → Angular DevTools
+
+### Component Inspector
+
+```
+DevTools → Angular tab → Components
+```
+
+Shows the complete component tree with:
+- Input values for selected components
+- Change detection status
+- Injected dependencies
+
+### Profiler
+
+```
+DevTools → Angular tab → Profiler → Record
+```
+
+The profiler records change detection cycles:
+
+```
+Change Detection Cycle #1 (triggered by: click)
+  Duration: 12.3ms
+  ├── AppComponent: 0.2ms ✓
+  ├── NavbarComponent: 0.1ms ✓
+  ├── UserDashboardComponent: 8.4ms ← SLOW
+  │   ├── UserCardComponent: 3.1ms
+  │   ├── UserCardComponent: 2.8ms
+  │   └── UserCardComponent: 2.5ms
+  └── FooterComponent: 0.1ms ✓
+```
+
+Red bars indicate slow components. Click any bar to see:
+- What triggered the check
+- Which `@Input()` values changed
+- Time spent in each lifecycle hook
+
+### Reading the Flame Chart
+
+```
+[                   AppComponent (12ms)                          ]
+[ NavbarComponent (0.1ms) ][ UserDashboard (8.4ms) ][ Footer ]
+                           [ Card ][ Card ][ Card ]
+```
+
+- Width = time spent
+- Depth = component nesting
+- Hover for exact values
+
+Common patterns and their meaning:
+- **Wide bar at top** → Root component is doing expensive work in its template
+- **Many same-width bars** → A list component checking unnecessarily often
+- **Deep nesting all the same width** → Entire subtree checking when only root changes
+
+## Browser DevTools: Performance Tab
+
+For general JavaScript performance (not Angular-specific):
+
+```
+Chrome DevTools → Performance → Record → Interact → Stop
+```
+
+Look for:
+- **Long Tasks** (> 50ms): Red markers in the main thread timeline
+- **Forced reflows**: JavaScript → Layout → Paint cycles that block rendering
+- **Memory growth**: Increasing JS heap without GC — potential leak
+
+### Reading the Flame Chart in DevTools
+
+```
+Main Thread:
+|--- Angular change detection ---|
+  |-- zone.js microtask --|
+    |-- UserListComponent.ngDoCheck --|
+      |-- expensive computation in template --|
+        |--- sortUsers() x 200 times ---|
+```
+
+Each function call stack frame shows:
+- Self time (time in this function, excluding callees)
+- Total time (self + callees)
+- Source location
+
+## Core Web Vitals
+
+Google's metrics for user-perceived performance, measured in the field:
+
+### LCP — Largest Contentful Paint
+Time until the largest image or text block is rendered. Target: < 2.5 seconds.
+
+```
+LCP issues in Angular:
+- Large hero image not preloaded
+- SSR not configured (HTML arrives empty)
+- Initial bundle too large (delays Angular bootstrap)
+```
+
+### INP — Interaction to Next Paint (replaced FID in 2024)
+Time from user interaction to visual update. Target: < 200ms.
+
+```
+INP issues in Angular:
+- Slow change detection cycle triggered by user events
+- Synchronous expensive computation in event handlers
+- Too many components without OnPush
+```
+
+### CLS — Cumulative Layout Shift
+Visual stability — how much content jumps around. Target: < 0.1.
+
+```
+CLS issues in Angular:
+- @defer placeholders without fixed dimensions
+- Images without explicit width/height
+- Dynamic content insertion that pushes existing content
+```
+
+## Lighthouse Audit
+
+```bash
+# CLI Lighthouse (more accurate than DevTools tab)
+npx lighthouse https://your-app.com \
+  --view \
+  --output html \
+  --only-categories performance
+```
+
+Or in DevTools → Lighthouse tab → Performance → Analyze page load.
+
+Key metrics to track:
+- **Performance Score**: Composite score 0-100
+- **Time to Interactive**: When app fully responds to input
+- **Total Blocking Time**: Sum of long task blocking time
+- **Speed Index**: How quickly content is visually populated
+
+## Angular-Specific Profiling Scenarios
+
+### Slow Change Detection
+
+```typescript
+// Profile shows UserListComponent taking 20ms per CD cycle
+// Suspected cause: expensive template expression
+
+// ❌ Bad — function called on every CD cycle
+template: `
+  @for (user of getSortedUsers(); track user.id) { ... }
+`
+
+// ✅ Fixed — computation moved to signal or computed
+sortedUsers = computed(() =>
+  [...this.users()].sort((a, b) => a.name.localeCompare(b.name))
+);
+template: `
+  @for (user of sortedUsers(); track user.id) { ... }
+`
+```
+
+### Memory Leaks
+
+```typescript
+// Chrome DevTools → Memory → Take Heap Snapshot (before)
+// Navigate around the app
+// Chrome DevTools → Memory → Take Heap Snapshot (after)
+// Compare — look for component instances that weren't GC'd
+
+// Common culprit: Observable subscriptions not cleaned up
+@Component({})
+class LeakyComponent implements OnInit {
+  ngOnInit() {
+    // ❌ This subscription never unsubscribes — component stays in memory
+    this.webSocketService.messages$.subscribe(msg => {
+      this.messages.push(msg);
+    });
+  }
+}
+```
+
+### Identifying Change Detection Frequency
+
+```typescript
+// Add logging to pinpoint over-checking
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+class SuspectComponent {
+  ngDoCheck() {
+    console.count('SuspectComponent checked');
+  }
+}
+
+// If this logs hundreds of times during a simple action,
+// the component is being checked too frequently
+```
+
+<CodeChallenge
+  id="profiling-approach"
+  difficulty="advanced"
+  description="Angular DevTools profiler shows AppComponent takes 15ms per change detection cycle. The component has an *ngFor with 500 items and no trackBy. What should be investigated FIRST?"
+  options={[
+    "Add OnPush to all child components immediately",
+    "Profile the template expressions — look for method calls in the *ngFor that execute 500 times per cycle",
+    "Switch the entire app to signals",
+    "Implement virtual scrolling for the list"
+  ]}
+  correctAnswer={1}
+  explanation="The profiler already identified AppComponent as slow — now investigate WHY. 500 items × a method call in the template = 500 method executions per CD cycle. Method calls in *ngFor templates (like getDisplayName(user) or computeStatus(user)) are the most common cause of slow CD cycles. Check for: (1) method calls in the template binding, (2) complex pipes that recalculate on every check, (3) deep property access chains. After fixing those, THEN consider OnPush, trackBy, or virtual scrolling based on remaining profile data."
+/>
+
+## Performance Budget in CI
+
+```json
+// angular.json — fail build if budget exceeded
+{
+  "budgets": [
+    {
+      "type": "initial",
+      "maximumWarning": "500kb",
+      "maximumError": "1mb"
+    }
+  ]
+}
+```
+
+```bash
+# Automate Lighthouse in CI
+npx lhci autorun \
+  --collect.url=http://localhost:4200 \
+  --assert.preset=lighthouse:recommended \
+  --assert.assertions.performance=["error", {"minScore": 0.9}]
+```
+
+## Senior Insight: The Profiling Workflow
+
+The systematic approach separates good engineers from great ones:
+
+```
+1. Identify the symptom
+   → "Clicking the filter button feels sluggish"
+
+2. Measure (don't guess)
+   → Record with Angular DevTools profiler
+   → Record with Chrome DevTools Performance tab
+   → Run Lighthouse for baseline metrics
+
+3. Identify the actual bottleneck
+   → Angular DevTools: which component is slow?
+   → Chrome DevTools: which function is taking the most time?
+   → Heap snapshot: any unexpected retained objects?
+
+4. Form a hypothesis
+   → "FilterPanelComponent is checking 47 times per filter interaction
+      because it's not using OnPush and the parent re-renders frequently"
+
+5. Make ONE change
+   → Add OnPush to FilterPanelComponent
+
+6. Measure again
+   → Did it improve? By how much?
+
+7. Repeat until target performance is achieved
+```
+
+Interviewers ask about profiling not to test tool knowledge but to see if you have a **systematic, measurement-driven approach** to performance — as opposed to applying random optimizations and hoping for the best.

@@ -1,0 +1,241 @@
+---
+title: "Custom Validators"
+slug: "validators"
+order: 3
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "validators", "custom validators", "cross-field validation", "ValidatorFn"]
+summary: "Built-in validators cover basics, but real forms need custom logic — password confirmation, username format, date range validation. Custom validators are plain functions that return an error object or null."
+docsLinks:
+  - label: "Form Validation"
+    url: "https://angular.dev/guide/forms/form-validation"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Built-in Validators
+
+Angular provides validators for common constraints:
+
+```typescript
+import { Validators } from '@angular/forms';
+
+const control = new FormControl('', [
+  Validators.required,          // Not empty
+  Validators.email,             // Valid email format
+  Validators.minLength(8),      // At least 8 characters
+  Validators.maxLength(100),    // At most 100 characters
+  Validators.min(0),            // Numeric minimum
+  Validators.max(100),          // Numeric maximum
+  Validators.pattern(/^\d{5}$/), // Must be exactly 5 digits
+  Validators.requiredTrue,      // Must be boolean true (checkboxes)
+  Validators.nullValidator,     // Always valid (no-op)
+]);
+
+// Compose validators
+const required = Validators.compose([Validators.required, Validators.email]);
+```
+
+## Custom Synchronous Validators
+
+A validator is a function that receives an `AbstractControl` and returns either `null` (valid) or an error object (invalid):
+
+```typescript
+import { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+
+// Simple validator function
+export function noWhitespace(control: AbstractControl): ValidationErrors | null {
+  const hasWhitespace = (control.value ?? '').includes(' ');
+  return hasWhitespace ? { noWhitespace: { value: control.value } } : null;
+}
+
+// Validator factory — configurable validators
+export function forbiddenValues(forbidden: string[]): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const isForbidden = forbidden.includes(control.value);
+    return isForbidden
+      ? { forbiddenValue: { value: control.value, forbidden } }
+      : null;
+  };
+}
+
+// Usage
+new FormControl('', [
+  Validators.required,
+  noWhitespace,
+  forbiddenValues(['admin', 'root', 'system']),
+])
+```
+
+## Cross-Field Validation (Group-Level)
+
+Validate relationships between fields by applying the validator to the FormGroup:
+
+```typescript
+// Password confirmation validator
+export function passwordsMatch(group: AbstractControl): ValidationErrors | null {
+  const password = group.get('password')?.value;
+  const confirm = group.get('confirmPassword')?.value;
+
+  if (!password || !confirm) return null; // Skip if either is empty
+
+  return password === confirm ? null : { passwordsMismatch: true };
+}
+
+// Date range validator
+export function dateRangeValid(group: AbstractControl): ValidationErrors | null {
+  const start = group.get('startDate')?.value as Date | null;
+  const end = group.get('endDate')?.value as Date | null;
+
+  if (!start || !end) return null;
+
+  return start <= end ? null : { dateRangeInvalid: { start, end } };
+}
+
+// Apply to FormGroup, not a FormControl
+const registrationForm = new FormGroup(
+  {
+    password: new FormControl('', [Validators.required, Validators.minLength(8)]),
+    confirmPassword: new FormControl('', Validators.required),
+  },
+  { validators: passwordsMatch } // Group-level validator
+);
+
+// Display the cross-field error
+// <div *ngIf="registrationForm.errors?.['passwordsMismatch']">Passwords don't match</div>
+```
+
+<Callout type="tip">
+When adding cross-field validators to a FormGroup, the errors appear on the GROUP (not individual controls). Check `form.errors?.['errorKey']` not `form.controls.someField.errors?.['errorKey']`.
+</Callout>
+
+## Template-Driven Custom Validators as Directives
+
+For template-driven forms, validators must be directives:
+
+```typescript
+import { Directive } from '@angular/core';
+import { NG_VALIDATORS, Validator, AbstractControl } from '@angular/forms';
+
+@Directive({
+  selector: '[appNoWhitespace]',
+  standalone: true,
+  providers: [
+    { provide: NG_VALIDATORS, useExisting: NoWhitespaceDirective, multi: true }
+  ]
+})
+export class NoWhitespaceDirective implements Validator {
+  validate(control: AbstractControl): ValidationErrors | null {
+    return noWhitespace(control); // Reuse the function!
+  }
+}
+
+// Usage in template
+<input [(ngModel)]="username" name="username" appNoWhitespace>
+```
+
+## Display Validation Errors
+
+```typescript
+@Component({
+  template: `
+    <form [formGroup]="form" (ngSubmit)="onSubmit()">
+      <div class="field">
+        <input formControlName="username" placeholder="Username">
+        @if (username.invalid && (username.touched || submitted)) {
+          <div class="errors">
+            @if (username.errors?.['required']) {
+              <p>Username is required</p>
+            }
+            @if (username.errors?.['noWhitespace']) {
+              <p>Username cannot contain spaces</p>
+            }
+            @if (username.errors?.['forbiddenValue']) {
+              <p>'{{ username.errors?.['forbiddenValue'].value }}' is reserved</p>
+            }
+          </div>
+        }
+      </div>
+      <button type="submit">Register</button>
+    </form>
+  `
+})
+class RegisterComponent {
+  submitted = false;
+  form = new FormGroup({
+    username: new FormControl('', [
+      Validators.required,
+      noWhitespace,
+      forbiddenValues(['admin', 'root']),
+    ])
+  });
+
+  get username() { return this.form.controls.username; }
+
+  onSubmit() {
+    this.submitted = true;
+    if (this.form.valid) { /* submit */ }
+    else this.form.markAllAsTouched(); // Show all errors
+  }
+}
+```
+
+## Composing Validators
+
+```typescript
+// Create a reusable "strong password" validator
+export const strongPasswordValidators: ValidatorFn[] = [
+  Validators.minLength(8),
+  Validators.pattern(/[A-Z]/),   // At least one uppercase
+  Validators.pattern(/[a-z]/),   // At least one lowercase
+  Validators.pattern(/[0-9]/),   // At least one digit
+  Validators.pattern(/[^A-Za-z0-9]/), // At least one special char
+];
+
+// Combine into one using compose
+export const strongPassword = Validators.compose(strongPasswordValidators)!;
+
+// Use it
+new FormControl('', [Validators.required, strongPassword])
+```
+
+<CodeChallenge
+  id="custom-validator-return"
+  difficulty="intermediate"
+  description="A custom validator function should return what when the control's value is VALID?"
+  options={[
+    "true — indicating the validation passed",
+    "An empty object {} — an empty error object means valid",
+    "null — returning null signals no errors",
+    "undefined — indicating the validator has no opinion"
+  ]}
+  correctAnswer={2}
+  explanation="Angular's ValidatorFn signature is (control: AbstractControl) => ValidationErrors | null. Return null to indicate the control is VALID (no errors). Return an error object like { myError: true } or { myError: { value: control.value } } to indicate invalid. Returning undefined technically also works (falsy), but null is the documented contract. Returning {} would be treated as invalid by Angular (truthy object)."
+/>
+
+## Senior Insight: Validator Testing
+
+Custom validators should be pure functions — this makes them trivially testable:
+
+```typescript
+// validator.spec.ts
+describe('noWhitespace', () => {
+  it('should return null for a valid value', () => {
+    const control = new FormControl('validusername');
+    expect(noWhitespace(control)).toBeNull();
+  });
+
+  it('should return an error for a value with whitespace', () => {
+    const control = new FormControl('invalid username');
+    expect(noWhitespace(control)).toEqual({ noWhitespace: { value: 'invalid username' } });
+  });
+
+  it('should return null for an empty value', () => {
+    const control = new FormControl('');
+    expect(noWhitespace(control)).toBeNull(); // Let required validator handle empty
+  });
+});
+```
+
+No TestBed, no async, no mocking — just function calls. This is the advantage of keeping validators as plain functions.

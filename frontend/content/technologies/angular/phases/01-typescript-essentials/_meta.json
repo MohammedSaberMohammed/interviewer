@@ -1,0 +1,21 @@
+{
+  "slug": "01-typescript-essentials",
+  "number": 1,
+  "title": "TypeScript Essentials",
+  "subtitle": "Types, interfaces, generics, decorators — the foundation Angular relies on",
+  "level": "junior",
+  "estimatedHours": 8,
+  "emoji": "📘",
+  "color": "blue",
+  "description": "Master the TypeScript features Angular is built on. From basic types and interfaces through advanced generics, decorators, and utility types — everything you need to write type-safe Angular applications and answer TypeScript interview questions confidently.",
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Distinguish between type aliases and interfaces and know when to use each",
+    "Write and constrain generic functions and classes",
+    "Use union and intersection types to model complex domains",
+    "Apply type guards to safely narrow types at runtime",
+    "Understand how TypeScript decorators work and why Angular uses them",
+    "Leverage utility types (Partial, Pick, Omit, Record) to avoid code duplication",
+    "Enable and understand strict mode settings that prevent real bugs"
+  ]
+}

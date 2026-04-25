@@ -1,0 +1,310 @@
+---
+title: "Component Testing"
+slug: "component-testing"
+order: 2
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "testing", "ComponentFixture", "DebugElement", "detectChanges", "fakeAsync", "tick"]
+summary: "Component tests verify that a component renders correctly, responds to user interactions, and integrates with its template. ComponentFixture provides access to the component instance, the native DOM, and Angular's change detection."
+docsLinks:
+  - label: "Component Testing"
+    url: "https://angular.dev/guide/testing/components-basics"
+  - label: "ComponentFixture"
+    url: "https://angular.dev/api/core/testing/ComponentFixture"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## ComponentFixture
+
+`ComponentFixture<T>` is the wrapper around a component created in tests. It gives you access to everything:
+
+```typescript
+const fixture = TestBed.createComponent(UserCardComponent);
+
+fixture.componentInstance    // The component class instance
+fixture.nativeElement        // The root DOM element (HTMLElement)
+fixture.debugElement         // DebugElement wrapper (Angular-specific)
+fixture.detectChanges()      // Trigger change detection manually
+fixture.whenStable()         // Returns promise that resolves when async work completes
+fixture.destroy()            // Destroy the component
+```
+
+## Basic Component Test Structure
+
+```typescript
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { UserCardComponent } from './user-card.component';
+
+describe('UserCardComponent', () => {
+  let component: UserCardComponent;
+  let fixture: ComponentFixture<UserCardComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [UserCardComponent] // Standalone component
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(UserCardComponent);
+    component = fixture.componentInstance;
+  });
+
+  it('should create', () => {
+    expect(component).toBeTruthy();
+  });
+
+  it('should display user name', () => {
+    // Set @Input() via componentInstance
+    component.user = { id: '1', name: 'Alice', email: 'alice@example.com' };
+
+    // Run change detection to update the DOM
+    fixture.detectChanges();
+
+    // Query the DOM
+    const nameEl = fixture.nativeElement.querySelector('.user-name');
+    expect(nameEl.textContent).toContain('Alice');
+  });
+});
+```
+
+## detectChanges() — Critical Concept
+
+Angular's test environment does NOT run change detection automatically. You must call `fixture.detectChanges()` explicitly:
+
+```typescript
+it('should update when input changes', () => {
+  component.user = { name: 'Alice' };
+  // DOM still shows old state here — no CD has run
+
+  fixture.detectChanges();
+  // NOW the DOM reflects the component's state
+
+  expect(fixture.nativeElement.querySelector('h2').textContent).toContain('Alice');
+
+  // Update the input
+  component.user = { name: 'Bob' };
+  fixture.detectChanges(); // Must call again to update DOM
+
+  expect(fixture.nativeElement.querySelector('h2').textContent).toContain('Bob');
+});
+```
+
+<Callout type="tip">
+The first `fixture.detectChanges()` also runs `ngOnInit`. Call it after setting up inputs if your `ngOnInit` depends on them. Avoid calling `detectChanges()` in `beforeEach` if you want to set component inputs before initialization.
+</Callout>
+
+## Querying the DOM
+
+```typescript
+const nativeEl = fixture.nativeElement; // HTMLElement — use native DOM APIs
+
+// Native DOM queries
+nativeEl.querySelector('.btn-submit')
+nativeEl.querySelectorAll('li')
+nativeEl.querySelector('input')?.value
+
+// DebugElement queries (more Angular-aware)
+const de = fixture.debugElement;
+de.query(By.css('.btn-submit'))        // First match
+de.queryAll(By.css('li'))              // All matches
+de.query(By.directive(SpinnerComponent)) // By component/directive type
+
+// Access native element from DebugElement
+de.query(By.css('h1')).nativeElement.textContent
+```
+
+## Testing User Interactions
+
+```typescript
+it('should emit event when button clicked', () => {
+  const deleteSpy = jasmine.createSpy('delete');
+  component.user = { id: '1', name: 'Alice' };
+  component.delete.subscribe(deleteSpy);  // Subscribe to @Output
+  fixture.detectChanges();
+
+  // Simulate click
+  const button = fixture.nativeElement.querySelector('[data-testid="delete-btn"]');
+  button.click();
+
+  expect(deleteSpy).toHaveBeenCalledWith('1');
+});
+
+it('should update binding on input change', () => {
+  fixture.detectChanges();
+
+  const input = fixture.nativeElement.querySelector('input[name="search"]');
+  input.value = 'Angular';
+  input.dispatchEvent(new Event('input'));
+  fixture.detectChanges();
+
+  expect(component.searchTerm).toBe('Angular');
+});
+```
+
+## Testing @Input() and @Output()
+
+```typescript
+@Component({
+  selector: 'app-counter',
+  template: `
+    <span>{{ count }}</span>
+    <button (click)="increment()">+</button>
+  `
+})
+class CounterComponent {
+  @Input() count = 0;
+  @Output() countChange = new EventEmitter<number>();
+
+  increment() {
+    this.count++;
+    this.countChange.emit(this.count);
+  }
+}
+
+describe('CounterComponent', () => {
+  let component: CounterComponent;
+  let fixture: ComponentFixture<CounterComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [CounterComponent]
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(CounterComponent);
+    component = fixture.componentInstance;
+  });
+
+  it('should display initial count from input', () => {
+    component.count = 5;
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('span').textContent).toBe('5');
+  });
+
+  it('should emit countChange when incremented', () => {
+    const emitSpy = jasmine.createSpy('countChange');
+    component.countChange.subscribe(emitSpy);
+    component.count = 3;
+    fixture.detectChanges();
+
+    fixture.nativeElement.querySelector('button').click();
+
+    expect(emitSpy).toHaveBeenCalledWith(4);
+  });
+});
+```
+
+## Async Testing: fakeAsync and tick
+
+For testing code with timers, delays, and async operations:
+
+```typescript
+import { fakeAsync, tick, flush } from '@angular/core/testing';
+
+it('should show success message after debounce', fakeAsync(() => {
+  component.searchTerm = 'Angular';
+  component.onSearch();
+
+  // Fast-forward 300ms (the debounce duration)
+  tick(300);
+
+  fixture.detectChanges();
+
+  const results = fixture.nativeElement.querySelectorAll('.search-result');
+  expect(results.length).toBeGreaterThan(0);
+
+  // Clean up any remaining timers
+  flush();
+}));
+
+it('should hide spinner after async operation', fakeAsync(() => {
+  component.loadData();
+  fixture.detectChanges();
+
+  // Spinner visible
+  expect(fixture.nativeElement.querySelector('app-spinner')).toBeTruthy();
+
+  // Resolve the async operation
+  tick(); // Resolve microtasks
+
+  fixture.detectChanges();
+
+  // Spinner gone
+  expect(fixture.nativeElement.querySelector('app-spinner')).toBeNull();
+}));
+```
+
+## Testing with Observables (async/await)
+
+```typescript
+it('should display loaded users', async () => {
+  const users = [{ id: '1', name: 'Alice' }];
+  mockUserService.getUsers.and.returnValue(of(users));
+
+  fixture.detectChanges(); // Triggers ngOnInit → loads users
+
+  // Wait for async operations (resolves Promises and Observables)
+  await fixture.whenStable();
+
+  fixture.detectChanges(); // Update DOM with loaded data
+
+  const userCards = fixture.nativeElement.querySelectorAll('app-user-card');
+  expect(userCards.length).toBe(1);
+});
+```
+
+## Testing ngIf / @if
+
+```typescript
+it('should show error message when loading fails', async () => {
+  mockService.getData.and.returnValue(throwError(() => new Error('Failed')));
+
+  fixture.detectChanges();
+  await fixture.whenStable();
+  fixture.detectChanges();
+
+  const errorEl = fixture.nativeElement.querySelector('.error-message');
+  expect(errorEl).toBeTruthy();
+  expect(errorEl.textContent).toContain('Failed');
+
+  const content = fixture.nativeElement.querySelector('.content');
+  expect(content).toBeNull(); // Content hidden when error
+});
+```
+
+<CodeChallenge
+  id="component-detect-changes"
+  difficulty="intermediate"
+  description="A component test sets component.title = 'Hello' but the DOM still shows the old title. detectChanges() was NOT called after setting the property. Why does Angular work this way in tests?"
+  options={[
+    "This is a bug — Angular should auto-detect changes in tests",
+    "Tests use manual change detection to give precise control — you decide exactly when Angular processes bindings, preventing flaky tests from auto-triggered CD",
+    "Change detection only works with @Input() properties, not direct property assignment",
+    "detectChanges() is only needed for async operations"
+  ]}
+  correctAnswer={1}
+  explanation="Angular's test environment uses manual change detection by default (ComponentFixtureAutoDetect is false). This is intentional: automatic CD in tests can cause race conditions, false positives, and makes it impossible to test the state between user actions and UI updates. Manual detectChanges() gives you exact control: set state → detectChanges() → assert DOM. You can test the intermediate states that automatic CD would skip over. To enable automatic CD (not recommended for most tests): provide { provide: ComponentFixtureAutoDetect, useValue: true }."
+/>
+
+## Senior Insight: Test IDs for Stable Selectors
+
+```typescript
+// ❌ CSS-class selectors break when designers rename classes
+fixture.nativeElement.querySelector('.btn-primary.submit-action')
+
+// ❌ Text content is fragile — breaks when copy changes
+fixture.nativeElement.querySelector('button:contains("Submit")')
+
+// ✅ data-testid is stable — only changes when functionality changes
+fixture.nativeElement.querySelector('[data-testid="submit-button"]')
+
+// In the template:
+// <button data-testid="submit-button" type="submit">Submit</button>
+```
+
+`data-testid` attributes are conventions that:
+- Don't affect CSS or functionality
+- Signal "this element is important to tests"
+- Survive design refactors
+- Can be stripped from production builds if desired

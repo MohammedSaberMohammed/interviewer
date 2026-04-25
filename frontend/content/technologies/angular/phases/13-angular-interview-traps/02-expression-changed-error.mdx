@@ -1,0 +1,235 @@
+---
+title: "ExpressionChangedAfterItHasBeenCheckedError"
+slug: "expression-changed-error"
+order: 2
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "traps", "ExpressionChangedAfterItHasBeenCheckedError", "change detection", "lifecycle hooks", "AfterViewInit"]
+summary: "ExpressionChangedAfterItHasBeenCheckedError is Angular's most confusing runtime error. It only appears in dev mode and means a binding changed after Angular finished checking it. Understanding when it fires and how to fix it requires deep knowledge of Angular's CD lifecycle."
+docsLinks:
+  - label: "Angular Change Detection"
+    url: "https://angular.dev/guide/change-detection"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What the Error Means
+
+```
+Error: ExpressionChangedAfterItHasBeenCheckedError:
+Expression has changed after it was checked.
+Previous value: 'title: null'. Current value: 'title: Hello World'
+```
+
+Angular's dev mode runs change detection TWICE:
+1. First pass: check bindings and update DOM
+2. Second pass: verify bindings haven't changed since first pass
+
+If a binding changes between pass 1 and pass 2, Angular throws this error. It never appears in production (only one CD pass runs), but it indicates a genuine design problem that could cause unpredictable behavior.
+
+## The Classic Trigger: ngAfterViewInit
+
+```typescript
+@Component({
+  template: `
+    <h1>{{ title }}</h1>
+    <app-child (titleChange)="title = $event"></app-child>
+  `
+})
+class ParentComponent implements AfterViewInit {
+  title = '';
+
+  ngAfterViewInit() {
+    // ❌ Setting title HERE causes the error!
+    // ngAfterViewInit fires AFTER the parent's CD check completes
+    // But before the second verification pass
+    // title was '' during check, is 'Hello' during verification
+    this.title = 'Hello'; // Error!
+  }
+}
+```
+
+Timeline:
+```
+CD Check Pass 1:
+  → ParentComponent.template checked: title = '' → DOM shows ''
+  → ChildComponent rendered
+  → ngAfterViewInit fires: this.title = 'Hello' ← MODIFICATION
+
+CD Verification Pass (dev mode only):
+  → ParentComponent.template checked: title = 'Hello' ≠ '' → ERROR!
+```
+
+## Common Triggers
+
+### 1. Setting Parent Binding from AfterViewInit
+
+```typescript
+// ❌ Don't modify parent bindings in AfterViewInit
+ngAfterViewInit() {
+  this.isLoading = false; // Binding used in parent template → error
+  this.items = this.processItems(); // Modifying data used in template → error
+}
+
+// ✅ Fix: Use a setTimeout (defers to next CD cycle)
+ngAfterViewInit() {
+  setTimeout(() => {
+    this.isLoading = false; // Runs after current CD cycle completes
+  });
+}
+
+// ✅ Better fix: Use a signal (scheduled asynchronously)
+isLoading = signal(true);
+
+ngAfterViewInit() {
+  // Signals schedule updates — no immediate binding modification
+  this.isLoading.set(false);
+}
+```
+
+### 2. Child Emitting to Parent During Check
+
+```typescript
+// ❌ Child emitting in ngOnInit causes parent to update during its own check
+@Component({})
+class ChildComponent implements OnInit {
+  @Output() ready = new EventEmitter<boolean>();
+
+  ngOnInit() {
+    this.ready.emit(true); // Parent listens and updates → parent already checked!
+  }
+}
+
+@Component({
+  template: `<app-child (ready)="isReady = $event"></app-child>`
+})
+class ParentComponent {
+  isReady = false; // Bound in template → checked in CD → modified during same cycle
+}
+```
+
+### 3. Async Pipe with Immediate Synchronous Observable
+
+```typescript
+// ❌ If data$ emits synchronously, async pipe updates mid-cycle
+@Component({
+  template: `{{ data$ | async }}`
+})
+class Component {
+  // of() emits synchronously — may cause timing issues
+  data$ = of('initial value');
+}
+
+// ✅ Use asynchronous source
+data$ = of('initial value').pipe(delay(0)); // Delays one tick
+```
+
+### 4. Service Observable Emitting During View Check
+
+```typescript
+@Component({})
+class Component implements OnInit {
+  title = '';
+
+  ngOnInit() {
+    // If loadingService emits synchronously in some cases:
+    this.loadingService.status$.subscribe(status => {
+      // ❌ If this fires synchronously during a CD cycle:
+      this.title = status; // Error possible
+    });
+  }
+}
+```
+
+## Fixes
+
+### Fix 1: setTimeout (Defer to Next CD Cycle)
+
+```typescript
+ngAfterViewInit() {
+  setTimeout(() => {
+    this.title = 'Updated'; // Runs after current CD completes
+  });
+}
+```
+
+This works but is a smell — it hides the root cause. Use only when refactoring is impractical.
+
+### Fix 2: Signals (Correct Architectural Fix)
+
+```typescript
+// Signals schedule updates asynchronously — they don't cause the error
+title = signal('');
+
+ngAfterViewInit() {
+  this.title.set('Updated'); // ✅ Angular schedules this properly
+}
+```
+
+### Fix 3: ChangeDetectorRef.detectChanges()
+
+```typescript
+private cdr = inject(ChangeDetectorRef);
+
+ngAfterViewInit() {
+  this.title = 'Updated';
+  this.cdr.detectChanges(); // Run CD immediately for this component
+  // Now when the verification pass runs, title is already 'Updated'
+}
+```
+
+### Fix 4: Restructure to Use Earlier Lifecycle
+
+```typescript
+// If you can set the value before view init, do so
+// ngOnInit runs before child components are initialized
+ngOnInit() {
+  // ✅ Safe to set bindings here — parent view not yet checked at this point
+  this.title = 'Set in ngOnInit';
+}
+```
+
+<CodeChallenge
+  id="expression-changed-lifecycle"
+  difficulty="advanced"
+  description="Why does ExpressionChangedAfterItHasBeenCheckedError only appear in development mode and not in production?"
+  options={[
+    "Production mode has a bug that suppresses the error",
+    "Angular runs a second 'verification' CD pass only in dev mode to catch this error. In production, only one CD pass runs, so the error condition is never checked",
+    "The error is caught and logged silently in production",
+    "Production uses OnPush by default which prevents the error condition"
+  ]}
+  correctAnswer={1}
+  explanation="Angular dev mode runs change detection twice: once to update the DOM and once to verify the bindings haven't changed (a 'double check'). The second pass is purely diagnostic — it catches bugs where code modifies bindings in lifecycle hooks that fire after the first CD pass. In production, Angular skips the verification pass for performance, so if a binding does change between hypothetical passes, the UI may show inconsistent state without any error. This is why the error must be fixed even though it's 'only a dev mode error' — it indicates a real timing problem that produces incorrect behavior in production."
+/>
+
+## Detecting the Problematic Component
+
+The error message tells you which binding changed, but not always which component caused it. Use the stack trace:
+
+```
+ExpressionChangedAfterItHasBeenCheckedError
+  at ...checkBindings...
+  at ...checkForChanges...
+  at ChildComponent.ngAfterViewInit  ← Usually the culprit
+  at ...detectChanges...
+  at AppComponent.constructor
+```
+
+Angular DevTools can also help — enable the "Detect out-of-sync bindings" option.
+
+## Senior Insight: The Design Signal
+
+This error is Angular's way of telling you that your component has a cause-and-effect ordering problem:
+
+- A component reads data during CD (template binding)
+- Then another lifecycle hook modifies that data
+- Angular sees inconsistency
+
+The real fix is always architectural:
+1. Set data before the component renders (constructor, ngOnInit for simple cases)
+2. Derive data reactively using signals or RxJS (changes propagate safely)
+3. If you must set data after view init, schedule it asynchronously
+
+Code that triggers this error often has a deeper problem: components are too tightly coupled through child-to-parent state updates, or services emit values at inconvenient times. Fixing the error symptom while ignoring the design issue leads to `setTimeout` patches that make the code harder to understand.

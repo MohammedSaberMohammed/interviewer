@@ -1,0 +1,251 @@
+---
+title: "Injection Tokens"
+slug: "injection-tokens"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "InjectionToken", "DI token", "providers", "configuration"]
+summary: "InjectionToken lets you inject non-class values into your services and components with full type safety. Essential for providing configuration, primitives, and factory functions."
+docsLinks:
+  - label: "Angular InjectionToken"
+    url: "https://angular.dev/api/core/InjectionToken"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why You Need InjectionToken
+
+Angular's DI system uses **tokens** as keys in the injector registry. For class-based services, the class itself is the token. But what about non-class values — strings, numbers, configuration objects, or function types? That's where `InjectionToken` comes in.
+
+```typescript
+// ❌ String tokens — avoid these
+// Collisions, no type safety, no IDE support
+providers: [{ provide: 'API_URL', useValue: 'https://api.example.com' }]
+inject('API_URL'); // Returns 'any' — no type information
+
+// ✅ InjectionToken — typed, collision-free
+const API_URL = new InjectionToken<string>('API_URL');
+providers: [{ provide: API_URL, useValue: 'https://api.example.com' }]
+inject(API_URL); // Returns string — fully typed
+```
+
+## Creating and Using InjectionTokens
+
+```typescript
+import { InjectionToken, inject } from '@angular/core';
+
+// Define the token with a type parameter and description
+export const API_URL = new InjectionToken<string>(
+  'api-url', // Description — used in error messages
+);
+
+export const PAGE_SIZE = new InjectionToken<number>('page-size');
+
+export const APP_CONFIG = new InjectionToken<AppConfig>('app-config');
+
+// Register in providers
+const appProviders: Provider[] = [
+  { provide: API_URL, useValue: 'https://api.example.com' },
+  { provide: PAGE_SIZE, useValue: 20 },
+  {
+    provide: APP_CONFIG,
+    useValue: {
+      apiUrl: 'https://api.example.com',
+      featureFlags: { darkMode: true, betaFeatures: false },
+    }
+  },
+];
+
+// Inject using inject() function
+@Injectable({ providedIn: 'root' })
+class ApiService {
+  private apiUrl = inject(API_URL); // string — fully typed
+  private pageSize = inject(PAGE_SIZE); // number
+  private config = inject(APP_CONFIG); // AppConfig
+
+  getUsers(): Observable<User[]> {
+    return this.http.get<User[]>(`${this.apiUrl}/users?limit=${this.pageSize}`);
+  }
+}
+
+// Or via constructor (requires @Inject decorator)
+@Injectable()
+class LegacyService {
+  constructor(
+    @Inject(API_URL) private apiUrl: string,
+    @Inject(PAGE_SIZE) private pageSize: number,
+  ) {}
+}
+```
+
+## Token Factories — Default Values
+
+`InjectionToken` supports a factory function that provides a default value if no provider is registered:
+
+```typescript
+// Token with factory — provides a default if not overridden
+export const LOG_LEVEL = new InjectionToken<'debug' | 'warn' | 'error'>(
+  'log-level',
+  {
+    providedIn: 'root',
+    factory: () => environment.production ? 'error' : 'debug'
+  }
+);
+
+// No provider needed — the factory handles it
+// But you can still override in specific contexts:
+providers: [
+  { provide: LOG_LEVEL, useValue: 'warn' }
+]
+```
+
+<Callout type="tip">
+When you add a `factory` to an `InjectionToken`, it becomes self-registering — like `providedIn: 'root'` for services. You don't need to add it to any providers array, and it's tree-shakeable.
+</Callout>
+
+## Real-World: Environment Configuration
+
+A common pattern is providing typed environment configuration:
+
+```typescript
+// app.config.ts
+export interface AppConfig {
+  apiUrl: string;
+  wsUrl: string;
+  auth: {
+    clientId: string;
+    domain: string;
+  };
+  features: {
+    darkMode: boolean;
+    analytics: boolean;
+  };
+}
+
+export const APP_CONFIG = new InjectionToken<AppConfig>('APP_CONFIG');
+
+// main.ts
+bootstrapApplication(AppComponent, {
+  providers: [
+    {
+      provide: APP_CONFIG,
+      useValue: {
+        apiUrl: environment.apiUrl,
+        wsUrl: environment.wsUrl,
+        auth: { clientId: environment.authClientId, domain: environment.authDomain },
+        features: { darkMode: true, analytics: environment.production },
+      } satisfies AppConfig, // 'satisfies' ensures type correctness
+    }
+  ]
+});
+
+// Usage in any service
+@Injectable({ providedIn: 'root' })
+class AuthService {
+  private config = inject(APP_CONFIG);
+
+  login() {
+    // this.config.auth.clientId is fully typed
+    const url = `https://${this.config.auth.domain}/authorize?client_id=${this.config.auth.clientId}`;
+    window.location.href = url;
+  }
+}
+```
+
+## Providing Functions with InjectionToken
+
+You can inject functions — useful for testable utility functions:
+
+```typescript
+// Token for a date factory function (easy to mock in tests)
+export const NOW = new InjectionToken<() => Date>(
+  'now-factory',
+  { providedIn: 'root', factory: () => () => new Date() }
+);
+
+@Injectable({ providedIn: 'root' })
+class AuditService {
+  private now = inject(NOW);
+
+  createAuditLog(action: string) {
+    return {
+      action,
+      timestamp: this.now(), // Easily mockable in tests!
+      userId: this.authService.currentUserId,
+    };
+  }
+}
+
+// In tests — inject a fixed date
+TestBed.configureTestingModule({
+  providers: [
+    { provide: NOW, useValue: () => new Date('2024-01-01') }
+  ]
+});
+```
+
+## Multi-Providers with Tokens
+
+Combine InjectionToken with `multi: true` for extensible registries:
+
+```typescript
+// Plugin system
+export interface AppPlugin {
+  name: string;
+  initialize(): void;
+}
+
+export const APP_PLUGINS = new InjectionToken<AppPlugin[]>('APP_PLUGINS');
+
+providers: [
+  { provide: APP_PLUGINS, useClass: AnalyticsPlugin, multi: true },
+  { provide: APP_PLUGINS, useClass: CrashReportingPlugin, multi: true },
+  { provide: APP_PLUGINS, useClass: FeatureFlagPlugin, multi: true },
+]
+
+@Injectable({ providedIn: 'root' })
+class PluginManager {
+  private plugins = inject(APP_PLUGINS); // AppPlugin[]
+
+  initializeAll() {
+    this.plugins.forEach(plugin => plugin.initialize());
+  }
+}
+```
+
+<CodeChallenge
+  id="injection-token-usage"
+  difficulty="intermediate"
+  description="Why should you use InjectionToken instead of a string as a DI token for a configuration value?"
+  options={[
+    "InjectionToken is required for non-class values — strings don't work as DI tokens",
+    "InjectionToken provides type safety and prevents naming collisions between libraries",
+    "InjectionToken is faster at runtime than string lookup",
+    "Strings are deprecated as DI tokens in Angular 15+"
+  ]}
+  correctAnswer={1}
+  explanation="Strings work as DI tokens but have two critical problems: (1) no type information — inject('MY_TOKEN') returns 'any'; (2) collision risk — two different libraries using the same string 'API_URL' will overwrite each other. InjectionToken instances are unique objects (no collision) and the generic type parameter InjectionToken<string> makes inject(MY_TOKEN) return 'string'. Strings aren't deprecated but are strongly discouraged."
+/>
+
+## Senior Insight: Token Naming Conventions
+
+Export your tokens with `export const` from a dedicated file (e.g., `tokens.ts`). Use `SCREAMING_SNAKE_CASE`. Co-locate with their type interface:
+
+```typescript
+// tokens.ts
+export interface PaginationConfig {
+  defaultPageSize: number;
+  maxPageSize: number;
+}
+
+export const PAGINATION_CONFIG = new InjectionToken<PaginationConfig>(
+  'pagination-config',
+  {
+    providedIn: 'root',
+    factory: () => ({ defaultPageSize: 20, maxPageSize: 100 })
+  }
+);
+```
+
+This makes tokens discoverable, type-safe, and self-documenting.

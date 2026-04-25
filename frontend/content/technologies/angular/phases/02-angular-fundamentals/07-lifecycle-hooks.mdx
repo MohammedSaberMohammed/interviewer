@@ -1,0 +1,242 @@
+---
+title: "Lifecycle Hooks"
+slug: "lifecycle-hooks"
+order: 7
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["Angular", "lifecycle hooks", "ngOnInit", "ngOnDestroy", "ngOnChanges", "ngAfterViewInit"]
+summary: "Angular's lifecycle hooks let you tap into component creation, change detection, and destruction. Knowing when each hook fires and what's available at that point prevents common initialization and memory leak bugs."
+docsLinks:
+  - label: "Angular Lifecycle Hooks"
+    url: "https://angular.dev/guide/components/lifecycle"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Component Lifecycle
+
+Angular manages the lifecycle of every component and directive — from creation and initial rendering through change detection runs to destruction. Lifecycle hooks are methods you implement on your component class that Angular calls at specific points in this lifecycle.
+
+## The Hook Execution Order
+
+```
+constructor()          ← Not a hook, but runs first
+ngOnChanges()          ← Before ngOnInit if @Inputs exist; then on each input change
+ngOnInit()             ← Once, after first ngOnChanges
+ngDoCheck()            ← Every change detection run (expensive — use carefully)
+ngAfterContentInit()   ← Once, after content projection
+ngAfterContentChecked() ← Every CD run, after content check
+ngAfterViewInit()      ← Once, after component's view (and child views) initialized
+ngAfterViewChecked()   ← Every CD run, after view check
+ngOnDestroy()          ← Just before component is destroyed
+```
+
+## `constructor` vs `ngOnInit`
+
+This is one of the most common Angular interview questions:
+
+```typescript
+@Component({ selector: 'app-user' })
+class UserComponent implements OnInit {
+  @Input() userId!: string;
+
+  constructor(private userService: UserService) {
+    // ✅ OK: Inject services, initialize non-dependent defaults
+    // ❌ NOT OK: Access @Input() values — they're not set yet
+    // ❌ NOT OK: Access DOM (view doesn't exist)
+    // ❌ NOT OK: Subscribe to services that need @Input values
+    console.log(this.userId); // undefined — @Input not yet bound
+  }
+
+  ngOnInit(): void {
+    // ✅ @Input values are available here
+    // ✅ Safe to subscribe to services
+    // ❌ Still too early to access @ViewChild — view not yet initialized
+    this.userService.getUser(this.userId).subscribe(/* ... */);
+  }
+}
+```
+
+**Rule of thumb**: `constructor` = dependency injection only. `ngOnInit` = component initialization.
+
+## `ngOnChanges` — Detecting Input Changes
+
+`ngOnChanges` fires before `ngOnInit` and then every time an `@Input()` value changes:
+
+```typescript
+import { Component, Input, OnChanges, SimpleChanges } from '@angular/core';
+
+@Component({ selector: 'app-chart' })
+class ChartComponent implements OnChanges {
+  @Input() data: number[] = [];
+  @Input() title = '';
+
+  ngOnChanges(changes: SimpleChanges): void {
+    // changes is a map of changed @Input property names to SimpleChange objects
+    if (changes['data']) {
+      const { previousValue, currentValue, firstChange } = changes['data'];
+      console.log('Data changed:', previousValue, '->', currentValue);
+      if (!firstChange) { // Skip first change (ngOnInit will handle it)
+        this.refreshChart();
+      }
+    }
+
+    if (changes['title'] && !changes['title'].firstChange) {
+      this.updateTitle(changes['title'].currentValue);
+    }
+  }
+}
+```
+
+<Callout type="tip">
+With signal-based inputs (Angular 17.1+), use `effect()` instead of `ngOnChanges`. Effects automatically track signal dependencies and re-run when they change: `effect(() => { this.refreshChart(this.data()); })`. This is simpler and more composable than `ngOnChanges`.
+</Callout>
+
+## `ngAfterViewInit` — DOM Access
+
+The `@ViewChild` and `@ViewChildren` queries are populated after the view is initialized:
+
+```typescript
+import { Component, ViewChild, ElementRef, AfterViewInit } from '@angular/core';
+
+@Component({
+  template: `<canvas #chartCanvas></canvas>`
+})
+class ChartComponent implements AfterViewInit {
+  @ViewChild('chartCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
+
+  private chart?: Chart;
+
+  ngAfterViewInit(): void {
+    // ✅ Now the canvas element exists in the DOM
+    const ctx = this.canvasRef.nativeElement.getContext('2d');
+    this.chart = new Chart(ctx!, { /* config */ });
+  }
+}
+```
+
+**Warning**: Modifying component state in `ngAfterViewInit` can trigger `ExpressionChangedAfterItHasBeenCheckedError` in development mode. Use `setTimeout(() => { this.updateState(); }, 0)` or `ChangeDetectorRef.detectChanges()` to resolve.
+
+## `ngOnDestroy` — Cleanup
+
+`ngOnDestroy` is critical for preventing memory leaks:
+
+```typescript
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Subject, takeUntil } from 'rxjs';
+
+@Component({ selector: 'app-realtime-data' })
+class RealtimeDataComponent implements OnInit, OnDestroy {
+  private destroy$ = new Subject<void>();
+
+  data: any[] = [];
+
+  constructor(private dataService: DataService) {}
+
+  ngOnInit(): void {
+    // takeUntil(this.destroy$) automatically unsubscribes on destroy
+    this.dataService.getRealtimeData().pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(data => this.data = data);
+
+    this.dataService.getUpdates().pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(update => this.handleUpdate(update));
+  }
+
+  ngOnDestroy(): void {
+    this.destroy$.next();  // Triggers all takeUntil operators
+    this.destroy$.complete(); // Completes the subject itself
+
+    // Also clean up: timers, WebSocket connections, third-party library instances
+  }
+}
+```
+
+Modern alternative using `DestroyRef` (Angular 16+):
+
+```typescript
+import { Component, OnInit, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+
+@Component({ selector: 'app-realtime-data' })
+class RealtimeDataComponent implements OnInit {
+  private destroyRef = inject(DestroyRef);
+
+  ngOnInit(): void {
+    this.dataService.getRealtimeData().pipe(
+      takeUntilDestroyed(this.destroyRef) // No ngOnDestroy needed!
+    ).subscribe(data => this.data = data);
+  }
+}
+```
+
+## `ngAfterContentInit` — Projected Content
+
+Runs after content projected via `<ng-content>` is initialized:
+
+```typescript
+@Component({
+  selector: 'app-card',
+  template: `
+    <div class="card">
+      <ng-content select="[card-header]"></ng-content>
+      <div class="card-body">
+        <ng-content></ng-content>
+      </div>
+    </div>
+  `
+})
+class CardComponent implements AfterContentInit {
+  @ContentChild('cardHeader') header?: ElementRef;
+
+  ngAfterContentInit(): void {
+    // Projected content is now available
+    if (this.header) {
+      console.log('Card has a header');
+    }
+  }
+}
+```
+
+## Interface Implementations
+
+Always implement the corresponding interface — it provides TypeScript type-checking and signals intent:
+
+```typescript
+// Don't do this — no compile-time safety
+class MyComponent {
+  ngOnInit() { /* ... */ }  // Typo: ngOninit won't be caught
+}
+
+// Do this — TypeScript catches wrong method names
+class MyComponent implements OnInit, OnDestroy {
+  ngOnInit(): void { /* ... */ }
+  ngOnDestroy(): void { /* ... */ }
+}
+```
+
+<CodeChallenge
+  id="lifecycle-hooks-order"
+  difficulty="intermediate"
+  description="A component with @Input() userId has a @ViewChild('canvas') canvasRef. In which lifecycle hook is it safe to both read userId AND access canvasRef.nativeElement?"
+  options={[
+    "constructor — everything is available after DI",
+    "ngOnInit — inputs are set and view exists",
+    "ngAfterViewInit — inputs are set and ViewChild queries are populated",
+    "ngAfterContentInit — content projection is complete"
+  ]}
+  correctAnswer={2}
+  explanation="@Input() values are available from ngOnChanges/ngOnInit onwards. @ViewChild queries are populated in ngAfterViewInit — not before. So ngAfterViewInit is the first hook where BOTH are available. Be aware: modifying component state in ngAfterViewInit can cause ExpressionChangedAfterItHasBeenCheckedError in development mode."
+/>
+
+## Senior Insight: Hooks in Signal-Based Components
+
+With Angular's signal-based reactivity, several lifecycle hooks become less necessary:
+
+- `ngOnChanges` → `effect()` that reads signal inputs
+- `ngOnInit` subscription management → `toSignal()` handles subscribe/unsubscribe
+- `ngOnDestroy` for RxJS cleanup → `takeUntilDestroyed()` with `DestroyRef`
+
+The trend in Angular 17+ is toward "hookless" components where reactive state flows automatically through signals rather than imperative lifecycle callbacks. However, `ngAfterViewInit` for third-party DOM libraries and `ngOnDestroy` for non-RxJS cleanup (WebSockets, timers, third-party instances) remain essential.

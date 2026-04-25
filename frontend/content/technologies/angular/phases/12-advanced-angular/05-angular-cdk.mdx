@@ -1,0 +1,316 @@
+---
+title: "Angular CDK"
+slug: "angular-cdk"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "CDK", "Component Dev Kit", "Overlay", "DragDrop", "a11y", "Portal", "FocusTrap"]
+summary: "The Angular Component Dev Kit provides headless, unstyled building blocks for complex UI patterns — drag-and-drop, overlays, virtual scrolling, accessibility utilities, and more. It's the foundation of Angular Material and ideal for building design systems."
+docsLinks:
+  - label: "Angular CDK"
+    url: "https://material.angular.io/cdk/categories"
+  - label: "CDK Overlay"
+    url: "https://material.angular.io/cdk/overlay/overview"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What is the CDK?
+
+The Angular Component Dev Kit (CDK) separates reusable, framework-level UI patterns from Angular Material's opinionated styling. You can use CDK to:
+- Build your own component library with your design system
+- Add complex behaviors (drag-drop, virtual scroll, overlays) without Material theming
+- Implement accessibility patterns correctly without reinventing them
+
+```bash
+npm install @angular/cdk
+```
+
+## Drag and Drop
+
+```typescript
+import { DragDropModule, CdkDragDrop, moveItemInArray, transferArrayItem } from '@angular/cdk/drag-drop';
+
+@Component({
+  selector: 'app-kanban',
+  standalone: true,
+  imports: [DragDropModule],
+  template: `
+    <div class="kanban-board">
+      @for (column of columns; track column.id) {
+        <div class="column">
+          <h3>{{ column.title }}</h3>
+
+          <div cdkDropList
+               [id]="column.id"
+               [cdkDropListData]="column.items"
+               [cdkDropListConnectedTo]="getConnectedLists(column.id)"
+               (cdkDropListDropped)="drop($event)">
+
+            @for (item of column.items; track item.id) {
+              <div class="card" cdkDrag>
+                <h4>{{ item.title }}</h4>
+                <p>{{ item.description }}</p>
+              </div>
+            }
+
+          </div>
+        </div>
+      }
+    </div>
+  `
+})
+class KanbanComponent {
+  columns: KanbanColumn[] = [
+    { id: 'todo', title: 'To Do', items: [...] },
+    { id: 'in-progress', title: 'In Progress', items: [] },
+    { id: 'done', title: 'Done', items: [] },
+  ];
+
+  getConnectedLists(currentId: string): string[] {
+    return this.columns.map(c => c.id).filter(id => id !== currentId);
+  }
+
+  drop(event: CdkDragDrop<KanbanItem[]>) {
+    if (event.previousContainer === event.container) {
+      // Reorder within same list
+      moveItemInArray(event.container.data, event.previousIndex, event.currentIndex);
+    } else {
+      // Move between lists
+      transferArrayItem(
+        event.previousContainer.data,
+        event.container.data,
+        event.previousIndex,
+        event.currentIndex
+      );
+    }
+  }
+}
+```
+
+## Overlay: Custom Dropdown / Popover
+
+The Overlay module lets you create positioned floating elements:
+
+```typescript
+import { Overlay, OverlayRef, OverlayConfig } from '@angular/cdk/overlay';
+import { ComponentPortal } from '@angular/cdk/portal';
+
+@Component({
+  selector: 'app-dropdown-trigger',
+  template: `<button (click)="openDropdown()" #triggerRef>Open Menu</button>`
+})
+class DropdownTriggerComponent implements OnDestroy {
+  @ViewChild('triggerRef') triggerRef!: ElementRef;
+
+  private overlay = inject(Overlay);
+  private overlayRef: OverlayRef | null = null;
+
+  openDropdown() {
+    if (this.overlayRef?.hasAttached()) return;
+
+    // Configure the overlay position
+    const positionStrategy = this.overlay
+      .position()
+      .flexibleConnectedTo(this.triggerRef)
+      .withPositions([
+        { originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top' },
+        { originX: 'start', originY: 'top', overlayX: 'start', overlayY: 'bottom' }, // Flip up if no space
+      ]);
+
+    this.overlayRef = this.overlay.create({
+      positionStrategy,
+      scrollStrategy: this.overlay.scrollStrategies.reposition(),
+      hasBackdrop: true,
+      backdropClass: 'cdk-overlay-transparent-backdrop',
+    });
+
+    // Render the dropdown component inside the overlay
+    const portal = new ComponentPortal(DropdownMenuComponent);
+    this.overlayRef.attach(portal);
+
+    // Close on backdrop click
+    this.overlayRef.backdropClick().subscribe(() => this.closeDropdown());
+  }
+
+  closeDropdown() {
+    this.overlayRef?.dispose();
+    this.overlayRef = null;
+  }
+
+  ngOnDestroy() {
+    this.closeDropdown();
+  }
+}
+```
+
+## Portal: Render Content Elsewhere in the DOM
+
+```typescript
+import { PortalModule, TemplatePortal, CdkPortalOutlet } from '@angular/cdk/portal';
+
+@Component({
+  selector: 'app-layout',
+  imports: [PortalModule],
+  template: `
+    <!-- Portal outlet in the header -->
+    <header>
+      <nav>...</nav>
+      <div class="header-actions">
+        <ng-template [cdkPortalOutlet]="headerActionsPortal"></ng-template>
+      </div>
+    </header>
+
+    <main>
+      <router-outlet></router-outlet>
+    </main>
+  `
+})
+class LayoutComponent {
+  headerActionsPortal: TemplatePortal | null = null;
+
+  setHeaderActions(portal: TemplatePortal) {
+    this.headerActionsPortal = portal;
+  }
+}
+
+// Child component projects content into the header via portal
+@Component({
+  imports: [PortalModule],
+  template: `
+    <ng-template #headerActions>
+      <button (click)="save()">Save</button>
+      <button (click)="cancel()">Cancel</button>
+    </ng-template>
+
+    <!-- Main content... -->
+  `
+})
+class EditPageComponent implements OnInit {
+  @ViewChild('headerActions', { read: TemplateRef })
+  headerActionsTemplate!: TemplateRef<unknown>;
+
+  private layout = inject(LayoutComponent);
+  private viewContainerRef = inject(ViewContainerRef);
+
+  ngOnInit() {
+    const portal = new TemplatePortal(this.headerActionsTemplate, this.viewContainerRef);
+    this.layout.setHeaderActions(portal);
+  }
+}
+```
+
+## Focus Trap: Accessible Modals
+
+```typescript
+import { A11yModule, FocusTrap, FocusTrapFactory } from '@angular/cdk/a11y';
+
+@Component({
+  selector: 'app-modal',
+  imports: [A11yModule],
+  template: `
+    <div class="modal-overlay" role="dialog" aria-modal="true"
+         [attr.aria-labelledby]="titleId">
+      <div class="modal-content" cdkTrapFocus cdkTrapFocusAutoCapture>
+        <h2 [id]="titleId">{{ title }}</h2>
+        <ng-content></ng-content>
+        <button (click)="close()">Close</button>
+      </div>
+    </div>
+  `
+})
+class ModalComponent {
+  @Input() title = '';
+  titleId = `modal-title-${Math.random().toString(36).slice(2)}`;
+
+  // cdkTrapFocus: Tab key won't leave the modal
+  // cdkTrapFocusAutoCapture: Automatically focuses first focusable element
+}
+```
+
+## Virtual Scroll (CDK)
+
+Already covered in Phase 09, but in context of CDK:
+
+```typescript
+import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
+
+@Component({
+  imports: [ScrollingModule],
+  template: `
+    <cdk-virtual-scroll-viewport itemSize="48" class="viewport">
+      <div *cdkVirtualFor="let item of items; trackBy: trackById">
+        {{ item.name }}
+      </div>
+    </cdk-virtual-scroll-viewport>
+  `
+})
+class VirtualListComponent {
+  @ViewChild(CdkVirtualScrollViewport) viewport!: CdkVirtualScrollViewport;
+}
+```
+
+## Stepper
+
+```typescript
+import { CdkStepperModule, CdkStepper } from '@angular/cdk/stepper';
+
+@Component({
+  selector: 'app-checkout-stepper',
+  imports: [CdkStepperModule],
+  template: `
+    <cdk-stepper #stepper>
+      <cdk-step label="Cart" [completed]="cartValid()">
+        <app-cart-step (next)="stepper.next()" />
+      </cdk-step>
+
+      <cdk-step label="Shipping" [completed]="shippingValid()">
+        <app-shipping-step (next)="stepper.next()" (back)="stepper.previous()" />
+      </cdk-step>
+
+      <cdk-step label="Payment">
+        <app-payment-step (submit)="submitOrder()" (back)="stepper.previous()" />
+      </cdk-step>
+    </cdk-stepper>
+
+    <!-- Custom step indicators -->
+    <div class="step-indicators">
+      @for (step of stepper.steps; track step; let i = $index) {
+        <div [class.active]="stepper.selectedIndex === i"
+             [class.completed]="step.completed">
+          {{ step.label }}
+        </div>
+      }
+    </div>
+  `
+})
+class CheckoutComponent {}
+```
+
+<CodeChallenge
+  id="cdk-overlay-disposal"
+  difficulty="advanced"
+  description="An overlay is created with overlayRef = overlay.create(...) and content is attached. The component that created it is destroyed (navigation away). What happens to the overlay?"
+  options={[
+    "Angular automatically destroys the overlay when the component is destroyed",
+    "The overlay remains visible — floating above all content — until manually disposed",
+    "The overlay is removed when the next change detection cycle runs",
+    "The overlay is automatically removed when the component's ngOnDestroy is triggered"
+  ]}
+  correctAnswer={1}
+  explanation="Overlays are attached to the document body (or a configured container), not to the component's DOM. Angular's component lifecycle (ngOnDestroy) doesn't automatically clean up overlays. If the component is destroyed without calling overlayRef.dispose(), the overlay panel stays visible in the DOM — a memory leak and UX bug. Always call overlayRef.dispose() in ngOnDestroy. The pattern is: create overlay in constructor/ngOnInit, save reference, dispose in ngOnDestroy. Many Angular Material dialogs and tooltips do this internally — the CDK requires manual management when used directly."
+/>
+
+## Senior Insight: CDK vs Material vs Custom
+
+| Use Case | Recommendation |
+|----------|----------------|
+| Rapid internal tooling | Angular Material (styled, complete) |
+| Custom design system | CDK (behavior without style) |
+| Performance-critical list | CDK Virtual Scroll |
+| Accessible modal | CDK Focus Trap + ARIA attributes |
+| Drag and drop board | CDK DragDrop |
+| Tooltip on any element | CDK Overlay (or attribute directive) |
+
+CDK's value: it provides correctly-implemented, accessible, tested implementations of complex interaction patterns. Building drag-and-drop from scratch with correct keyboard navigation, screen reader support, and cross-browser compatibility takes weeks. CDK provides it in minutes. Knowing when to leverage CDK vs build from scratch demonstrates architectural maturity.

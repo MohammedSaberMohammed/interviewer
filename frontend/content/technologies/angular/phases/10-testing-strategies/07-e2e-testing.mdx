@@ -1,0 +1,334 @@
+---
+title: "E2E Testing with Playwright"
+slug: "e2e-testing"
+order: 7
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "testing", "E2E", "Playwright", "Cypress", "integration testing", "page object model"]
+summary: "End-to-end tests verify the full user journey through a real browser. Playwright is the modern choice for Angular E2E testing, offering cross-browser support, auto-waiting, and powerful selectors. The Page Object Model pattern keeps tests maintainable."
+docsLinks:
+  - label: "Angular Testing"
+    url: "https://angular.dev/guide/testing"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## E2E vs Unit vs Integration Tests
+
+The testing pyramid for Angular:
+
+```
+        /E2E\           Few — full browser, full stack
+       /------\         Slow, expensive, fragile if poorly written
+      /  Integ  \       Some — TestBed with routing, real services
+     /------------\
+    /  Unit Tests  \    Many — isolated, fast, focused
+   /----------------\
+```
+
+**E2E tests** verify that the full application works from the user's perspective: real browser, real HTTP (usually), real DOM interactions. They catch issues that unit tests miss — routing wiring, API contract mismatches, CSS that hides elements.
+
+## Playwright Setup
+
+```bash
+# Install Playwright
+npm install --save-dev @playwright/test
+
+# Install browsers
+npx playwright install
+
+# Generate config
+npx playwright codegen  # Interactive recorder
+```
+
+```typescript
+// playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  fullyParallel: true,
+  reporter: 'html',
+
+  use: {
+    baseURL: 'http://localhost:4200',
+    trace: 'on-first-retry', // Capture trace on failure
+  },
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'Mobile Chrome', use: { ...devices['Pixel 5'] } },
+  ],
+
+  // Start Angular dev server before tests
+  webServer: {
+    command: 'ng serve',
+    url: 'http://localhost:4200',
+    reuseExistingServer: !process.env['CI'],
+  },
+});
+```
+
+## Basic E2E Test
+
+```typescript
+// e2e/login.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Login Flow', () => {
+  test('should login successfully with valid credentials', async ({ page }) => {
+    await page.goto('/login');
+
+    // Fill form
+    await page.fill('[data-testid="email-input"]', 'user@example.com');
+    await page.fill('[data-testid="password-input"]', 'password123');
+
+    // Click submit
+    await page.click('[data-testid="login-button"]');
+
+    // Assert redirect to dashboard
+    await expect(page).toHaveURL('/dashboard');
+
+    // Assert content loaded
+    await expect(page.locator('[data-testid="welcome-message"]'))
+      .toContainText('Welcome back');
+  });
+
+  test('should show error for invalid credentials', async ({ page }) => {
+    await page.goto('/login');
+
+    await page.fill('[data-testid="email-input"]', 'wrong@example.com');
+    await page.fill('[data-testid="password-input"]', 'wrongpassword');
+    await page.click('[data-testid="login-button"]');
+
+    // Stay on login page
+    await expect(page).toHaveURL('/login');
+
+    // Show error
+    await expect(page.locator('[data-testid="error-message"]'))
+      .toContainText('Invalid credentials');
+  });
+});
+```
+
+## Playwright Auto-Waiting
+
+Playwright automatically waits for elements to be actionable — one of its key advantages over older tools:
+
+```typescript
+// These all auto-wait — no explicit waits needed:
+await page.click('button');              // Waits for button to be visible + enabled
+await page.fill('input', 'value');       // Waits for input to be enabled
+await page.waitForURL('/dashboard');     // Waits for navigation to complete
+
+// Assertions auto-retry until assertion passes or timeout
+await expect(page.locator('.success')).toBeVisible();        // Retries up to timeout
+await expect(page.locator('h1')).toContainText('Dashboard'); // Retries
+
+// ❌ Avoid explicit waits — they make tests slow and brittle
+await page.waitForTimeout(2000); // Never do this
+```
+
+## Page Object Model (POM)
+
+The POM pattern encapsulates page interactions, making tests readable and maintainable:
+
+```typescript
+// e2e/pages/login.page.ts
+import { Page, Locator } from '@playwright/test';
+
+export class LoginPage {
+  private page: Page;
+
+  // Locator properties
+  readonly emailInput: Locator;
+  readonly passwordInput: Locator;
+  readonly loginButton: Locator;
+  readonly errorMessage: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.emailInput = page.locator('[data-testid="email-input"]');
+    this.passwordInput = page.locator('[data-testid="password-input"]');
+    this.loginButton = page.locator('[data-testid="login-button"]');
+    this.errorMessage = page.locator('[data-testid="error-message"]');
+  }
+
+  async goto() {
+    await this.page.goto('/login');
+  }
+
+  async login(email: string, password: string) {
+    await this.emailInput.fill(email);
+    await this.passwordInput.fill(password);
+    await this.loginButton.click();
+  }
+
+  async getErrorText(): Promise<string> {
+    return await this.errorMessage.textContent() ?? '';
+  }
+}
+```
+
+```typescript
+// e2e/pages/dashboard.page.ts
+export class DashboardPage {
+  private page: Page;
+  readonly welcomeMessage: Locator;
+  readonly userMenu: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.welcomeMessage = page.locator('[data-testid="welcome-message"]');
+    this.userMenu = page.locator('[data-testid="user-menu"]');
+  }
+
+  async logout() {
+    await this.userMenu.click();
+    await this.page.locator('[data-testid="logout-btn"]').click();
+  }
+}
+```
+
+```typescript
+// e2e/auth.spec.ts — Clean, readable tests using page objects
+import { test, expect } from '@playwright/test';
+import { LoginPage } from './pages/login.page';
+import { DashboardPage } from './pages/dashboard.page';
+
+test('complete login/logout flow', async ({ page }) => {
+  const loginPage = new LoginPage(page);
+  const dashboardPage = new DashboardPage(page);
+
+  // Login
+  await loginPage.goto();
+  await loginPage.login('user@example.com', 'password123');
+
+  await expect(page).toHaveURL('/dashboard');
+  await expect(dashboardPage.welcomeMessage).toContainText('Welcome');
+
+  // Logout
+  await dashboardPage.logout();
+  await expect(page).toHaveURL('/login');
+});
+```
+
+## API Mocking for Stable Tests
+
+Real API calls make E2E tests flaky. Mock at the network level:
+
+```typescript
+test('should display user list', async ({ page }) => {
+  // Intercept the API call and return mock data
+  await page.route('/api/users', route => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: '1', name: 'Alice', email: 'alice@test.com' },
+        { id: '2', name: 'Bob', email: 'bob@test.com' }
+      ])
+    });
+  });
+
+  await page.goto('/users');
+
+  // Wait for table to populate
+  await expect(page.locator('[data-testid="user-row"]')).toHaveCount(2);
+  await expect(page.locator('[data-testid="user-row"]').first())
+    .toContainText('Alice');
+});
+
+test('should handle API error gracefully', async ({ page }) => {
+  await page.route('/api/users', route => {
+    route.fulfill({ status: 500, body: 'Server Error' });
+  });
+
+  await page.goto('/users');
+
+  await expect(page.locator('[data-testid="error-state"]'))
+    .toContainText('Failed to load users');
+  await expect(page.locator('[data-testid="retry-btn"]')).toBeVisible();
+});
+```
+
+## Testing Angular-Specific Patterns
+
+```typescript
+// Testing form validation
+test('should validate required fields', async ({ page }) => {
+  await page.goto('/register');
+
+  // Submit empty form
+  await page.click('[data-testid="submit-btn"]');
+
+  // Angular sets .ng-invalid and .ng-touched classes
+  await expect(page.locator('input[name="email"]'))
+    .toHaveClass(/ng-invalid/);
+
+  // Error messages shown
+  await expect(page.locator('[data-testid="email-error"]'))
+    .toContainText('Email is required');
+});
+
+// Testing @defer blocks
+test('should load deferred content on scroll', async ({ page }) => {
+  await page.goto('/products');
+
+  // Deferred content not yet in DOM
+  const recommendations = page.locator('[data-testid="recommendations"]');
+  await expect(recommendations).not.toBeVisible();
+
+  // Scroll to bottom to trigger viewport
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+
+  // Content loads
+  await expect(recommendations).toBeVisible({ timeout: 5000 });
+});
+```
+
+<CodeChallenge
+  id="e2e-vs-unit"
+  difficulty="intermediate"
+  description="Your E2E tests pass locally but fail in CI because the backend API returns different data. What is the best fix?"
+  options={[
+    "Add retry logic to E2E tests to handle flaky API responses",
+    "Mock the API at the network level in Playwright using page.route() or use a test database with seeded data",
+    "Run E2E tests only on the local environment, not in CI",
+    "Add longer timeouts to allow the API more time to respond"
+  ]}
+  correctAnswer={1}
+  explanation="E2E tests that depend on real API data are inherently flaky — data changes, APIs are slow, and test environments diverge from production data. The fix is: (1) Mock the network layer with page.route() so tests control exactly what data they test with, OR (2) Use a dedicated test database with seeded, predictable data. Both approaches make tests deterministic. Retries and longer timeouts hide the symptom without fixing the cause — they make suites slower without improving reliability."
+/>
+
+## Cypress vs Playwright
+
+Both are excellent — you'll encounter both in interviews:
+
+| Feature | Playwright | Cypress |
+|---------|-----------|---------|
+| Browsers | Chrome, Firefox, Safari, Edge | Chrome, Firefox, Edge |
+| Parallelism | Built-in | Paid (Cypress Cloud) |
+| Auto-waiting | Yes | Yes |
+| Network mocking | `page.route()` | `cy.intercept()` |
+| Component testing | Limited | Full Angular support |
+| Speed | Faster | Slower on large suites |
+| Angular integration | Via webServer config | `@cypress/angular` |
+
+## Senior Insight: E2E Test Strategy
+
+The biggest E2E antipatterns:
+1. **Testing everything E2E** — slow suite, high maintenance, poor isolation
+2. **Testing implementation details** — using Angular class names, injector hacks
+3. **Flaky tests from real APIs** — use network mocks
+4. **Duplicate coverage** — E2E testing scenarios already covered by unit tests
+
+The right E2E test coverage:
+- **Happy paths for critical user journeys** (login, checkout, key workflows)
+- **Guard integration** (does the unauthorized user actually get redirected?)
+- **Form submission** (does submitting the form actually save and navigate?)
+- **Error states** (does the error UI appear correctly when APIs fail?)
+
+Aim for ~10-20 stable E2E tests covering the most critical paths, backed by hundreds of fast unit/integration tests.

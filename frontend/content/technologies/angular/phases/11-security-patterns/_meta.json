@@ -1,0 +1,20 @@
+{
+  "slug": "11-security-patterns",
+  "number": 11,
+  "title": "Security Patterns",
+  "subtitle": "XSS prevention, HTTP interceptors, JWT, CSRF, and Content Security Policy",
+  "level": "senior",
+  "estimatedHours": 7,
+  "emoji": "🔒",
+  "color": "orange",
+  "description": "Security in Angular starts with understanding what the framework protects you from automatically (XSS) and what you must handle yourself (CSRF, JWT storage, auth guards). Learn the patterns that keep Angular applications secure.",
+  "prerequisites": ["05-routing-navigation", "03-dependency-injection"],
+  "learningOutcomes": [
+    "Explain Angular's built-in XSS protection and when/how to safely bypass it",
+    "Implement functional HTTP interceptors for auth token injection and 401 retry",
+    "Build authentication route guards using the functional canActivate API",
+    "Choose safe JWT storage strategies and understand the tradeoffs",
+    "Configure CSRF protection with Angular's built-in XSRF handling",
+    "Set up Content Security Policy headers compatible with Angular"
+  ]
+}

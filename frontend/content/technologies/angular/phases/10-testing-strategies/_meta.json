@@ -1,0 +1,21 @@
+{
+  "slug": "10-testing-strategies",
+  "number": 10,
+  "title": "Testing Strategies",
+  "subtitle": "TestBed, component testing, HTTP mocking, marble testing, and E2E",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "🧪",
+  "color": "rose",
+  "description": "Angular's testing toolkit is comprehensive but often misunderstood. Master TestBed configuration, component testing with DebugElement, mocking HTTP with HttpTestingController, testing observables with marble testing, and E2E testing with Playwright or Cypress.",
+  "prerequisites": ["04-component-architecture", "06-rxjs-reactive", "07-forms-validation"],
+  "learningOutcomes": [
+    "Configure TestBed for component and service testing",
+    "Query and interact with the DOM using DebugElement and fixture",
+    "Mock services and verify interactions in isolation",
+    "Use HttpClientTestingModule and HttpTestingController for HTTP tests",
+    "Test observables with fakeAsync, tick, and marble testing",
+    "Test route guards and navigation in isolation",
+    "Write E2E tests that reflect user workflows"
+  ]
+}

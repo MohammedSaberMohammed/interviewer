@@ -1,0 +1,190 @@
+---
+title: "DI Decorators: @Optional, @Self, @SkipSelf, @Host"
+slug: "di-decorators"
+order: 7
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "@Optional", "@Self", "@SkipSelf", "@Host", "dependency injection"]
+summary: "@Optional, @Self, @SkipSelf, and @Host give fine-grained control over how Angular resolves dependencies in the injector tree. These decorators appear in interviews and in third-party library code."
+docsLinks:
+  - label: "DI in Action"
+    url: "https://angular.dev/guide/di/di-in-action"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## Modifying Injector Resolution
+
+By default, Angular's DI resolution walks up the full injector tree until it finds the dependency or throws. These four decorators let you modify that behavior — stop at a certain level, make a dependency optional, or skip the current level entirely.
+
+## `@Optional` — Don't Throw If Not Found
+
+Without `@Optional`, requesting a token that isn't provided throws a `NullInjectorError`. With it, Angular returns `null` instead:
+
+```typescript
+// Constructor injection
+@Component({ selector: 'app-feature' })
+class FeatureComponent {
+  constructor(
+    @Optional() private analytics: AnalyticsService
+  ) {
+    if (this.analytics) {
+      this.analytics.track('feature_opened');
+    }
+  }
+}
+
+// inject() equivalent
+@Component({ selector: 'app-feature' })
+class FeatureComponent {
+  private analytics = inject(AnalyticsService, { optional: true }); // null if not provided
+}
+```
+
+**Use cases**: Optional plugins, analytics services in test environments, feature services that may not be registered.
+
+## `@Self` — Only Look in Current Injector
+
+`@Self` restricts the search to the **current component's own element injector** — no walking up the tree:
+
+```typescript
+@Component({
+  selector: 'app-custom-input',
+  providers: [{ provide: NG_VALUE_ACCESSOR, useExisting: forwardRef(() => CustomInputComponent), multi: true }],
+})
+class CustomInputComponent {
+  // @Self ensures we get the NG_VALUE_ACCESSOR from THIS component's injector
+  // Not from a parent form component
+  constructor(
+    @Self() @Optional() private control: NgControl
+  ) {}
+}
+```
+
+If the token isn't in the current injector and `@Self` is used, Angular throws (unless combined with `@Optional`).
+
+## `@SkipSelf` — Skip Current, Look in Parent
+
+`@SkipSelf` is the opposite — skip the current element injector and start searching from the parent:
+
+```typescript
+// Classic use case: avoid infinite loops in providers
+@Injectable()
+class ParentService {}
+
+@Injectable()
+class ChildService {
+  constructor(
+    @SkipSelf() private parent: ParentService
+    // Without @SkipSelf, this could accidentally inject itself if ChildService
+    // is provided where ParentService is expected
+  ) {}
+}
+
+// Real-world: component injecting its parent component
+@Component({ selector: 'app-tree-node' })
+class TreeNodeComponent {
+  // @Optional because the root node has no parent
+  @SkipSelf() @Optional() private parentNode = inject(TreeNodeComponent, { skipSelf: true, optional: true });
+
+  isRoot = !this.parentNode;
+}
+```
+
+## `@Host` — Only Look in Host Component and Its Ancestors Up to the Next Host
+
+`@Host` is the most nuanced. It restricts resolution to the **current component's view** — it won't cross into ancestor components above the host boundary:
+
+```typescript
+// Useful in directives — get service from the host component
+@Directive({ selector: '[appTooltip]' })
+class TooltipDirective {
+  // @Host means: look in the component that hosts this directive,
+  // then its element injector, but stop at the host boundary
+  constructor(@Host() @Optional() private tooltip: TooltipContainerComponent) {}
+}
+```
+
+In practice, `@Host` is most commonly seen in form directives accessing the parent form group from within a control.
+
+<ComparisonTable
+  headers={["Decorator", "inject() Option", "Effect"]}
+  rows={[
+    ["@Optional()", "{ optional: true }", "Return null instead of throwing if not found"],
+    ["@Self()", "{ self: true }", "Only look in the current element injector"],
+    ["@SkipSelf()", "{ skipSelf: true }", "Skip current element injector, start at parent"],
+    ["@Host()", "{ host: true }", "Search current and ancestors up to host component boundary"]
+  ]}
+/>
+
+## Combining Decorators
+
+Decorators can be combined:
+
+```typescript
+// Most common combination: @Optional + @Self
+// "Look only in my injector; return null if not found"
+@Component({ providers: [MyService] })
+class ParentComponent {}
+
+@Component({ selector: 'child' })
+class ChildComponent {
+  // Gets MyService only if IT provides it itself — null if from parent
+  private service = inject(MyService, { self: true, optional: true });
+}
+// Result: null (MyService is in parent, not child)
+
+// @Optional + @SkipSelf
+// "Look in parent injectors; return null if not found anywhere up the tree"
+constructor(@Optional() @SkipSelf() private parentService: ParentService) {}
+```
+
+<Callout type="tip">
+Angular's own `NgControl` directive uses `@Optional() @Self()` to access the form control attached to the host element without accidentally picking up a form control from a parent component. This is the most common real-world use of these decorator combinations.
+</Callout>
+
+## Real-World: Implementing a Nested Form Component
+
+```typescript
+// A custom form control that needs to register itself with the parent FormGroup
+@Component({
+  selector: 'app-address-form',
+  providers: [
+    {
+      provide: ControlContainer,
+      useExisting: NgForm // or ReactiveFormDirective
+    }
+  ]
+})
+class AddressFormComponent {
+  // @Optional @SkipSelf — look in parent for the form container
+  // Skip self because the component provides its own ControlContainer above
+  constructor(
+    @Optional() @SkipSelf() private parentContainer: ControlContainer
+  ) {}
+}
+```
+
+<CodeChallenge
+  id="di-decorators-self-skipself"
+  difficulty="advanced"
+  description="A directive uses @Self() to inject FormGroupDirective. It's placed on an element inside a form but not on the form element itself. What happens?"
+  options={[
+    "It works — @Self searches the entire component tree",
+    "It returns null — @Self only checks the directive's own element injector",
+    "Angular throws a NullInjectorError (no @Optional used)",
+    "It finds the parent form's FormGroupDirective"
+  ]}
+  correctAnswer={2}
+  explanation="@Self restricts the search to the current element injector only. Since FormGroupDirective is provided at the <form> element (not at the directive's host element), @Self won't find it. Without @Optional, this throws NullInjectorError. The fix is to either use @Host (searches up to the host component boundary) or remove @Self to allow normal upward resolution. Angular's form directives solve this with @Optional @Self combinations."
+/>
+
+## Senior Insight: These Decorators Are Mostly for Library Authors
+
+In typical application code, you'll rarely use `@Self`, `@SkipSelf`, or `@Host` directly. You'll encounter them in:
+- Third-party UI library source code (Angular Material, PrimeNG)
+- Angular's own built-in directives (NgModel, NgForm)
+- Complex form control implementations
+
+As an application developer, you'll mostly use `@Optional` when a service may not be registered in all environments (testing, optional analytics). But being able to explain all four decorators — including the `inject()` options equivalent — is what separates strong Angular candidates from average ones.

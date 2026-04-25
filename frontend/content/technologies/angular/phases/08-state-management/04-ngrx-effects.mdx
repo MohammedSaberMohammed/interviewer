@@ -1,0 +1,277 @@
+---
+title: "NgRx Effects"
+slug: "ngrx-effects"
+order: 4
+difficulty: "advanced"
+readingTime: 13
+status: "published"
+tags: ["NgRx", "effects", "side effects", "HTTP", "ofType", "switchMap"]
+summary: "Effects handle side effects in NgRx — HTTP requests, navigation, localStorage — keeping reducers pure. The ofType operator, switchMap pattern, and error handling in effects are essential interview topics."
+docsLinks:
+  - label: "NgRx Effects"
+    url: "https://ngrx.io/guide/effects"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Effects?
+
+NgRx reducers must be pure — no HTTP calls, no localStorage, no navigation. But applications need to do these things! Effects are the mechanism for handling side effects in response to actions.
+
+The flow:
+```
+Component dispatches loadUsers action
+    ↓
+Effect listens for loadUsers action
+    ↓
+Effect makes HTTP request
+    ↓
+Effect dispatches loadUsersSuccess or loadUsersFailure
+    ↓
+Reducer handles the result, updating state
+    ↓
+Selectors notify components, UI updates
+```
+
+## Basic Effect
+
+```typescript
+import { Injectable } from '@angular/core';
+import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { of } from 'rxjs';
+import { catchError, map, switchMap } from 'rxjs/operators';
+
+@Injectable()
+export class UserEffects {
+  private actions$ = inject(Actions);
+  private userService = inject(UserService);
+
+  // Effect that loads users when loadUsers action is dispatched
+  loadUsers$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(loadUsers),  // Only process 'loadUsers' actions
+      switchMap(() =>
+        this.userService.getUsers().pipe(
+          map(users => loadUsersSuccess({ users })),     // Success → dispatch success action
+          catchError(error => of(loadUsersFailure({ error: error.message }))) // Error → dispatch failure
+        )
+      )
+    )
+  );
+}
+```
+
+## The `ofType` Operator
+
+`ofType` filters the actions stream to only pass through specific action types:
+
+```typescript
+// Single action type
+actions$.pipe(ofType(loadUsers))
+
+// Multiple action types (OR logic)
+actions$.pipe(ofType(loadUsers, refreshUsers))
+
+// TypeScript narrows the type — inside ofType, you know the exact action shape
+actions$.pipe(
+  ofType(updateUser),
+  // TypeScript knows the action has 'user' property here
+  switchMap(action => this.userService.update(action.user))
+)
+```
+
+## Choosing the Right Mapping Operator
+
+```typescript
+// switchMap — cancel previous request when same action fires again
+// Use for: search/filter effects, any effect where only latest matters
+loadUsers$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(loadUsers),
+    switchMap(() => this.userService.getUsers().pipe(
+      map(users => loadUsersSuccess({ users })),
+      catchError(err => of(loadUsersFailure({ error: err.message })))
+    ))
+  )
+);
+
+// concatMap — queue effects, process in order
+// Use for: sequential operations, ordered processing
+updateUser$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(updateUser),
+    concatMap(({ user }) => this.userService.update(user).pipe(
+      map(updated => updateUserSuccess({ user: updated })),
+      catchError(err => of(updateUserFailure({ error: err.message })))
+    ))
+  )
+);
+
+// exhaustMap — ignore new while current is processing
+// Use for: submit button, prevent duplicate submissions
+createUser$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(createUser),
+    exhaustMap(({ user }) => this.userService.create(user).pipe(
+      map(created => createUserSuccess({ user: created })),
+      catchError(err => of(createUserFailure({ error: err.message })))
+    ))
+  )
+);
+
+// mergeMap — all concurrent
+// Use for: parallel operations, order doesn't matter
+deleteUser$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(deleteUser),
+    mergeMap(({ id }) => this.userService.delete(id).pipe(
+      map(() => deleteUserSuccess({ id })),
+      catchError(err => of(deleteUserFailure({ id, error: err.message })))
+    ))
+  )
+);
+```
+
+<Callout type="warning">
+The `catchError` MUST be inside the inner Observable (inside the `switchMap`/`mergeMap`/etc), NOT outside it. If catchError is outside, an error kills the entire effects stream and no more actions will be processed. The inner placement ensures only the current request fails while the outer stream stays alive.
+</Callout>
+
+## Non-Dispatching Effects
+
+Effects that don't need to dispatch an action use `{ dispatch: false }`:
+
+```typescript
+// Navigation effect — no action to dispatch
+navigateAfterLogin$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(loginSuccess),
+    tap(({ user }) => {
+      this.router.navigate(['/dashboard']);
+    })
+  ),
+  { dispatch: false } // Won't dispatch the return value as an action
+);
+
+// Analytics tracking
+trackPageView$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(routeChanged),
+    tap(({ url }) => {
+      this.analytics.pageView(url);
+    })
+  ),
+  { dispatch: false }
+);
+
+// localStorage sync
+persistUser$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(loginSuccess),
+    tap(({ user }) => {
+      localStorage.setItem('currentUser', JSON.stringify(user));
+    })
+  ),
+  { dispatch: false }
+);
+```
+
+## Error Handling Pattern
+
+The standard error handling pattern in effects:
+
+```typescript
+// Effect with full error lifecycle
+loadProduct$ = createEffect(() =>
+  this.actions$.pipe(
+    ofType(loadProduct),
+    switchMap(({ id }) =>
+      this.productService.getProduct(id).pipe(
+        map(product => loadProductSuccess({ product })),
+        catchError((error: HttpErrorResponse) => {
+          // Map HTTP errors to domain errors
+          if (error.status === 404) {
+            return of(productNotFound({ id }));
+          }
+          return of(loadProductFailure({
+            error: error.message,
+            retryable: error.status >= 500,
+          }));
+        })
+      )
+    )
+  )
+);
+```
+
+## Functional Effects (NgRx 16+)
+
+NgRx 16 introduced functional effects that don't need a class:
+
+```typescript
+import { createEffect, Actions, ofType } from '@ngrx/effects';
+
+// Standalone functional effect
+export const loadUsers$ = createEffect(
+  (actions$ = inject(Actions), userService = inject(UserService)) =>
+    actions$.pipe(
+      ofType(loadUsers),
+      switchMap(() => userService.getUsers().pipe(
+        map(users => loadUsersSuccess({ users })),
+        catchError(err => of(loadUsersFailure({ error: err.message })))
+      ))
+    )
+);
+
+// Register in providers
+provideEffects({ loadUsers$ })
+```
+
+<CodeChallenge
+  id="ngrx-effects-error"
+  difficulty="advanced"
+  description="An effect has catchError OUTSIDE the inner observable (switchMap). An HTTP request fails. What happens to the effect after the error?"
+  options={[
+    "The effect recovers and continues listening for the next action",
+    "The entire effect stream terminates — no more actions will be processed",
+    "The effect retries the HTTP request automatically",
+    "Angular restarts the effect after an error"
+  ]}
+  correctAnswer={1}
+  explanation="When catchError is outside the inner observable, it catches errors from the OUTER stream (the actions$ stream piped through switchMap). Once catchError handles an error, it replaces the stream with a new Observable — but that Observable completes. The original actions$ stream is gone. No more actions will be processed by this effect. This is the most common NgRx bug. Always put catchError inside the switchMap/mergeMap to only catch the inner Observable's errors."
+/>
+
+## Senior Insight: Testing Effects
+
+Effects are one of the harder parts to test in NgRx. The key is using `TestScheduler` and `provideMockActions`:
+
+```typescript
+describe('UserEffects', () => {
+  let actions$: Observable<any>;
+  let effects: UserEffects;
+  let userService: jasmine.SpyObj<UserService>;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        UserEffects,
+        provideMockActions(() => actions$),
+        { provide: UserService, useValue: jasmine.createSpyObj('UserService', ['getUsers']) },
+      ]
+    });
+
+    effects = TestBed.inject(UserEffects);
+    userService = TestBed.inject(UserService) as any;
+  });
+
+  it('should dispatch loadUsersSuccess on success', (done) => {
+    const users = [{ id: '1', name: 'Alice' }];
+    userService.getUsers.and.returnValue(of(users));
+    actions$ = of(loadUsers());
+
+    effects.loadUsers$.subscribe(action => {
+      expect(action).toEqual(loadUsersSuccess({ users }));
+      done();
+    });
+  });
+});
+```

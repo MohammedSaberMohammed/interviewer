@@ -1,0 +1,209 @@
+---
+title: "Change Detection Optimization"
+slug: "change-detection-optimization"
+order: 1
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["Angular", "performance", "change detection", "OnPush", "markForCheck", "detectChanges"]
+summary: "Change detection is Angular's most significant performance lever. Master the difference between markForCheck and detectChanges, Zone.js optimization, and how signals eliminate the need for both."
+docsLinks:
+  - label: "Angular Performance"
+    url: "https://angular.dev/guide/performance"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Understanding the Performance Problem
+
+By default, Angular checks the entire component tree on every event. In a large app:
+
+```
+User types one character in a search box
+    → Zone.js intercepts the keydown event
+    → Angular runs change detection from root
+    → Checks: AppComponent, NavbarComponent, SidebarComponent (x10 menu items),
+              ProductList (x50 ProductCard), UserWidget, NotificationBadge...
+    → Most components haven't changed — wasted work
+```
+
+For a 200-component app running at 60fps animations or rapid event streams, this becomes significant CPU overhead.
+
+## The Optimization Toolkit
+
+### 1. `OnPush` Strategy
+
+The foundational optimization — tells Angular to skip a component subtree unless:
+- An `@Input()` reference changes
+- An event originates from the component
+- `async` pipe receives a new value
+- Signal or `markForCheck()` is called
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush, // Add to every component
+  ...
+})
+class ProductCardComponent {
+  @Input() product!: Product; // Only re-checks when product reference changes
+}
+```
+
+### 2. `markForCheck()` vs `detectChanges()`
+
+These are the two methods for manually triggering change detection with OnPush:
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+class RealtimeComponent {
+  private cdr = inject(ChangeDetectorRef);
+
+  data = '';
+
+  constructor(private ws: WebSocketService) {
+    // WebSocket data from outside Angular zone
+    ws.messages$.subscribe(msg => {
+      this.data = msg;
+
+      // markForCheck() — schedules checking this component in the NEXT CD cycle
+      // Safe to call many times — only one CD cycle runs
+      this.cdr.markForCheck();
+    });
+  }
+
+  triggerImmediateUpdate() {
+    this.data = 'immediate';
+
+    // detectChanges() — runs CD IMMEDIATELY for this component and its children
+    // Useful when you need the DOM updated before continuing
+    this.cdr.detectChanges();
+  }
+}
+```
+
+**When to use each:**
+- `markForCheck()`: Almost always — schedules update for next CD cycle
+- `detectChanges()`: When you need immediate DOM update (e.g., measuring element dimensions after update)
+
+<Callout type="warning">
+Calling `detectChanges()` after the component has been destroyed throws an error. Always check `!this.cdr['destroyed']` or use `markForCheck()` which is safe post-destroy. This is especially important in WebSocket or timer callbacks.
+</Callout>
+
+### 3. `ngZone.runOutsideAngular()`
+
+For operations that should NOT trigger change detection:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class SocketService {
+  private ngZone = inject(NgZone);
+
+  connect(url: string): Observable<any> {
+    return new Observable(subscriber => {
+      // WebSocket events run outside Angular zone — no CD triggered
+      this.ngZone.runOutsideAngular(() => {
+        const ws = new WebSocket(url);
+
+        ws.onmessage = (event) => {
+          // Re-enter zone only when UI needs updating
+          this.ngZone.run(() => {
+            subscriber.next(JSON.parse(event.data));
+          });
+        };
+
+        ws.onerror = (error) => {
+          this.ngZone.run(() => subscriber.error(error));
+        };
+      });
+    });
+  }
+}
+```
+
+### 4. Signals — The Best Optimization
+
+With signals, Angular knows exactly which template expressions depend on which signals. Only those specific bindings update:
+
+```typescript
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <p>Count: {{ count() }}</p>  <!-- Only this updates when count changes -->
+    <p>Name: {{ name() }}</p>    <!-- Not re-evaluated when count changes -->
+  `
+})
+class OptimalComponent {
+  count = signal(0);
+  name = signal('Alice');
+
+  increment() {
+    this.count.update(c => c + 1);
+    // Angular schedules only the 'count' binding to update
+    // 'name' binding is untouched
+    // No markForCheck() or detectChanges() needed!
+  }
+}
+```
+
+## Profiling Change Detection
+
+Angular DevTools shows change detection cycles:
+
+1. Install Angular DevTools browser extension
+2. Open DevTools → Angular tab → Profiler
+3. Record a session
+4. Look for:
+   - Components checking more than expected
+   - High check times (ms)
+   - Same component checking repeatedly on a single event
+
+## Detaching and Reattaching
+
+For truly static components, completely remove them from CD:
+
+```typescript
+@Component({ selector: 'app-static-chart' })
+class StaticChartComponent implements OnInit {
+  private cdr = inject(ChangeDetectorRef);
+
+  ngOnInit() {
+    // This chart never changes — detach from CD entirely
+    this.cdr.detach();
+
+    // Manually update if needed
+    if (this.dataChanged) {
+      this.cdr.detectChanges();
+    }
+
+    // Reattach if it needs to participate in CD again
+    this.cdr.reattach();
+  }
+}
+```
+
+<CodeChallenge
+  id="markforcheck-vs-detectchanges"
+  difficulty="advanced"
+  description="An OnPush component receives WebSocket data and calls markForCheck(). The component template uses the new data. When does the DOM actually update?"
+  options={[
+    "Immediately when markForCheck() is called",
+    "In the next change detection cycle (usually microtask after current JS task)",
+    "Only on the next user interaction event",
+    "Never — markForCheck() must be followed by detectChanges()"
+  ]}
+  correctAnswer={1}
+  explanation="markForCheck() marks the component (and its ancestors) as needing to be checked but does NOT immediately run change detection. The DOM updates in the next CD cycle, which Angular typically schedules as a microtask after the current JS execution completes. Zone.js triggers this cycle. For immediate updates (e.g., before measuring DOM dimensions), use detectChanges() instead."
+/>
+
+## Senior Insight: The Optimization Priority
+
+1. **Add `OnPush` to ALL components** (quick wins, no behavior change with signals/async pipe)
+2. **Replace method calls in templates with signals or computed** (eliminates recalculation)
+3. **Add `track` to all `@for` loops** (prevents DOM recreation on list updates)
+4. **Use `async` pipe over `.subscribe()` in components** (markForCheck handled automatically)
+5. **Run non-UI work outside NgZone** (WebSocket parsing, animation frames)
+6. **Migrate to signals** (fine-grained updates, zoneless compatibility)
+
+Most applications see 40-70% reduction in change detection cycles from just steps 1-3.

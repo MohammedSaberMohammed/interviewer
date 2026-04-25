@@ -1,0 +1,273 @@
+---
+title: "Dynamic Forms"
+slug: "dynamic-forms"
+order: 7
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["Angular", "dynamic forms", "form configuration", "schema-driven forms"]
+summary: "Dynamic forms generate UI from a configuration schema — essential for admin panels, survey builders, and CMS platforms. Build a configuration-driven form system using reactive forms."
+docsLinks:
+  - label: "Dynamic Forms"
+    url: "https://angular.dev/guide/forms/dynamic-forms"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Are Dynamic Forms?
+
+Instead of hardcoding form fields in templates, dynamic forms read a configuration object and generate the form structure at runtime. This enables:
+- Server-driven form schemas (CMS, admin tools)
+- Conditional field display based on other answers
+- Plugin systems where form fields are provided by plugins
+- Survey/questionnaire builders
+
+## The Field Configuration Model
+
+```typescript
+// Field configuration types
+type FieldType = 'text' | 'email' | 'number' | 'select' | 'checkbox' | 'textarea' | 'date';
+
+interface FieldConfig {
+  key: string;
+  type: FieldType;
+  label: string;
+  placeholder?: string;
+  required?: boolean;
+  validators?: ValidatorFn[];
+  options?: { label: string; value: string }[]; // For select
+  defaultValue?: any;
+  conditions?: {
+    // Show this field only when another field has a certain value
+    when: string;
+    is: any;
+  };
+}
+
+// Example schema
+const contactFormSchema: FieldConfig[] = [
+  { key: 'name', type: 'text', label: 'Full Name', required: true },
+  { key: 'email', type: 'email', label: 'Email Address', required: true },
+  {
+    key: 'subject',
+    type: 'select',
+    label: 'Subject',
+    required: true,
+    options: [
+      { label: 'General Inquiry', value: 'general' },
+      { label: 'Technical Support', value: 'support' },
+      { label: 'Billing', value: 'billing' },
+    ]
+  },
+  {
+    key: 'orderId',
+    type: 'text',
+    label: 'Order ID',
+    conditions: { when: 'subject', is: 'billing' }, // Only show for billing
+  },
+  { key: 'message', type: 'textarea', label: 'Message', required: true },
+];
+```
+
+## Building the Dynamic Form Service
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class DynamicFormService {
+  private fb = inject(FormBuilder);
+
+  buildForm(fields: FieldConfig[]): FormGroup {
+    const group: Record<string, FormControl> = {};
+
+    fields.forEach(field => {
+      const validators = [...(field.validators ?? [])];
+      if (field.required) validators.unshift(Validators.required);
+      if (field.type === 'email') validators.push(Validators.email);
+
+      group[field.key] = new FormControl(
+        field.defaultValue ?? null,
+        validators
+      );
+    });
+
+    return this.fb.group(group);
+  }
+}
+```
+
+## The Dynamic Form Component
+
+```typescript
+@Component({
+  selector: 'app-dynamic-form',
+  standalone: true,
+  imports: [ReactiveFormsModule, NgFor, NgIf, NgSwitch, NgSwitchCase],
+  template: `
+    <form [formGroup]="form" (ngSubmit)="onSubmit()">
+      @for (field of visibleFields; track field.key) {
+        <div class="form-field">
+          <label [for]="field.key">{{ field.label }}</label>
+
+          @switch (field.type) {
+            @case ('text') {
+              <input
+                [id]="field.key"
+                type="text"
+                [formControlName]="field.key"
+                [placeholder]="field.placeholder ?? ''">
+            }
+            @case ('email') {
+              <input
+                [id]="field.key"
+                type="email"
+                [formControlName]="field.key">
+            }
+            @case ('select') {
+              <select [id]="field.key" [formControlName]="field.key">
+                <option value="">-- Select --</option>
+                @for (option of field.options; track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            }
+            @case ('textarea') {
+              <textarea
+                [id]="field.key"
+                [formControlName]="field.key"
+                rows="4">
+              </textarea>
+            }
+            @case ('checkbox') {
+              <input
+                [id]="field.key"
+                type="checkbox"
+                [formControlName]="field.key">
+            }
+          }
+
+          @if (form.get(field.key)?.invalid && form.get(field.key)?.touched) {
+            <div class="error">
+              @if (form.get(field.key)?.errors?.['required']) {
+                {{ field.label }} is required
+              }
+            </div>
+          }
+        </div>
+      }
+
+      <button type="submit" [disabled]="form.invalid">Submit</button>
+    </form>
+  `
+})
+class DynamicFormComponent implements OnInit {
+  @Input({ required: true }) schema!: FieldConfig[];
+  @Output() formSubmit = new EventEmitter<Record<string, any>>();
+
+  private dynamicFormService = inject(DynamicFormService);
+  form!: FormGroup;
+
+  get visibleFields(): FieldConfig[] {
+    return this.schema.filter(field => {
+      if (!field.conditions) return true; // No condition — always show
+      const conditionValue = this.form?.get(field.conditions.when)?.value;
+      return conditionValue === field.conditions.is;
+    });
+  }
+
+  ngOnInit() {
+    this.form = this.dynamicFormService.buildForm(this.schema);
+
+    // React to condition changes — re-evaluate visible fields
+    this.form.valueChanges.subscribe(() => {
+      // Update visible fields — template re-evaluates visibleFields getter
+    });
+  }
+
+  onSubmit() {
+    if (this.form.valid) {
+      // Only emit values for currently visible fields
+      const value: Record<string, any> = {};
+      this.visibleFields.forEach(field => {
+        value[field.key] = this.form.get(field.key)?.value;
+      });
+      this.formSubmit.emit(value);
+    } else {
+      this.form.markAllAsTouched();
+    }
+  }
+}
+```
+
+<Callout type="tip">
+Conditional field visibility (showing/hiding fields based on other field values) has a subtle issue: when a field is hidden, its validators still run. For better UX, either disable hidden controls (`form.get(key)?.disable()`) or remove them from the group and re-add when needed.
+</Callout>
+
+## Server-Driven Forms
+
+```typescript
+@Component({ selector: 'app-page' })
+class PageComponent implements OnInit {
+  schema: FieldConfig[] = [];
+
+  ngOnInit() {
+    // Fetch form schema from the server
+    this.http.get<FieldConfig[]>('/api/forms/contact-form').subscribe(schema => {
+      this.schema = schema;
+    });
+  }
+
+  onFormSubmit(data: Record<string, any>) {
+    this.http.post('/api/forms/contact-form/submit', data).subscribe();
+  }
+}
+
+// Template
+<app-dynamic-form
+  [schema]="schema"
+  (formSubmit)="onFormSubmit($event)" />
+```
+
+<CodeChallenge
+  id="dynamic-forms-conditions"
+  difficulty="advanced"
+  description="A dynamic form has a 'Show Details' checkbox. When checked, additional fields appear. When unchecked, those fields hide. What should happen to those fields' values when hidden?"
+  options={[
+    "They retain their values invisibly — the form still includes them",
+    "They should be disabled or removed from the form to exclude from submission",
+    "Angular automatically clears hidden fields",
+    "The form should throw an error if hidden fields have validators"
+  ]}
+  correctAnswer={1}
+  explanation="Hidden form fields still exist in the FormGroup by default — their values are included in form.value and their validators still run (possibly making the form invalid even though the user can't see the fields). Best practice: disable hidden controls (form.get('field')?.disable()) which excludes them from form.value and disables validation, or remove and re-add them. Angular's disable() approach is most common."
+/>
+
+## Senior Insight: Formly — The Production-Grade Solution
+
+For production dynamic forms, consider `@ngx-formly/core`:
+
+```typescript
+// Formly provides a complete dynamic form solution
+const fields: FormlyFieldConfig[] = [
+  { key: 'email', type: 'input', props: { label: 'Email', required: true } },
+  {
+    key: 'role',
+    type: 'select',
+    props: {
+      label: 'Role',
+      options: of([{ label: 'Admin', value: 'admin' }]) // Observable options!
+    }
+  },
+];
+
+// Template
+<formly-form [form]="form" [fields]="fields" [model]="model"></formly-form>
+```
+
+Formly handles:
+- All HTML input types + custom inputs
+- Conditional visibility with expressions
+- Dynamic options (Observable-based)
+- Form layout (grid, inline, tabs)
+- Server-side validation integration
+
+For ad-hoc dynamic forms, build your own. For complex CMS/admin tools, formly is worth the dependency.

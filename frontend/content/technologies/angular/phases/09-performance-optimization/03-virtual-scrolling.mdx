@@ -1,0 +1,285 @@
+---
+title: "Virtual Scrolling"
+slug: "virtual-scrolling"
+order: 3
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "performance", "virtual scroll", "CDK", "CdkVirtualScrollViewport", "large lists"]
+summary: "Virtual scrolling renders only the items visible in the viewport, making lists of thousands of items perform like lists of ten. The Angular CDK provides both fixed and variable item size implementations."
+docsLinks:
+  - label: "CDK Virtual Scrolling"
+    url: "https://material.angular.io/cdk/scrolling/overview"
+  - label: "Angular CDK"
+    url: "https://material.angular.io/cdk/categories"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The DOM Node Problem
+
+Without virtual scrolling, rendering 10,000 items means 10,000 DOM nodes — all present in the document simultaneously, even those hundreds of viewport-heights away.
+
+```
+10,000 items × ~5 DOM nodes each = 50,000 DOM nodes
+Each DOM node consumes:
+  - Memory (JavaScript object + native handle)
+  - Layout calculation cost
+  - Paint cost
+  - Style recalculation
+
+Result: Initial render ~3 seconds, scrolling < 30fps, 500MB+ memory
+```
+
+Virtual scrolling solves this by maintaining only the DOM nodes for visible items plus a small buffer. The rest are not rendered — instead, a tall spacer maintains scroll height.
+
+## CDK Virtual Scroll Setup
+
+```bash
+npm install @angular/cdk
+```
+
+```typescript
+import { ScrollingModule } from '@angular/cdk/scrolling';
+
+@Component({
+  selector: 'app-virtual-list',
+  standalone: true,
+  imports: [ScrollingModule],
+  template: `
+    <!-- The viewport is the scrollable container -->
+    <cdk-virtual-scroll-viewport
+      itemSize="60"
+      class="viewport">
+
+      <!-- *cdkVirtualFor replaces *ngFor -->
+      <div *cdkVirtualFor="let user of users; trackBy: trackById"
+           class="user-row">
+        <img [src]="user.avatar" />
+        <span>{{ user.name }}</span>
+        <span>{{ user.email }}</span>
+      </div>
+
+    </cdk-virtual-scroll-viewport>
+  `,
+  styles: [`
+    .viewport {
+      height: 600px;     /* Fixed height required */
+      width: 100%;
+    }
+    .user-row {
+      height: 60px;      /* Must match itemSize */
+      display: flex;
+      align-items: center;
+    }
+  `]
+})
+class VirtualListComponent {
+  users: User[] = generateUsers(10000);
+
+  trackById(_: number, user: User) {
+    return user.id;
+  }
+}
+```
+
+<Callout type="warning">
+The viewport container MUST have a fixed height (or `flex: 1` in a flex parent). Without it, the viewport would grow to fit all items, defeating the purpose. The `itemSize` value in pixels must exactly match the rendered height of each item row.
+</Callout>
+
+## Fixed Size vs Variable Size
+
+### Fixed Item Size (Most Common)
+
+```typescript
+// All items are exactly 72px tall
+<cdk-virtual-scroll-viewport itemSize="72">
+  <div *cdkVirtualFor="let item of items"
+       style="height: 72px">
+    {{ item.name }}
+  </div>
+</cdk-virtual-scroll-viewport>
+```
+
+The `FixedSizeVirtualScrollStrategy` (used by default with `itemSize`) can calculate:
+- Which items are visible given scroll position
+- Total scrollable height
+- Offset for each item
+
+...all in O(1) without inspecting any DOM.
+
+### Variable Size Items
+
+When items have different heights, use a custom strategy:
+
+```typescript
+import { VIRTUAL_SCROLL_STRATEGY } from '@angular/cdk/scrolling';
+
+// Built-in variable strategy — Angular Material uses this
+// For custom implementations:
+@Injectable()
+export class DynamicSizeStrategy implements VirtualScrollStrategy {
+  private viewport: CdkVirtualScrollViewport | null = null;
+  private scrolledIndexChange$ = new Subject<number>();
+
+  scrolledIndexChange = this.scrolledIndexChange$.asObservable();
+
+  attach(viewport: CdkVirtualScrollViewport) {
+    this.viewport = viewport;
+    // ... implementation
+  }
+
+  // ... other required methods
+}
+
+// Provide with the component
+@Component({
+  providers: [{
+    provide: VIRTUAL_SCROLL_STRATEGY,
+    useClass: DynamicSizeStrategy
+  }]
+})
+```
+
+For most use cases with variable heights, consider:
+1. Making items fixed-height (restructure layout)
+2. Using `@angular/cdk/scrolling` `AutoSizeVirtualScrollStrategy` (from CDK Experimental)
+3. Third-party libraries: `@tanstack/angular-virtual`, `ngx-virtual-scroller`
+
+## With Observables and Async Data
+
+```typescript
+@Component({
+  template: `
+    <cdk-virtual-scroll-viewport itemSize="48" class="viewport">
+      <div *cdkVirtualFor="let message of messages$ | async;
+                            trackBy: trackById;
+                            bufferSize: 5">
+        {{ message.text }}
+      </div>
+    </cdk-virtual-scroll-viewport>
+  `
+})
+class MessageListComponent {
+  messages$ = this.messageService.getMessages(); // Observable<Message[]>
+}
+```
+
+`*cdkVirtualFor` accepts Observables and DataSource objects, not just arrays.
+
+## Infinite Scroll Pattern
+
+```typescript
+@Component({
+  template: `
+    <cdk-virtual-scroll-viewport itemSize="64"
+                                  class="viewport"
+                                  (scrolledIndexChange)="onScrolledIndexChange($event)">
+      <div *cdkVirtualFor="let item of items; trackBy: trackById">
+        {{ item.title }}
+      </div>
+
+      @if (loading) {
+        <div class="loading-row">Loading more...</div>
+      }
+    </cdk-virtual-scroll-viewport>
+  `
+})
+class InfiniteListComponent {
+  items: Item[] = [];
+  loading = false;
+  page = 0;
+
+  onScrolledIndexChange(firstVisible: number) {
+    const threshold = this.items.length - 10; // Load when 10 items from end
+    if (firstVisible >= threshold && !this.loading) {
+      this.loadMore();
+    }
+  }
+
+  async loadMore() {
+    this.loading = true;
+    const newItems = await this.itemService.getPage(++this.page);
+    this.items = [...this.items, ...newItems]; // Immutable append
+    this.loading = false;
+  }
+}
+```
+
+## Scrolling to a Specific Item
+
+```typescript
+class VirtualListComponent {
+  @ViewChild(CdkVirtualScrollViewport) viewport!: CdkVirtualScrollViewport;
+
+  scrollToUser(userId: string) {
+    const index = this.users.findIndex(u => u.id === userId);
+    if (index !== -1) {
+      // Scroll to item index, align to 'start' | 'center' | 'end' | 'auto'
+      this.viewport.scrollToIndex(index, 'smooth');
+    }
+  }
+
+  scrollToTop() {
+    this.viewport.scrollToOffset(0, 'smooth');
+  }
+}
+```
+
+## Buffer Size Tuning
+
+```html
+<!-- Default buffer: 200px before and after viewport -->
+<cdk-virtual-scroll-viewport itemSize="48">
+
+<!-- Custom buffer: render 10 items outside viewport on each side -->
+<div *cdkVirtualFor="let item of items; bufferSize: 10">
+```
+
+Higher buffer = smoother scrolling but more DOM nodes. Tune based on:
+- Item render complexity
+- Scroll speed (user behavior)
+- Target device performance
+
+<CodeChallenge
+  id="virtual-scroll-requirement"
+  difficulty="intermediate"
+  description="You implement CdkVirtualScrollViewport but scrolling is janky and items appear to have wrong heights. The items are 80px tall but you set itemSize='60'. What is the most likely cause?"
+  options={[
+    "The CDK package version is incompatible with Angular version",
+    "itemSize must match the actual rendered item height exactly — mismatch causes incorrect scroll position and rendering artifacts",
+    "Virtual scrolling doesn't work with CSS flexbox layouts",
+    "The viewport height must equal the total list height for virtual scrolling to work"
+  ]}
+  correctAnswer={1}
+  explanation="The itemSize attribute tells the CDK's FixedSizeVirtualScrollStrategy how tall each item is, so it can calculate scroll offsets mathematically without DOM measurement. If itemSize='60' but items render at 80px, the strategy's calculations are wrong — it thinks the total list height is shorter than it is, positions items at incorrect offsets, and the rendering looks 'jumpy'. The solution is to ensure itemSize exactly matches the CSS height of your items. If items have variable heights, you need a different scroll strategy."
+/>
+
+## Performance Comparison
+
+| Items | Without Virtual Scroll | With Virtual Scroll |
+|-------|----------------------|---------------------|
+| 100 | ~0.5MB, fast | ~0.5MB, fast (no difference) |
+| 1,000 | ~5MB, 2-3s render | ~2MB, &lt;100ms render |
+| 10,000 | ~50MB, 10-30s render | ~2MB, &lt;100ms render |
+| 100,000 | Browser crash likely | ~2MB, &lt;100ms render |
+
+The virtual scroll overhead is approximately constant: visible items (usually 10-20) + buffer (configurable). It doesn't scale with list size.
+
+## Senior Insight: When to Use Virtual Scrolling
+
+Virtual scrolling adds complexity — don't reach for it immediately:
+
+**Use virtual scrolling when:**
+- Lists exceed ~200-500 items with meaningful DOM per item
+- Items contain images, charts, or complex components
+- Performance profiling shows list rendering as a bottleneck
+- Users consistently scroll through large datasets
+
+**Don't use virtual scrolling when:**
+- Lists are < 100 items (negligible benefit, added complexity)
+- You need browser's native text search (Ctrl+F) — virtual items aren't in DOM
+- You need CSS animations that depend on sibling position
+- Items have complex variable heights and the complexity isn't worth it
+
+**Alternative**: Consider pagination instead of virtual scroll. A table showing 50 items per page is simpler, works with Ctrl+F, and performs well without the CDK dependency.

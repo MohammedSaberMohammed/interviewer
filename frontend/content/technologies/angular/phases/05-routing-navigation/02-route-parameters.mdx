@@ -1,0 +1,211 @@
+---
+title: "Route Parameters"
+slug: "route-parameters"
+order: 2
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["Angular", "route parameters", "query params", "ActivatedRoute", "ActivatedRouteSnapshot"]
+summary: "Routes carry data in path parameters (:id), query parameters (?page=1), and fragments (#section). ActivatedRoute is your window into all of them — with both Observable and snapshot access."
+docsLinks:
+  - label: "Getting Route Info"
+    url: "https://angular.dev/guide/routing/common-router-tasks#getting-route-information"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Three Ways Routes Carry Data
+
+```
+/users/42?tab=profile&expand=true#contacts
+         ↑            ↑                ↑
+    path param    query params       fragment
+```
+
+- **Path parameters** (`:id`): Part of the route pattern, required for the route to match
+- **Query parameters** (`?key=value`): Optional, can be any key-value pairs, survive navigation
+- **Fragment** (`#section`): For in-page navigation, not sent to the server
+
+## `ActivatedRoute` — Reading Route Data
+
+```typescript
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent implements OnInit {
+  private route = inject(ActivatedRoute);
+
+  // Observable approach — reacts to changes without re-creating the component
+  userId$ = this.route.params.pipe(map(params => params['id']));
+  tab$ = this.route.queryParams.pipe(map(qp => qp['tab'] ?? 'overview'));
+
+  // Snapshot approach — current value at a point in time
+  get currentUserId(): string {
+    return this.route.snapshot.params['id'];
+  }
+
+  ngOnInit() {
+    // Subscribe to params — handles same-route navigation
+    this.route.params.subscribe(params => {
+      const userId = params['id'];
+      this.loadUser(userId);
+    });
+
+    // Snapshot for one-time reads (e.g., for the initial load)
+    const tabFromUrl = this.route.snapshot.queryParams['tab'];
+  }
+}
+```
+
+<Callout type="warning">
+Use `this.route.snapshot` carefully. Snapshots are taken at a single point in time. If the same component is reused during same-route navigation (e.g., `/users/1` → `/users/2`), Angular doesn't recreate the component — but `snapshot.params['id']` would still show `1`. Use the Observable-based `this.route.params` to react to changes.
+</Callout>
+
+## Observable vs Snapshot: When to Use Each
+
+```typescript
+// ✅ Use Observables when the user can navigate to the same route
+// Example: a "Next User" button that goes from /users/1 to /users/2
+this.route.params.pipe(
+  map(params => params['id']),
+  switchMap(id => this.userService.getUser(id))
+).subscribe(user => this.user = user);
+
+// ✅ Use snapshot for one-time reads where the component won't be reused
+// Example: route guard or resolver
+const id = this.route.snapshot.params['id'];
+
+// ✅ Use paramMap instead of params for typed access
+this.route.paramMap.subscribe(paramMap => {
+  const id = paramMap.get('id');         // string | null
+  const ids = paramMap.getAll('id');     // string[]
+  const hasId = paramMap.has('id');      // boolean
+});
+```
+
+## Full Parameter Access
+
+```typescript
+// Route definition: /products/:categoryId/items/:itemId
+const routes: Routes = [
+  {
+    path: 'products/:categoryId',
+    component: CategoryComponent,
+    children: [
+      { path: 'items/:itemId', component: ItemDetailComponent }
+    ]
+  }
+];
+
+// In ItemDetailComponent — both parent and child params
+@Component({ selector: 'app-item-detail' })
+class ItemDetailComponent {
+  private route = inject(ActivatedRoute);
+
+  ngOnInit() {
+    // Direct params — only this route's params
+    this.route.params.subscribe(p => {
+      const itemId = p['itemId']; // ✅
+      const categoryId = p['categoryId']; // ❌ undefined — need parent
+    });
+
+    // paramMap from the full activated route
+    this.route.parent?.params.subscribe(p => {
+      const categoryId = p['categoryId']; // ✅ parent's param
+    });
+  }
+}
+```
+
+Or enable inheritance:
+```typescript
+provideRouter(routes, withRouterConfig({
+  paramsInheritanceStrategy: 'always' // Child sees parent's params too
+}))
+```
+
+## Query Parameters
+
+```typescript
+// Navigate with query params
+this.router.navigate(['/search'], {
+  queryParams: { q: 'angular', page: 1, sort: 'relevance' },
+});
+// URL: /search?q=angular&page=1&sort=relevance
+
+// Navigate and preserve existing query params
+this.router.navigate(['/search'], {
+  queryParams: { page: 2 },
+  queryParamsHandling: 'merge', // Keeps existing params, updates/adds page
+  // 'preserve' — keep exactly as they are (ignore new queryParams)
+  // '' (default) — replace all query params
+});
+
+// Read query params
+this.route.queryParams.subscribe(params => {
+  this.searchQuery = params['q'] ?? '';
+  this.currentPage = Number(params['page'] ?? 1);
+});
+
+// queryParamMap for typed access
+this.route.queryParamMap.subscribe(qpm => {
+  const page = qpm.get('page');
+  const tags = qpm.getAll('tags'); // Handles ?tags=a&tags=b
+});
+```
+
+## `withComponentInputBinding()` — Simplified Parameter Access
+
+With this router feature enabled, route params/queryParams/data automatically bind to `@Input()`:
+
+```typescript
+// Enable: provideRouter(routes, withComponentInputBinding())
+
+// Route: /users/:id?tab=overview
+@Component({ selector: 'app-user' })
+class UserComponent {
+  @Input() id!: string;           // Bound from :id path param
+  @Input() tab = 'overview';      // Bound from ?tab=... query param
+
+  // OR with signal inputs (Angular 17.1+)
+  id = input.required<string>();
+  tab = input('overview');
+}
+// No need to inject ActivatedRoute!
+```
+
+<CodeChallenge
+  id="route-params-observable"
+  difficulty="intermediate"
+  description="A UserDetailComponent navigates from /users/1 to /users/2 (same component reused). The developer uses snapshot.params['id'] in ngOnInit(). What user data is displayed?"
+  options={[
+    "User 2's data — ngOnInit() is called on every navigation",
+    "User 1's data — ngOnInit() is not called again; snapshot is stale",
+    "An error — snapshot params are unavailable after first navigation",
+    "Either user — it depends on the router strategy"
+  ]}
+  correctAnswer={1}
+  explanation="When Angular reuses the same component for same-route navigation (navigating from /users/1 to /users/2), ngOnInit() is NOT called again — the component instance is reused. snapshot.params['id'] still shows '1' because it's a one-time snapshot. The user sees user 1's data. Fix: use Observable-based this.route.params.pipe(switchMap(p => loadUser(p['id']))) which re-fires on every navigation."
+/>
+
+## Senior Insight: Route Param Type Safety
+
+Route parameters are always strings in the URL. Use coercion carefully:
+
+```typescript
+// ❌ Dangerous — 'abc' becomes NaN
+const id = Number(this.route.snapshot.params['id']);
+
+// ✅ Validate and handle invalid params
+const rawId = this.route.snapshot.params['id'];
+const id = parseInt(rawId, 10);
+if (isNaN(id)) {
+  this.router.navigate(['/not-found']);
+  return;
+}
+
+// ✅ With input transform (Angular 16+)
+@Component({...})
+class UserComponent {
+  @Input({ transform: numberAttribute }) id!: number;
+  // numberAttribute handles the string → number conversion safely
+}
+```

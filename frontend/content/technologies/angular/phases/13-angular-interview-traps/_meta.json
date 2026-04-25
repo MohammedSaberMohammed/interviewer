@@ -1,0 +1,22 @@
+{
+  "slug": "13-angular-interview-traps",
+  "number": 13,
+  "title": "Angular Interview Traps",
+  "subtitle": "The pitfalls interviewers deliberately test — memory leaks, ECAIBCC, OnPush gotchas",
+  "level": "senior",
+  "estimatedHours": 8,
+  "emoji": "🪤",
+  "color": "red",
+  "description": "Senior Angular interviews include deliberate trap questions about common pitfalls. Master the ExpressionChangedAfterItHasBeenCheckedError, Observable memory leaks, OnPush edge cases, async pipe gotchas, and NgModule traps that trip up even experienced developers.",
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Identify and fix Observable subscription memory leaks",
+    "Diagnose and resolve ExpressionChangedAfterItHasBeenCheckedError",
+    "Know the OnPush scenarios that fail and why they fail",
+    "Avoid async pipe pitfalls including multiple subscriptions",
+    "Understand injection token traps and multi-provider ordering",
+    "Anticipate guard execution order and resolver blocking issues",
+    "Identify NgModule double-registration and forRoot/forChild mistakes",
+    "Debug detached views and wrong-context detectChanges() calls"
+  ]
+}

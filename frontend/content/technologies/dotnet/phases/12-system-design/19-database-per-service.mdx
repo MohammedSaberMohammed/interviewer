@@ -1,0 +1,284 @@
+---
+title: "Database per Service: Polyglot Persistence and Data Consistency"
+slug: "database-per-service"
+order: 19
+difficulty: "expert"
+readingTime: 17
+status: "published"
+tags: ["database per service", "polyglot persistence", "microservices", "data consistency", "eventual consistency", "saga", "system design"]
+summary: "Database per service is a microservices principle that enables independent deployability and polyglot persistence — but it makes cross-service data consistency and joins significantly harder."
+docsLinks:
+  - label: "Microservices data management — Azure Architecture"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/data-considerations"
+  - label: "Database-per-microservice pattern"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/database-per-service"
+  - label: "Azure SQL — flexible server for microservices"
+    url: "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/overview"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## Why Database per Service?
+
+The **database per service** pattern gives each microservice exclusive ownership of its data. No other service may access that database directly.
+
+<ArchDiagram
+  title="Database per Service: Polyglot Persistence"
+  layers={[
+    { nodes: [
+      { id: 'order', label: 'OrderService', type: 'service' },
+      { id: 'inv', label: 'InventoryService', type: 'service' },
+      { id: 'user', label: 'UserService', type: 'service' },
+    ]},
+    { nodes: [
+      { id: 'sql', label: 'SQL Server', sublabel: 'Orders — relational, ACID', type: 'database' },
+      { id: 'mongo', label: 'MongoDB', sublabel: 'Inventory — flexible schema', type: 'database' },
+      { id: 'cosmos', label: 'Cosmos DB', sublabel: 'Users — global distribution', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'private ownership — no cross-service DB access allowed' },
+  ]}
+  caption="Each service owns its schema and chooses the database technology best suited for its data. Cross-service data access must go through the owning service's API — never via direct SQL joins across service databases."
+/>
+
+```
+WRONG — Shared database:          CORRECT — Database per service:
+┌──────────────────────┐           ┌─────────────┐   ┌─────────────┐
+│  OrderService  ──────┤           │ OrderService │   │ InventorySvc│
+│  InventorySvc  ──────┤─► [DB]    │    [SQL]    │   │  [Cassandra]│
+│  UserService   ──────┤           └─────────────┘   └─────────────┘
+└──────────────────────┘           ┌─────────────┐
+   (all services share one DB)     │ UserService │
+   ← tight coupling at the DB      │  [Cosmos DB]│
+                                   └─────────────┘
+```
+
+**Why shared databases fail at microservice scale**:
+1. **Schema coupling**: A schema change in Service A can break Service B's queries
+2. **Deployment coupling**: Services cannot deploy independently if a migration affects shared tables
+3. **Single point of failure**: The shared database is a single failure domain
+4. **No optimal storage**: One database type cannot be optimal for all data patterns
+
+---
+
+## Polyglot Persistence: Right Tool for Each Job
+
+"Polyglot persistence" means choosing the best database type for each service's access patterns.
+
+```
+Service              Best Database Type          Why
+──────────────────────────────────────────────────────────────
+OrderService       → SQL Server / PostgreSQL     ACID transactions, relational data
+InventoryService   → SQL + Redis cache           Fast reads, inventory counts
+UserService        → Azure Cosmos DB             Global distribution, flexible schema
+ProductCatalog     → Elasticsearch               Full-text search, faceted filtering
+SessionService     → Redis                       Sub-millisecond, TTL-based eviction
+AnalyticsService   → Azure Synapse / BigQuery    Columnar, analytical queries
+NotificationSvc    → Azure Service Bus + SQL     Queue + persistence
+```
+
+```csharp
+// Each service registers its own DbContext — no shared context
+// OrderService
+builder.Services.AddDbContext<OrderDbContext>(o =>
+    o.UseSqlServer(builder.Configuration["OrderDb:ConnectionString"]));
+
+// UserService (separate project/process)
+builder.Services.AddSingleton<CosmosClient>(sp =>
+    new CosmosClient(builder.Configuration["CosmosDb:ConnectionString"]));
+
+// InventoryService cache layer
+builder.Services.AddStackExchangeRedisCache(o =>
+    o.Configuration = builder.Configuration["Redis:ConnectionString"]);
+```
+
+---
+
+## The Central Challenge: Cross-Service Joins
+
+With separate databases, you cannot write a SQL JOIN across service boundaries. You must either:
+
+1. **Aggregate at the application layer** (fan-out calls)
+2. **Denormalize using domain events** (keep copies of the data you need)
+3. **Use a purpose-built read model** (CQRS projection)
+
+```csharp
+// Option 1: Application-layer join (API composition)
+public class OrderDetailsController : ControllerBase
+{
+    private readonly IOrderRepository _orders;
+    private readonly IUserClient _userClient;       // HTTP to UserService
+    private readonly IInventoryClient _inventory;  // HTTP to InventoryService
+
+    [HttpGet("orders/{id}/details")]
+    public async Task<IActionResult> GetOrderDetails(Guid id)
+    {
+        var order = await _orders.FindAsync(id)
+            ?? throw new NotFoundException();
+
+        // Fan out in parallel to avoid sequential latency
+        var (user, stockStatus) = await (
+            _userClient.GetUserAsync(order.CustomerId),
+            _inventory.GetStockStatusAsync(order.Items.Select(i => i.ProductId))
+        ).WhenAll();
+
+        return Ok(new OrderDetailsResponse(order, user, stockStatus));
+    }
+}
+
+// Option 2: Denormalized domain event — copy data you need
+public class OrderPlacedConsumer : IConsumer<UserRegisteredEvent>
+{
+    private readonly OrderDbContext _db;
+
+    // When a user registers, copy their name into the Orders DB
+    // Orders service never needs to call UserService for the name
+    public async Task Consume(ConsumeContext<UserRegisteredEvent> ctx)
+    {
+        var userSummary = new UserSummary
+        {
+            UserId = ctx.Message.UserId,
+            DisplayName = ctx.Message.DisplayName,
+            Email = ctx.Message.Email
+        };
+
+        _db.UserSummaries.Add(userSummary);
+        await _db.SaveChangesAsync();
+    }
+}
+```
+
+---
+
+## Cross-Service Transactions: The Saga Connection
+
+Without a shared database, you cannot use ACID transactions across services. Coordinating data changes across Order, Inventory, and Payment databases requires the **Saga pattern**.
+
+```csharp
+// Cross-service write — no 2PC, use saga choreography
+public class CheckoutService
+{
+    private readonly IOrderRepository _orders;
+    private readonly IPublishEndpoint _bus;
+
+    public async Task CheckoutAsync(CheckoutCommand cmd)
+    {
+        // Step 1: Write to Orders DB (local transaction — ACID)
+        var order = new Order(cmd);
+        await _orders.SaveAsync(order);
+
+        // Step 2: Trigger cross-service saga via event
+        // Inventory and Payment will each make their own local transactions
+        await _bus.Publish(new OrderPlacedEvent(order.Id, cmd.Items, cmd.PaymentToken));
+        // If Inventory fails → publishes StockFailedEvent → OrderService compensates
+        // This is the saga — distributed business transaction without distributed lock
+    }
+}
+```
+
+---
+
+## Data Consistency Patterns
+
+<ComparisonTable
+  headers={["Pattern", "Consistency", "Complexity", "When to Use"]}
+  rows={[
+    ["Shared database", "Strong (ACID)", "Low", "Monolith or tightly coupled services — not recommended for microservices"],
+    ["API Composition (fan-out)", "Eventual (each service owns its data)", "Medium", "Read-only aggregation — order details page, dashboard"],
+    ["Denormalization via events", "Eventual (event propagation lag)", "Medium", "Frequent cross-service reads — avoid chatty API calls"],
+    ["Saga (choreography)", "Eventual with compensation", "High", "Distributed writes across multiple services"],
+    ["Saga (orchestration)", "Eventual with compensation", "Very High", "Complex multi-step workflows with many failure paths"],
+    ["CQRS projection", "Eventual (projection lag)", "High", "Complex read models combining multiple domains"],
+  ]}
+/>
+
+---
+
+## The Reporting Challenge
+
+Cross-service reporting is one of the hardest problems with database per service. If you need a report combining Order, User, and Inventory data, you have two options:
+
+```csharp
+// Option 1: Event-driven reporting database (recommended)
+// A separate Reporting Service subscribes to all relevant events
+// and builds a denormalized reporting schema
+
+public class ReportingProjectionHandler :
+    IConsumer<OrderPlacedEvent>,
+    IConsumer<UserRegisteredEvent>,
+    IConsumer<StockReservedEvent>
+{
+    private readonly ReportingDbContext _reportDb;
+
+    public async Task Consume(ConsumeContext<OrderPlacedEvent> ctx)
+    {
+        // Upsert into reporting DB — denormalized for easy querying
+        await _reportDb.Database.ExecuteSqlRawAsync(@"
+            MERGE ReportingOrders AS target
+            USING (SELECT @OrderId, @CustomerId, @Total, @PlacedAt) AS source
+            ON target.OrderId = source.OrderId
+            WHEN NOT MATCHED THEN INSERT...",
+            new { ctx.Message.OrderId, ctx.Message.CustomerId, ... });
+    }
+}
+
+// Option 2: Data warehouse / lake (batch)
+// ETL pipelines extract from each service's database nightly
+// Load into Azure Synapse Analytics for historical reporting
+// Acceptable for non-real-time analytics
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: Database per Service Creates an Operational Burden Many Teams Underestimate**
+
+Running 10 microservices with 10 separate databases means:
+- 10 separate connection pools to configure
+- 10 sets of database migrations to manage and version
+- 10 backup strategies to implement
+- 10 monitoring dashboards
+- Cross-service data inconsistency windows to handle and explain to stakeholders
+- Every new join query is now an engineering project
+
+Before committing to database per service, ask:
+1. **Is independent deployability truly required?** If services always deploy together, a shared database schema with strict module ownership (one module owns each table) gives you similar benefits with far less complexity.
+2. **Can you enforce ownership via conventions rather than process isolation?** Schema-level namespacing (Orders schema, Inventory schema, User schema) in a single database prevents cross-schema access by convention.
+3. **What is the cost of eventual consistency to your business?** If your business absolutely requires transactional consistency across entities (e.g., accounting ledgers), distributed databases are the wrong tool.
+
+The sweet spot: use database per service for services that have genuinely different scaling, availability, or technology requirements. Use a modular schema (single database, multiple schemas) for services that share the same operational profile.
+</Callout>
+
+---
+
+<MythBuster
+  myth="Each microservice must have its own physical database server."
+  reality="Database per service means logical isolation — each service owns its schema and tables. Multiple services CAN share the same physical database server while maintaining logical separation. In practice, this is often the right choice for small-to-medium deployments: separate schemas on the same SQL Server instance, with IAM-enforced access so each service's connection string only has permission to its own schema. This gives you the deployment and ownership benefits without the operational cost of 10 separate database servers."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/database-per-service/challenge-1"
+  question="You need to display an order history page showing: order ID, status, and the customer's current display name. Orders are owned by OrderService (SQL), user profiles by UserService (Cosmos DB). What is the best approach?"
+  options={[
+    "Give OrderService read access to UserService's Cosmos DB so it can join the data",
+    "Store a copy of the display name in the Orders database, updated via a UserNameChangedEvent, and query only the Orders DB",
+    "Have the frontend make two API calls — one to OrderService and one to UserService — and join in the browser",
+    "Create a shared Users table that both OrderService and UserService can read"
+  ]}
+  correctAnswer={1}
+  explanation="Storing a denormalized copy of the display name in the Orders database is the correct microservices approach. OrderService subscribes to UserNameChangedEvent via a message broker. When a user changes their name, the event triggers an update to the denormalized copy in the Orders DB. The order history page queries only the Orders DB — no cross-service calls at read time. Option A violates database per service isolation. Option C (frontend join) adds latency, exposes internal APIs, and means two sequential render-blocking calls. Option D re-introduces the shared database anti-pattern."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Microservices data considerations — Azure Architecture", url: "https://learn.microsoft.com/en-us/azure/architecture/microservices/design/data-considerations" },
+    { label: "Saga pattern for distributed transactions", url: "https://learn.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga" },
+    { label: "Azure Database for PostgreSQL Flexible Server", url: "https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/overview" },
+    { label: "Materialized View pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/materialized-view" },
+  ]}
+/>

@@ -1,0 +1,232 @@
+---
+title: "The inject() Function"
+slug: "inject-function"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "inject", "injection context", "DI", "functional"]
+summary: "The inject() function introduced in Angular 14 modernizes dependency injection, enables functional patterns, and is the preferred approach in Angular 17+ code."
+docsLinks:
+  - label: "inject() API"
+    url: "https://angular.dev/api/core/inject"
+  - label: "Injection Context"
+    url: "https://angular.dev/guide/di/dependency-injection-context"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## From Constructor Injection to inject()
+
+Angular's traditional DI used constructor parameters — TypeScript's type metadata tells Angular what to provide. The `inject()` function (Angular 14+) is a new way to request dependencies that's more flexible and works in contexts where constructors aren't available.
+
+```typescript
+// Constructor injection — traditional
+@Component({ selector: 'app-user' })
+class UserComponent {
+  constructor(
+    private userService: UserService,
+    private router: Router,
+    private route: ActivatedRoute,
+    private store: Store,
+    @Optional() private analytics: AnalyticsService,
+  ) {}
+}
+
+// inject() — modern equivalent
+@Component({ selector: 'app-user' })
+class UserComponent {
+  private userService = inject(UserService);
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+  private store = inject(Store);
+  private analytics = inject(AnalyticsService, { optional: true }); // null if not provided
+}
+```
+
+Both approaches work. The `inject()` version is increasingly preferred in Angular 17+ code.
+
+## Injection Context
+
+`inject()` must be called within an **injection context** — Angular throws if called outside one:
+
+```typescript
+// ✅ Valid injection contexts
+
+// 1. Class field initializer
+@Component({...})
+class MyComponent {
+  private service = inject(MyService); // Field initializer context
+}
+
+// 2. Constructor body
+@Component({...})
+class MyComponent {
+  constructor() {
+    const service = inject(MyService); // Constructor context
+  }
+}
+
+// 3. Factory function
+providers: [
+  {
+    provide: MyToken,
+    useFactory: () => {
+      const config = inject(APP_CONFIG); // Factory function context
+      return new MyService(config.apiUrl);
+    }
+  }
+]
+
+// ❌ Invalid — outside injection context
+class MyComponent {
+  ngOnInit() {
+    // inject() called here will throw:
+    // NG0203: inject() must be called from an injection context
+    const service = inject(MyService);
+  }
+}
+```
+
+<Callout type="tip">
+If you need to use `inject()` outside a natural injection context (e.g., in a function called after construction), use `runInInjectionContext(injector, () => inject(MyService))`. Get the `Injector` via `inject(Injector)` in the constructor first.
+</Callout>
+
+## Advantages Over Constructor Injection
+
+### 1. Works in functional patterns
+
+```typescript
+// Functional guard — no class, no constructor
+export const authGuard: CanActivateFn = (route, state) => {
+  const authService = inject(AuthService); // Works in function context!
+  const router = inject(Router);
+
+  return authService.isAuthenticated()
+    ? true
+    : router.createUrlTree(['/login'], { queryParams: { returnUrl: state.url } });
+};
+
+// Functional interceptor
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+  const token = authService.getToken();
+
+  const authReq = token
+    ? req.clone({ headers: req.headers.set('Authorization', `Bearer ${token}`) })
+    : req;
+
+  return next(authReq);
+};
+
+// Functional resolver
+export const userResolver: ResolveFn<User> = (route) => {
+  const userService = inject(UserService);
+  return userService.getUser(route.params['id']);
+};
+```
+
+### 2. Reusable injection utilities
+
+```typescript
+// Create reusable utility functions that inject their own dependencies
+function injectCurrentUser(): Signal<User | null> {
+  const authService = inject(AuthService);
+  return authService.currentUser; // returns a signal
+}
+
+function injectRouter() {
+  const router = inject(Router);
+  const route = inject(ActivatedRoute);
+  return { router, route };
+}
+
+// Use in components without repeating the injection boilerplate
+@Component({...})
+class UserProfileComponent {
+  currentUser = injectCurrentUser(); // Encapsulates the injection logic
+}
+
+@Component({...})
+class AnyComponent {
+  private { router, route } = injectRouter();
+}
+```
+
+### 3. Cleaner inheritance
+
+```typescript
+// With constructor injection, subclasses must repeat parent dependencies
+class BaseService {
+  protected http: HttpClient;
+  protected config: AppConfig;
+
+  constructor(http: HttpClient, @Inject(APP_CONFIG) config: AppConfig) {
+    this.http = http;
+    this.config = config;
+  }
+}
+
+// Subclass must pass all parent deps to super()
+class UserService extends BaseService {
+  constructor(http: HttpClient, @Inject(APP_CONFIG) config: AppConfig) {
+    super(http, config); // Annoying boilerplate
+  }
+}
+
+// With inject() — clean
+class BaseService {
+  protected http = inject(HttpClient);
+  protected config = inject(APP_CONFIG);
+}
+
+class UserService extends BaseService {
+  // No constructor needed — inherits http and config automatically
+  getUser(id: number) {
+    return this.http.get<User>(`${this.config.apiUrl}/users/${id}`);
+  }
+}
+```
+
+## Optional Injection
+
+```typescript
+// inject() with options
+const analytics = inject(AnalyticsService, { optional: true }); // null if not provided
+
+// Constructor equivalent
+constructor(@Optional() private analytics: AnalyticsService) {}
+
+// Self/SkipSelf
+const localService = inject(MyService, { self: true }); // Only from this component's injector
+const parentService = inject(MyService, { skipSelf: true }); // Skip own injector, look up
+```
+
+<CodeChallenge
+  id="inject-function-context"
+  difficulty="intermediate"
+  description="A colleague wrote a utility function that calls inject(Router) inside ngOnInit(). It throws 'NG0203: inject() must be called from an injection context'. What's the fix?"
+  options={[
+    "Move the inject(Router) call to a class field initializer or constructor",
+    "Add @Injectable() decorator to the component",
+    "Call inject() inside a try-catch to handle the error",
+    "Use @Inject(Router) decorator on a constructor parameter instead"
+  ]}
+  correctAnswer={0}
+  explanation="inject() requires an injection context — class field initializers and constructors are injection contexts; lifecycle hooks like ngOnInit() are not. The fix is to move inject(Router) to a field: private router = inject(Router). If you genuinely need to call inject() dynamically, use runInInjectionContext(this.injector, () => inject(Router)) where injector was captured as a field: private injector = inject(Injector)."
+/>
+
+## Senior Insight: When to Use Constructor vs inject()
+
+The Angular team now recommends `inject()` for new code. Here's a practical guide:
+
+| Scenario | Recommendation |
+|----------|----------------|
+| New component/service | Use `inject()` |
+| Functional guard/interceptor/resolver | Must use `inject()` |
+| Extending base classes | Use `inject()` (avoids super() boilerplate) |
+| Existing codebase with constructor injection | Don't mix — keep consistent |
+| Need `@Optional`, `@Self`, etc. | Use `inject()` with options object |
+| Publishing a library | Either works; document your choice |
+
+The trend is clear: `inject()` is the future of Angular DI. New Angular APIs (functional guards, interceptors, resolvers) require it.

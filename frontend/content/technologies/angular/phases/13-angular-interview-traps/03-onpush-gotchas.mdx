@@ -1,0 +1,268 @@
+---
+title: "OnPush Gotchas"
+slug: "onpush-gotchas"
+order: 3
+difficulty: "advanced"
+readingTime: 9
+status: "published"
+tags: ["Angular", "traps", "OnPush", "change detection", "mutations", "immutability", "markForCheck"]
+summary: "OnPush change detection is a powerful optimization but has subtle gotchas: mutating objects doesn't trigger view updates, shared mutable service state leads to stale views, and some Angular APIs behave differently with OnPush. These surprises catch developers off guard in both development and production."
+docsLinks:
+  - label: "OnPush Change Detection"
+    url: "https://angular.dev/guide/change-detection/skipping-subtrees"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## OnPush Basics (Quick Recap)
+
+OnPush tells Angular to skip change detection for a component unless:
+1. An `@Input()` receives a new object **reference**
+2. An event originates **within** the component
+3. The `async` pipe receives a new value
+4. `markForCheck()` or `detectChanges()` is called explicitly
+5. A **signal** in the template changes
+
+## Gotcha 1: Mutating @Input Objects
+
+```typescript
+// ❌ Parent mutates the object — OnPush child doesn't update
+
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class UserCardComponent {
+  @Input() user!: User;
+}
+
+@Component({
+  template: `<app-user-card [user]="currentUser" />`
+})
+class ParentComponent {
+  currentUser: User = { name: 'Alice', email: 'alice@test.com' };
+
+  updateName() {
+    this.currentUser.name = 'Bob'; // ❌ Same object reference!
+    // UserCardComponent's @Input() reference didn't change
+    // OnPush: Angular skips checking UserCardComponent
+    // View still shows 'Alice'
+  }
+
+  updateNameCorrectly() {
+    this.currentUser = { ...this.currentUser, name: 'Bob' }; // ✅ New reference!
+    // Angular detects new reference on the @Input()
+    // OnPush: marks UserCardComponent for check
+    // View updates to 'Bob'
+  }
+}
+```
+
+## Gotcha 2: Mutating Arrays
+
+```typescript
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class ItemListComponent {
+  @Input() items!: Item[];
+}
+
+@Component({ template: `<app-item-list [items]="items" />` })
+class ContainerComponent {
+  items = [{ id: 1, name: 'A' }];
+
+  addItem() {
+    this.items.push({ id: 2, name: 'B' }); // ❌ Same array reference!
+    // ItemListComponent doesn't update
+
+    // ✅ Fix:
+    this.items = [...this.items, { id: 2, name: 'B' }];
+  }
+
+  removeItem(id: number) {
+    const index = this.items.findIndex(i => i.id === id);
+    this.items.splice(index, 1); // ❌ Same reference!
+
+    // ✅ Fix:
+    this.items = this.items.filter(i => i.id !== id);
+  }
+}
+```
+
+## Gotcha 3: Service Observable That Emits Outside Angular Zone
+
+```typescript
+// ❌ OnPush component subscribing to a Subject from a service
+// but the Subject emits from outside Angular's zone (WebSocket, setTimeout)
+
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class PriceTickerComponent implements OnInit {
+  price = 0;
+
+  ngOnInit() {
+    // WebSocket data arrives outside Angular zone
+    this.priceService.latestPrice$.subscribe(price => {
+      this.price = price; // Property updated...
+      // But OnPush won't re-check unless:
+      // 1. An @Input changed (no)
+      // 2. An event in this component fired (no)
+      // 3. async pipe emitted (no — manual subscribe)
+      // 4. markForCheck() called (no!)
+      // → Template stays stale!
+    });
+  }
+}
+```
+
+```typescript
+// ✅ Fix 1: Add markForCheck()
+private cdr = inject(ChangeDetectorRef);
+
+ngOnInit() {
+  this.priceService.latestPrice$.subscribe(price => {
+    this.price = price;
+    this.cdr.markForCheck(); // Schedule this component for CD
+  });
+}
+
+// ✅ Fix 2: Use async pipe (handles markForCheck internally)
+price$ = this.priceService.latestPrice$;
+// template: {{ price$ | async }}
+
+// ✅ Fix 3: Use a signal
+price = signal(0);
+ngOnInit() {
+  this.priceService.latestPrice$.subscribe(p => this.price.set(p));
+  // Signal change schedules CD automatically
+}
+```
+
+## Gotcha 4: Mutable Service State
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class CartService {
+  // ❌ Mutable array — mutations not detected by OnPush
+  items: CartItem[] = [];
+
+  addItem(item: CartItem) {
+    this.items.push(item); // Mutation! OnPush components reading this won't update
+  }
+}
+
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <!-- This won't update when CartService.items is mutated -->
+    @for (item of cartService.items; track item.id) {
+      <li>{{ item.name }}</li>
+    }
+  `
+})
+class CartDisplayComponent {
+  cartService = inject(CartService);
+}
+```
+
+```typescript
+// ✅ Fix: Use signals in the service
+@Injectable({ providedIn: 'root' })
+class CartService {
+  items = signal<CartItem[]>([]);
+
+  addItem(item: CartItem) {
+    this.items.update(current => [...current, item]); // Signal update
+    // Signal change automatically triggers CD in all components using it
+  }
+}
+
+// Component template:
+// @for (item of cartService.items(); track item.id) { ... }
+// Signal read: Angular tracks this dependency automatically
+```
+
+## Gotcha 5: Events Inside Embedded Views
+
+```typescript
+// ❌ Event handlers inside *ngFor don't always trigger parent CD with OnPush
+@Component({
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @for (item of items; track item.id) {
+      <!-- Button click is in an embedded view, not the component itself -->
+      <button (click)="selectItem(item)">Select</button>
+    }
+    <p>Selected: {{ selectedItem?.name }}</p>
+  `
+})
+class ItemSelectorComponent {
+  @Input() items: Item[] = [];
+  selectedItem?: Item;
+
+  selectItem(item: Item) {
+    this.selectedItem = item;
+    // ✅ This actually DOES trigger CD — events from embedded views
+    // in the component's own template DO trigger OnPush checking
+    // (embedded views are part of the component's view)
+  }
+}
+```
+
+Events from the component's own template (including embedded views from `*ngFor`, `@for`) do trigger OnPush. The gotcha is events from **child components** — those only trigger CD in the child, not the parent.
+
+<CodeChallenge
+  id="onpush-mutation"
+  difficulty="advanced"
+  description="An OnPush component has @Input() data: { count: number }. The parent calls component.data.count++ directly (mutates the object). The component has no signals. When does the OnPush component's view update?"
+  options={[
+    "Immediately — the component detects property changes on @Input objects",
+    "On the next user interaction that triggers change detection",
+    "Never — without a new reference, new async pipe emission, signal change, or markForCheck(), OnPush won't schedule this component for checking",
+    "When the parent's CD cycle runs next"
+  ]}
+  correctAnswer={2}
+  explanation="OnPush skips a component unless one of its trigger conditions is met. Mutating a property on an existing object (data.count++) doesn't create a new object reference, so Angular sees the same reference on the @Input — no trigger. Without a new reference, async pipe emission, event in the component, signal change, or explicit markForCheck()/detectChanges(), the OnPush component is never scheduled for checking. The view stays stale indefinitely. This is why immutability is required with OnPush — you must always create new object references when updating data that flows through @Input()."
+/>
+
+## Gotcha 6: Router Events with OnPush
+
+```typescript
+@Component({ changeDetection: ChangeDetectionStrategy.OnPush })
+class ActiveLinkComponent implements OnInit {
+  isActive = false;
+
+  ngOnInit() {
+    // Router events are outside Angular zone — OnPush misses them
+    this.router.events.pipe(
+      filter(e => e instanceof NavigationEnd),
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(() => {
+      this.isActive = this.router.url === this.targetUrl;
+      this.cdr.markForCheck(); // Required! Router events don't trigger OnPush
+    });
+  }
+}
+```
+
+## The OnPush Mental Model
+
+OnPush is a contract: **"I promise my template only changes when Angular tells me to check."**
+
+To keep that contract:
+1. Use immutable updates for all @Input data
+2. Use signals for local state
+3. Use async pipe or `markForCheck()` for external Observables
+4. Use `markForCheck()` after any async callback that modifies template-bound state
+
+Breaking the contract leads to stale views — the most insidious OnPush bug because the component works correctly during development (Zone.js triggers extra CD passes) but silently shows stale data in production.
+
+## Senior Insight: OnPush Adoption Strategy
+
+Don't add OnPush to a component and then fix the errors — add OnPush as a final step:
+
+```
+1. Refactor component state to use signals
+2. Replace mutable service state with signal-based services
+3. Replace manual subscriptions with async pipe or takeUntilDestroyed
+4. Ensure all @Input flows use immutable updates
+5. THEN add ChangeDetectionStrategy.OnPush
+6. Run the app — if nothing is visually broken, you're done
+```
+
+This order means OnPush is the validation that your immutability and signals adoption is complete — not the starting point that causes issues.

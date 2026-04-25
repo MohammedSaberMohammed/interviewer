@@ -1,0 +1,21 @@
+{
+  "slug": "03-dependency-injection",
+  "number": 3,
+  "title": "Dependency Injection",
+  "subtitle": "Angular's powerful DI system — providers, tokens, hierarchical injectors",
+  "level": "mid",
+  "estimatedHours": 8,
+  "emoji": "💉",
+  "color": "indigo",
+  "description": "Angular's DI system is one of its most powerful and misunderstood features. Master how the injector tree works, how to configure providers, when to use InjectionTokens, and how the inject() function modernizes DI in Angular 14+.",
+  "prerequisites": ["02-angular-fundamentals"],
+  "learningOutcomes": [
+    "Explain how Angular's hierarchical injector tree resolves dependencies",
+    "Configure providers using useClass, useValue, useFactory, and useExisting",
+    "Create and use InjectionTokens for non-class dependencies",
+    "Understand the difference between root, module, and component-level providers",
+    "Use the inject() function as a modern alternative to constructor injection",
+    "Apply @Optional, @Self, @SkipSelf, @Host decorators to control resolution",
+    "Make services tree-shakeable with providedIn: 'root'"
+  ]
+}

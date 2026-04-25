@@ -1,0 +1,335 @@
+---
+title: "Message Brokers: RabbitMQ vs Azure Service Bus vs Kafka"
+slug: "message-brokers"
+order: 5
+difficulty: "expert"
+readingTime: 19
+status: "published"
+tags: ["message brokers", "RabbitMQ", "Azure Service Bus", "Kafka", "async messaging", "event-driven", "microservices", "system design"]
+summary: "Picking the wrong message broker causes ordering violations, data loss, or operational nightmares — know what each broker trades off before committing to one in an interview or in production."
+docsLinks:
+  - label: "Azure Service Bus — overview"
+    url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview"
+  - label: "Azure Event Hubs (Kafka surface) — overview"
+    url: "https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-about"
+  - label: "Choose between Azure messaging services"
+    url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/compare-messaging-services"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## Why Message Brokers Exist
+
+Message brokers decouple producers from consumers. Instead of Service A calling Service B's HTTP endpoint directly:
+
+<ArchDiagram
+  title="Message Broker: Temporal Decoupling"
+  layers={[
+    { nodes: [{ id: 'producer', label: 'Order Service', sublabel: 'producer', type: 'service' }] },
+    { nodes: [{ id: 'broker', label: 'Message Broker', sublabel: 'Service Bus / Kafka / RabbitMQ', type: 'queue' }] },
+    { nodes: [
+      { id: 'c1', label: 'Inventory Service', sublabel: 'consumer', type: 'service' },
+      { id: 'c2', label: 'Email Service', sublabel: 'consumer', type: 'service' },
+      { id: 'c3', label: 'Analytics', sublabel: 'consumer', type: 'service' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'publish message' },
+    { label: 'consume (independently)' },
+  ]}
+  caption="Producers and consumers are fully decoupled — consumers can be offline and catch up later. One message can fan out to many independent consumers."
+/>
+
+```
+WITHOUT BROKER:
+  OrderService ──HTTP──► InventoryService
+  (tight coupling, if Inventory is down, Order fails)
+
+WITH BROKER:
+  OrderService ──publish──► [Broker] ◄──consume── InventoryService
+  (loose coupling, Inventory can be down and catch up later)
+```
+
+Benefits:
+- **Temporal decoupling**: Producer and consumer don't need to be running simultaneously
+- **Load leveling**: Consumer processes at its own pace; spikes are absorbed by the queue
+- **Fan-out**: One message can trigger multiple consumers
+- **Durability**: Messages survive consumer restarts
+
+---
+
+## RabbitMQ: The Versatile Message Router
+
+RabbitMQ is an AMQP-based broker built around **exchanges, queues, and bindings**. Its routing model is highly flexible.
+
+**Core concepts**:
+- **Exchange**: Receives messages from producers and routes them to queues based on routing rules
+- **Queue**: Buffer that stores messages for consumers
+- **Binding**: Rule connecting an exchange to a queue
+- **Exchange types**: Direct, Fanout, Topic, Headers
+
+```csharp
+// Using MassTransit (recommended abstraction over RabbitMQ)
+// Install: Install-Package MassTransit.RabbitMQ
+
+// Producer
+public class OrderService
+{
+    private readonly IPublishEndpoint _bus;
+
+    public async Task PlaceOrderAsync(CreateOrderCommand cmd)
+    {
+        var order = await _orderRepo.CreateAsync(cmd);
+
+        // Publish to RabbitMQ via MassTransit
+        await _bus.Publish(new OrderPlacedEvent
+        {
+            OrderId = order.Id,
+            CustomerId = order.CustomerId,
+            TotalAmount = order.Total,
+            PlacedAt = DateTimeOffset.UtcNow
+        });
+    }
+}
+
+// Consumer
+public class InventoryConsumer : IConsumer<OrderPlacedEvent>
+{
+    public async Task Consume(ConsumeContext<OrderPlacedEvent> context)
+    {
+        var evt = context.Message;
+        await _inventoryService.ReserveStockAsync(evt.OrderId);
+        // MassTransit handles ack automatically on success
+        // Throws → message is nacked and retried
+    }
+}
+
+// Registration
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<InventoryConsumer>();
+    x.UsingRabbitMq((ctx, cfg) =>
+    {
+        cfg.Host("rabbitmq://localhost", h =>
+        {
+            h.Username("guest");
+            h.Password("guest");
+        });
+        cfg.ConfigureEndpoints(ctx);
+    });
+});
+```
+
+**RabbitMQ strengths**:
+- Rich routing (topic exchanges, dead-letter queues)
+- Low latency (~1ms p99 in LAN)
+- Per-message TTL and priority queues
+- Well-supported in .NET via MassTransit
+
+**RabbitMQ weaknesses**:
+- Messages are deleted after consumption (no replay)
+- Not designed for very high throughput (millions/sec)
+- Queue depth monitoring critical — unbounded queues cause OOM
+
+---
+
+## Azure Service Bus: The Enterprise Broker
+
+Azure Service Bus is a fully managed, PaaS message broker designed for enterprise integration patterns.
+
+**Key features**:
+- **Queues**: Point-to-point messaging with at-least-once delivery
+- **Topics + Subscriptions**: Pub/sub with server-side message filtering
+- **Dead-letter queue (DLQ)**: Built-in for failed/expired messages
+- **Sessions**: Ordered processing for correlated message groups
+- **Message lock**: Prevents duplicate processing during consumer processing time
+
+```csharp
+// Using Azure.Messaging.ServiceBus
+// Install: Install-Package Azure.Messaging.ServiceBus
+
+// Producer
+public class OrderPublisher
+{
+    private readonly ServiceBusSender _sender;
+
+    public async Task PublishOrderAsync(Order order)
+    {
+        var message = new ServiceBusMessage(JsonSerializer.Serialize(order))
+        {
+            ContentType = "application/json",
+            MessageId = order.Id.ToString(),       // idempotency key
+            SessionId = order.CustomerId.ToString(), // ensures order per customer
+            Subject = "OrderPlaced"
+        };
+
+        await _sender.SendMessageAsync(message);
+    }
+}
+
+// Consumer
+public class OrderProcessor : BackgroundService
+{
+    private readonly ServiceBusProcessor _processor;
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        _processor.ProcessMessageAsync += async args =>
+        {
+            var order = JsonSerializer.Deserialize<Order>(args.Message.Body);
+            await ProcessOrderAsync(order!);
+            await args.CompleteMessageAsync(args.Message); // remove from queue
+        };
+
+        _processor.ProcessErrorAsync += args =>
+        {
+            _logger.LogError(args.Exception, "Service Bus error");
+            return Task.CompletedTask;
+        };
+
+        await _processor.StartProcessingAsync(ct);
+        await Task.Delay(Timeout.Infinite, ct);
+        await _processor.StopProcessingAsync();
+    }
+}
+```
+
+**Service Bus strengths**:
+- Managed — no infrastructure to operate
+- Sessions guarantee ordered delivery per customer/entity
+- Built-in DLQ with message deferral
+- Up to 80 GB message retention
+- Enterprise SLA and Azure AD integration
+
+**Service Bus weaknesses**:
+- Not designed for extreme throughput (max ~10k messages/sec per entity)
+- Higher latency than Kafka for batch workloads
+- No replay of consumed messages (unlike Kafka)
+
+---
+
+## Kafka (Azure Event Hubs): The Event Log
+
+Kafka is a **distributed commit log**, not a traditional message queue. Messages are appended to partitioned, ordered logs and retained for a configurable period (days or forever). Consumers track their own offset.
+
+**Key concepts**:
+- **Topic**: Logical stream of events
+- **Partition**: Ordered, immutable sequence within a topic; unit of parallelism
+- **Offset**: Consumer's position in a partition
+- **Consumer group**: Set of consumers that share a topic, each reading different partitions
+- **Retention**: Messages are kept even after consumption (default 7 days)
+
+```csharp
+// Using Confluent.Kafka or Azure Event Hubs (Kafka surface)
+// Install: Install-Package Confluent.Kafka
+
+// Producer
+var config = new ProducerConfig { BootstrapServers = "localhost:9092" };
+
+using var producer = new ProducerBuilder<string, string>(config).Build();
+
+await producer.ProduceAsync("order-events", new Message<string, string>
+{
+    Key = order.CustomerId.ToString(), // same key → same partition → ordered per customer
+    Value = JsonSerializer.Serialize(new OrderPlacedEvent(order.Id, order.Total))
+});
+
+// Consumer
+var consumerConfig = new ConsumerConfig
+{
+    BootstrapServers = "localhost:9092",
+    GroupId = "inventory-service",
+    AutoOffsetReset = AutoOffsetReset.Earliest,
+    EnableAutoCommit = false // manual commit for at-least-once
+};
+
+using var consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
+consumer.Subscribe("order-events");
+
+while (!ct.IsCancellationRequested)
+{
+    var msg = consumer.Consume(ct);
+    var evt = JsonSerializer.Deserialize<OrderPlacedEvent>(msg.Message.Value);
+    await ProcessAsync(evt!);
+    consumer.Commit(msg); // commit only after successful processing
+}
+```
+
+**Kafka strengths**:
+- Extreme throughput: millions of messages per second
+- Replay: consumers can re-read any historical message
+- Time travel: useful for rebuilding projections, audit logs, event sourcing
+- Horizontal scaling via partitions
+
+**Kafka weaknesses**:
+- Operational complexity (ZooKeeper, partition rebalancing, consumer lag monitoring)
+- No per-message routing or filtering (all consumers see all messages in their partition)
+- Ordering only within a partition — cross-partition ordering requires external coordination
+- Not suitable for low-throughput transactional messaging (overhead is high)
+
+---
+
+<ComparisonTable
+  headers={["Dimension", "RabbitMQ", "Azure Service Bus", "Kafka / Event Hubs"]}
+  rows={[
+    ["Delivery model", "Queue / pub-sub", "Queue + Topics/Subscriptions", "Partitioned log"],
+    ["Message ordering", "Queue order (FIFO)", "FIFO per session", "Within partition only"],
+    ["Message retention", "Consumed = deleted", "Up to 80 GB / TTL", "Configurable (days to forever)"],
+    ["Replay", "No", "No (use DLQ)", "Yes — seek to any offset"],
+    ["Throughput", "~50K msgs/sec", "~10K msgs/sec per entity", "Millions/sec"],
+    ["Latency", "Sub-millisecond", "~5–20ms", "~5–15ms (batch)"],
+    ["Routing flexibility", "High (exchanges)", "Medium (subscription filters)", "Low (by partition key)"],
+    ["Managed on Azure", "Self-hosted or AKS", "Yes — fully managed", "Azure Event Hubs (Kafka API)"],
+    ["Best for", "Complex routing, microservices", "Enterprise integration, workflows", "Event streaming, analytics, event sourcing"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Choose the Broker Based on Message Semantics, Not Popularity**
+
+The question is not "which broker is best" but "what semantics does my use case need?"
+
+- **Need to process and discard**: RabbitMQ or Service Bus. Traditional queue semantics, simple operations teams.
+- **Need ordered processing per entity**: Service Bus sessions. Guarantees all messages for a customer are processed in order by one consumer at a time.
+- **Need to replay history**: Kafka/Event Hubs. Event sourcing, rebuilding read models, audit trails.
+- **Need extreme throughput**: Kafka. No broker matches it for sustained high-volume ingestion.
+
+In Azure environments: **Azure Service Bus** for most microservice messaging needs, **Azure Event Hubs** when you need Kafka semantics without operating Kafka yourself. Event Hubs exposes the Kafka protocol — you can point your Confluent.Kafka client at Event Hubs with minimal config changes.
+
+One production gotcha: **RabbitMQ queue depth is a health signal**. A growing queue means consumers are falling behind. Set alerts on queue depth > N and auto-scale consumers. Service Bus and Kafka have equivalent metrics (message count and consumer lag).
+</Callout>
+
+---
+
+<MythBuster
+  myth="Kafka is the best message broker and you should use it for everything."
+  reality="Kafka is optimized for high-throughput, sequential event streaming. For typical microservice messaging (hundreds to thousands of messages per second, transactional workflows, ordered-per-entity delivery), Azure Service Bus or RabbitMQ with MassTransit provides better developer ergonomics, built-in dead-letter queues, and far simpler operations. Kafka's strength — partition-based log retention with replay — becomes overhead and complexity when you do not need those features. Most teams reach for Kafka prematurely."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/message-brokers/challenge-1"
+  question="You need to process customer payment events in the exact order they were submitted, per customer. Two customers' events can be processed in parallel. Which broker feature directly solves this?"
+  options={[
+    "Kafka topic with a single partition — guarantees global ordering",
+    "RabbitMQ with a fanout exchange — broadcasts to multiple consumers",
+    "Azure Service Bus sessions — guarantees ordered delivery per session ID",
+    "Azure Service Bus with multiple competing consumers — round-robin distribution"
+  ]}
+  correctAnswer={2}
+  explanation="Azure Service Bus sessions allow you to assign a Session ID (e.g., the customer ID) to each message. The broker guarantees that all messages with the same Session ID are delivered to one consumer at a time, in order. Different Session IDs (different customers) can be processed in parallel by different consumers. Kafka (A) with one partition gives global ordering but eliminates parallelism. Fanout (B) broadcasts to all consumers — wrong pattern. Competing consumers (D) distributes messages across consumers without ordering guarantees."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Choose between Azure messaging services", url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/compare-messaging-services" },
+    { label: "Azure Service Bus — overview", url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview" },
+    { label: "Azure Event Hubs — Kafka surface", url: "https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-for-kafka-ecosystem-overview" },
+    { label: "MassTransit with Azure Service Bus", url: "https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-dotnet-get-started-with-queues" },
+  ]}
+/>

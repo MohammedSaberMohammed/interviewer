@@ -1,0 +1,21 @@
+{
+  "slug": "12-advanced-angular",
+  "number": 12,
+  "title": "Advanced Angular",
+  "subtitle": "Custom directives, CDK, functional interceptors, and zoneless Angular",
+  "level": "senior",
+  "estimatedHours": 10,
+  "emoji": "🔬",
+  "color": "slate",
+  "description": "The advanced topics that appear in senior Angular interviews: custom structural directives with TemplateRef, the Angular CDK, functional interceptors, advanced template patterns with ng-template, and Angular's experimental zoneless mode.",
+  "prerequisites": ["04-component-architecture", "06-rxjs-reactive", "08-state-management"],
+  "learningOutcomes": [
+    "Build custom structural directives using TemplateRef and ViewContainerRef",
+    "Create attribute directives with @HostListener and @HostBinding",
+    "Write performant stateful pipes and explain their caching behavior",
+    "Implement functional HTTP interceptors with the modern HttpInterceptorFn",
+    "Use Angular CDK overlay and a11y utilities",
+    "Configure and understand experimental zoneless change detection",
+    "Use ng-template, TemplateRef, and ngTemplateOutlet for advanced composition"
+  ]
+}

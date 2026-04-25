@@ -1,0 +1,309 @@
+---
+title: "Server-Side Rendering"
+slug: "ssr-angular"
+order: 5
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["Angular", "SSR", "Angular Universal", "hydration", "TransferState", "SEO", "performance"]
+summary: "Angular SSR (Angular Universal) renders your app on the server, sending HTML to the browser for faster First Contentful Paint and better SEO. Angular 17+ includes non-destructive hydration that merges server-rendered HTML with the client application."
+docsLinks:
+  - label: "Angular SSR"
+    url: "https://angular.dev/guide/ssr"
+  - label: "Hydration"
+    url: "https://angular.dev/guide/hydration"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why SSR?
+
+Client-Side Rendering (CSR) has a performance gap:
+
+```
+CSR Timeline:
+0ms   → Server sends empty HTML: <div id="app"></div>
+500ms → JavaScript downloaded
+800ms → JavaScript parsed and executed
+900ms → Angular bootstraps, renders component tree
+1000ms → First Contentful Paint (FCP) — user sees content
+
+SSR Timeline:
+0ms   → Server renders complete HTML
+100ms → Server sends HTML with content — user sees content immediately (FCP!)
+800ms → Angular JavaScript downloaded
+1000ms → Angular hydrates — app becomes interactive (TTI)
+```
+
+SSR benefits:
+- **Faster FCP**: User sees content before JS loads
+- **SEO**: Search crawlers see real HTML content, not `<div id="app">`
+- **Social sharing**: Open Graph meta tags are present in initial HTML
+- **Core Web Vitals**: Better LCP (Largest Contentful Paint) scores
+
+## Setting Up SSR
+
+```bash
+# Add SSR to an existing Angular app
+ng add @angular/ssr
+
+# Or create new app with SSR
+ng new my-app --ssr
+```
+
+This generates:
+```
+src/
+├── app/
+│   ├── app.config.ts          # Client config (provideClientHydration)
+│   └── app.config.server.ts   # Server config (merges with client)
+├── server.ts                  # Express server entry point
+└── main.server.ts             # Server-side Angular bootstrap
+```
+
+## Angular 17+ Configuration
+
+```typescript
+// app.config.ts — client configuration
+import { ApplicationConfig } from '@angular/core';
+import { provideRouter } from '@angular/router';
+import { provideClientHydration } from '@angular/platform-browser';
+import { provideHttpClient, withFetch } from '@angular/common/http';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes),
+    provideClientHydration(),    // Enables non-destructive hydration
+    provideHttpClient(withFetch()), // Uses fetch API (works in SSR)
+  ]
+};
+```
+
+```typescript
+// app.config.server.ts — additional server providers
+import { mergeApplicationConfig } from '@angular/core';
+import { provideServerRendering } from '@angular/platform-server';
+import { appConfig } from './app.config';
+
+const serverConfig: ApplicationConfig = {
+  providers: [
+    provideServerRendering()
+  ]
+};
+
+export const config = mergeApplicationConfig(appConfig, serverConfig);
+```
+
+## Non-Destructive Hydration (Angular 17+)
+
+Pre-Angular 17 SSR had "destructive hydration" — the server HTML was discarded and Angular re-rendered everything from scratch, causing a visual flash.
+
+Angular 17+ uses **non-destructive hydration**: Angular reuses the server-rendered DOM nodes instead of recreating them.
+
+```typescript
+// Just adding provideClientHydration() enables it
+providers: [
+  provideClientHydration()
+]
+```
+
+```html
+<!-- Server sends this HTML with the page -->
+<ul>
+  <li>Item 1</li>  <!-- Angular reuses this DOM node — no flash -->
+  <li>Item 2</li>
+  <li>Item 3</li>
+</ul>
+
+<!-- Without hydration: Angular would destroy + recreate all <li> elements -->
+```
+
+<Callout type="warning">
+Hydration requires that the server-rendered HTML exactly matches what the client would render. Common hydration mismatches:
+- `Date.now()` or `Math.random()` — different values on server and client
+- Browser-only APIs accessed during render (`window`, `document`, `localStorage`)
+- Third-party libraries that modify the DOM during initialization
+Use `@SkipHydration()` decorator on components that can't be safely hydrated.
+</Callout>
+
+## TransferState: Avoiding Double HTTP Requests
+
+Without TransferState, SSR causes a problem:
+1. Server fetches data from API → renders HTML with data
+2. Client receives HTML → bootstraps Angular → fetches data from API AGAIN
+3. User sees double network request and potentially a flash as data reloads
+
+```typescript
+import { HttpClient } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { isPlatformServer } from '@angular/common';
+import { PLATFORM_ID } from '@angular/core';
+
+// Angular 17+ — HttpClient automatically uses TransferState
+// when provideClientHydration() is configured with withHttpTransferCache()
+
+// app.config.ts
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideClientHydration(withHttpTransferCache()), // Auto-transfer HTTP responses
+    provideHttpClient(withFetch()),
+  ]
+};
+```
+
+```typescript
+// With withHttpTransferCache(), this Just Works:
+@Injectable({ providedIn: 'root' })
+class ProductService {
+  http = inject(HttpClient);
+
+  getProducts() {
+    // On server: fetches from API, stores in TransferState
+    // On client: reads from TransferState, NO second HTTP request made
+    return this.http.get<Product[]>('/api/products');
+  }
+}
+```
+
+## Platform Detection
+
+Some code should only run in the browser:
+
+```typescript
+import { isPlatformBrowser, isPlatformServer } from '@angular/common';
+import { inject, PLATFORM_ID } from '@angular/core';
+
+@Component({
+  selector: 'app-analytics',
+})
+class AnalyticsComponent implements OnInit {
+  private platformId = inject(PLATFORM_ID);
+
+  ngOnInit() {
+    if (isPlatformBrowser(this.platformId)) {
+      // Safe to access window, document, localStorage
+      this.initAnalytics();
+    }
+  }
+
+  private initAnalytics() {
+    window.gtag('event', 'page_view');
+  }
+}
+```
+
+```typescript
+// Pattern for services that use browser APIs
+@Injectable({ providedIn: 'root' })
+class LocalStorageService {
+  private platformId = inject(PLATFORM_ID);
+
+  get(key: string): string | null {
+    if (isPlatformBrowser(this.platformId)) {
+      return localStorage.getItem(key);
+    }
+    return null; // Server: no localStorage
+  }
+
+  set(key: string, value: string): void {
+    if (isPlatformBrowser(this.platformId)) {
+      localStorage.setItem(key, value);
+    }
+  }
+}
+```
+
+## afterNextRender and afterRender
+
+Angular 17 introduced lifecycle hooks specifically for browser-only operations:
+
+```typescript
+import { afterNextRender, afterRender, Component } from '@angular/core';
+
+@Component({
+  selector: 'app-chart',
+  template: `<canvas #canvas></canvas>`
+})
+class ChartComponent {
+  @ViewChild('canvas') canvas!: ElementRef<HTMLCanvasElement>;
+
+  constructor() {
+    // Runs ONCE after first render — browser only (no-op on server)
+    afterNextRender(() => {
+      // Safe: this only runs in browser, after first render
+      this.initChart(this.canvas.nativeElement);
+    });
+
+    // Runs after EVERY render — use for measuring/syncing
+    afterRender(() => {
+      // Update chart data
+    });
+  }
+
+  private initChart(canvas: HTMLCanvasElement) {
+    // Initialize Chart.js, D3, etc.
+  }
+}
+```
+
+<Callout type="tip">
+`afterNextRender` replaces the common pattern of using `isPlatformBrowser` in `ngAfterViewInit`. It's SSR-aware by design and runs after the DOM is stable — perfect for third-party JavaScript initialization.
+</Callout>
+
+<CodeChallenge
+  id="ssr-hydration"
+  difficulty="advanced"
+  description="An Angular SSR app uses new Date().toLocaleDateString() in a component template to show 'Last updated: 4/25/2026'. What problem does this cause with hydration?"
+  options={[
+    "No problem — dates are serialized consistently between server and client",
+    "A hydration mismatch: the server renders the date at request time, but the client re-renders with a potentially different timestamp, causing Angular to throw a hydration error",
+    "The date won't display at all in SSR mode",
+    "LocaleDateString behaves differently in Node.js vs browsers causing different formatting"
+  ]}
+  correctAnswer={1}
+  explanation="Hydration requires server and client to produce identical HTML. new Date().toLocaleDateString() produces a value based on the current time. The server renders it at request time (e.g., '4/25/2026 10:00 AM'), but by the time the client hydrates (seconds later), the same expression evaluates to a potentially different value. Angular detects the mismatch and throws a hydration error. The fix: pass the date as a static value, use a fixed timestamp from TransferState, or apply @SkipHydration() to the component."
+/>
+
+## Static Site Generation (SSG / Pre-rendering)
+
+For mostly-static pages, pre-rendering generates HTML at build time:
+
+```typescript
+// angular.json
+{
+  "prerender": {
+    "routes": [
+      "/",
+      "/about",
+      "/products",
+      "/products/1",
+      "/products/2"
+    ]
+  }
+}
+```
+
+```bash
+ng build --prerender
+```
+
+Pre-rendered pages are served as static HTML files — zero server rendering cost per request.
+
+## Senior Insight: SSR Decision Matrix
+
+| Requirement | CSR | SSR | SSG |
+|-------------|-----|-----|-----|
+| SEO critical | ❌ | ✅ | ✅ |
+| Personalized content | ✅ | ✅ | ❌ |
+| Real-time data | ✅ | ❌ | ❌ |
+| Fast FCP | ❌ | ✅ | ✅ |
+| Server infrastructure needed | No | Yes | No |
+| Hosting cost | Low | Higher | Lowest |
+
+**Angular Universal maturity**: Angular SSR is production-ready from v17+. The combination of non-destructive hydration + `withHttpTransferCache()` + `afterNextRender()` makes it practical without extensive platform-detection code.
+
+**Common SSR pitfalls to mention in interviews:**
+1. Not using `withFetch()` — the old `HttpClient` doesn't work in Node.js without it
+2. Direct DOM access in constructors — always use `afterNextRender` or `isPlatformBrowser`
+3. Missing `withHttpTransferCache()` — causes double HTTP requests
+4. setTimeout/setInterval in constructors — they leak on server (never cleaned up)

@@ -1,0 +1,284 @@
+---
+title: "Bundle Optimization"
+slug: "bundle-optimization"
+order: 4
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["Angular", "performance", "bundle", "tree shaking", "code splitting", "build", "webpack", "esbuild"]
+summary: "Angular's build pipeline includes tree shaking, differential loading, and code splitting. Understanding what ends up in your bundle and how to control it is essential for production performance."
+docsLinks:
+  - label: "Angular Build"
+    url: "https://angular.dev/tools/cli/build"
+  - label: "Build Optimization"
+    url: "https://angular.dev/best-practices/runtime-performance"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Understanding the Angular Build
+
+Angular CLI (from v17) uses **esbuild** for production builds — replacing Webpack. Key output artifacts:
+
+```bash
+ng build --configuration production
+```
+
+```
+dist/my-app/
+├── browser/
+│   ├── main-HASH.js          # Application code
+│   ├── polyfills-HASH.js     # Browser compatibility shims
+│   ├── chunk-HASH.js         # Lazy loaded route chunks
+│   └── styles-HASH.css
+└── index.html
+```
+
+Understanding what's in `main.js` and how to reduce it is the core of bundle optimization.
+
+## Analyzing Bundle Size
+
+```bash
+# Generate stats and source map for analysis
+ng build --source-map --stats-json
+
+# Use webpack-bundle-analyzer (works with Angular's stats.json)
+npx webpack-bundle-analyzer dist/my-app/browser/stats.json
+
+# Or use source-map-explorer
+npx source-map-explorer dist/my-app/browser/main*.js
+```
+
+The bundle analyzer visualizes what's in your bundle as a treemap — large rectangles are large modules. Common surprises:
+- `moment.js` included entirely (650KB) when only `format()` is needed
+- `rxjs` operators that aren't tree-shaken due to incorrect imports
+- `@angular/material` components brought in via barrel imports
+
+## Tree Shaking
+
+Angular's build is fully tree-shakeable for:
+- Standalone components (unused components aren't bundled)
+- RxJS operators imported individually
+- Services with `providedIn: 'root'` (unused services are removed)
+- `@angular/common` pipes not used in templates
+
+### RxJS Imports That Kill Tree Shaking
+
+```typescript
+// ❌ Imports entire rxjs/operators barrel — nothing is tree-shaken
+import { map, filter, switchMap } from 'rxjs/operators';
+
+// ✅ Tree-shakeable — only imported operators included
+import { map } from 'rxjs/operators/map';
+// OR (preferred modern approach)
+import { map, filter, switchMap } from 'rxjs';
+```
+
+<Callout type="tip">
+Modern RxJS (7+) and Angular 15+ use the `rxjs` package directly — `import { map } from 'rxjs'` is properly tree-shaken. The old `rxjs/operators` barrel is also fine in modern tooling. What kills tree shaking is barrel files in your own code that re-export everything.
+</Callout>
+
+### Barrel Files: The Hidden Bundle Killer
+
+```typescript
+// lib/index.ts — barrel file re-exporting everything
+export * from './services/user.service';
+export * from './services/product.service';
+export * from './services/order.service';
+export * from './components/user-list.component';
+export * from './components/product-list.component';
+// ... 50 more exports
+
+// In a component:
+import { UserService } from 'lib'; // Imports ALL 50+ exports into this module!
+```
+
+```typescript
+// ✅ Direct import — only UserService in this chunk
+import { UserService } from './services/user.service';
+```
+
+## Code Splitting with Lazy Loading
+
+The most impactful bundle optimization: don't ship code users haven't navigated to yet.
+
+```typescript
+// app.routes.ts
+export const routes: Routes = [
+  {
+    path: 'dashboard',
+    loadComponent: () =>
+      import('./dashboard/dashboard.component').then(m => m.DashboardComponent)
+  },
+  {
+    path: 'admin',
+    loadChildren: () =>
+      import('./admin/admin.routes').then(m => m.ADMIN_ROUTES)
+  },
+  {
+    path: 'reports',
+    loadComponent: () =>
+      import('./reports/reports.component').then(m => m.ReportsComponent)
+  }
+];
+```
+
+Each `loadComponent` and `loadChildren` creates a separate chunk. The Angular build analyzes dynamic imports statically and creates optimal chunk boundaries.
+
+## Avoiding Common Bundle Bloat Patterns
+
+### 1. Importing Large Libraries Entirely
+
+```typescript
+// ❌ Imports all of lodash (~530KB gzipped: 70KB)
+import _ from 'lodash';
+_.debounce(fn, 300);
+
+// ✅ Import only what you need
+import debounce from 'lodash/debounce';
+
+// ✅ Even better — use native alternatives
+const debounced = (fn: Function, delay: number) => {
+  let timer: ReturnType<typeof setTimeout>;
+  return (...args: any[]) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+};
+```
+
+### 2. Large Icon Libraries
+
+```typescript
+// ❌ All icons imported (often 500KB+)
+import { FontAwesomeModule } from '@fortawesome/angular-fontawesome';
+import { library } from '@fortawesome/fontawesome-svg-core';
+import { fas } from '@fortawesome/free-solid-svg-icons'; // ALL solid icons!
+library.add(fas);
+
+// ✅ Only specific icons
+import { faUser, faSearch, faHome } from '@fortawesome/free-solid-svg-icons';
+library.add(faUser, faSearch, faHome);
+```
+
+### 3. Date Libraries
+
+```typescript
+// ❌ moment.js — 232KB gzipped, not tree-shakeable
+import moment from 'moment';
+
+// ✅ date-fns — fully tree-shakeable
+import { format, parseISO, addDays } from 'date-fns';
+
+// ✅ Luxon — smaller than moment
+import { DateTime } from 'luxon';
+
+// ✅ Native Intl API for simple cases
+new Intl.DateTimeFormat('en-US', { dateStyle: 'short' }).format(new Date());
+```
+
+## Production Build Optimizations
+
+Angular's production build automatically applies:
+
+```json
+// angular.json — production configuration
+{
+  "configurations": {
+    "production": {
+      "optimization": true,       // Minification, dead code removal
+      "sourceMap": false,         // No source maps in prod
+      "namedChunks": false,       // Content-based chunk hashes
+      "aot": true,                // Ahead-of-Time compilation
+      "buildOptimizer": true,     // Angular-specific dead code removal
+      "budgets": [
+        {
+          "type": "initial",
+          "maximumWarning": "500kb",
+          "maximumError": "1mb"
+        },
+        {
+          "type": "anyComponentStyle",
+          "maximumWarning": "2kb",
+          "maximumError": "4kb"
+        }
+      ]
+    }
+  }
+}
+```
+
+The **budgets** configuration is critical — it makes CI fail if your bundle exceeds defined limits, preventing accidental bundle bloat from slipping into production.
+
+## Checking What's Actually Being Shipped
+
+```bash
+# Quick size check after build
+ls -la dist/my-app/browser/*.js | awk '{print $5, $9}' | sort -n
+
+# Gzip size (what matters for network transfer)
+gzip -c dist/my-app/browser/main-*.js | wc -c
+
+# Brotli size (used by modern servers)
+brotli -c dist/my-app/browser/main-*.js | wc -c
+```
+
+Target sizes (gzipped):
+- Initial bundle: < 150KB (aggressive), < 300KB (acceptable)
+- Lazy chunks: < 50KB each
+- Polyfills: < 30KB
+
+<CodeChallenge
+  id="bundle-tree-shaking"
+  difficulty="advanced"
+  description="You have a service decorated with @Injectable({ providedIn: 'root' }) that's never injected anywhere. What happens to it in a production build?"
+  options={[
+    "It's always included because providedIn: 'root' registers it globally",
+    "It's removed by tree shaking — providedIn: 'root' is tree-shakeable when the service has no consumers",
+    "It's included but lazily initialized on first request",
+    "Angular throws a build error for unused services"
+  ]}
+  correctAnswer={1}
+  explanation="providedIn: 'root' is specifically designed to be tree-shakeable. Unlike NgModule providers (which are always included when the module is imported), a root-provided service is only bundled if something injects it. If no component, directive, pipe, or other service in the component tree injects the service, it won't appear in the bundle. This is a key advantage of the standalone + providedIn: 'root' approach over NgModule-based providers."
+/>
+
+## Common-Chunk Configuration
+
+For multiple entry points or shared library patterns:
+
+```typescript
+// angular.json — control common chunk extraction
+{
+  "commonChunk": true,  // Extract shared code into a common chunk
+  "vendorChunk": false  // Merging vendor code into main chunk (often faster)
+}
+```
+
+## Senior Insight: The Measurement Discipline
+
+Bundle optimization is a measurement-first discipline:
+
+```bash
+# 1. Measure current state
+ng build --stats-json && npx webpack-bundle-analyzer dist/*/stats.json
+
+# 2. Identify the top 3 largest items
+# 3. Find if each is actually needed or just bloat
+# 4. Make one change at a time
+# 5. Measure the delta
+
+# Automated bundle size tracking (add to CI)
+ng build && node -e "
+  const { statSync, readdirSync } = require('fs');
+  const files = readdirSync('dist/app/browser').filter(f => f.endsWith('.js'));
+  const total = files.reduce((sum, f) => sum + statSync('dist/app/browser/' + f).size, 0);
+  console.log('Total JS:', (total / 1024).toFixed(1) + 'KB');
+"
+```
+
+The most impactful optimizations in priority order:
+1. **Lazy load routes** — biggest win, often 40-60% reduction in initial bundle
+2. **Remove unused dependencies** — check `npm ls` for transitive deps
+3. **Replace large deps with small alternatives** (moment → date-fns)
+4. **Audit barrel imports** — use ESLint `no-restricted-imports`
+5. **Split large components** — if a single component is > 50KB

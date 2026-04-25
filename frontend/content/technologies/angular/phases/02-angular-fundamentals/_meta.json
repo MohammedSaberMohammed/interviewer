@@ -1,0 +1,21 @@
+{
+  "slug": "02-angular-fundamentals",
+  "number": 2,
+  "title": "Angular Fundamentals",
+  "subtitle": "Components, templates, directives, pipes, and the new control flow syntax",
+  "level": "junior",
+  "estimatedHours": 10,
+  "emoji": "🅰️",
+  "color": "red",
+  "description": "Build a solid foundation in Angular's core concepts. From component anatomy and data binding to structural directives, pipes, and lifecycle hooks — these are the building blocks every Angular application is made of.",
+  "prerequisites": ["01-typescript-essentials"],
+  "learningOutcomes": [
+    "Explain component anatomy: selector, template, styles, and standalone flag",
+    "Use all four forms of data binding correctly",
+    "Apply both legacy (*ngIf/*ngFor) and new (@if/@for) control flow syntax",
+    "Create custom attribute directives and understand how Angular applies them",
+    "Build custom pipes and explain the difference between pure and impure",
+    "Compare NgModule and standalone component architectures",
+    "Know which lifecycle hook to use for initialization, cleanup, and view access"
+  ]
+}

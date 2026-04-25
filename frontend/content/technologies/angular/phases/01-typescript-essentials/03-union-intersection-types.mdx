@@ -1,0 +1,232 @@
+---
+title: "Union & Intersection Types"
+slug: "union-intersection-types"
+order: 3
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["TypeScript", "union types", "intersection types", "discriminated unions"]
+summary: "Union and intersection types model real-world complexity. Discriminated unions in particular are a pattern Angular codebases rely on for state machines and HTTP response handling."
+docsLinks:
+  - label: "TypeScript: Union Types"
+    url: "https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#union-types"
+  - label: "TypeScript: Narrowing"
+    url: "https://www.typescriptlang.org/docs/handbook/2/narrowing.html"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Modeling the Real World with Unions
+
+Real data isn't always a single clean shape. An API response can succeed or fail. A form field can hold a string or be null. A routing event can be one of a dozen event types. Union types are TypeScript's way of saying "this value is one of these types."
+
+## Union Types: The OR of Types
+
+The `|` operator means "type A OR type B":
+
+```typescript
+// Primitive unions
+type Status = 'idle' | 'loading' | 'success' | 'error';
+type ID = string | number;
+type MaybeString = string | null | undefined;
+
+// Object unions
+type ApiResponse = SuccessResponse | ErrorResponse;
+type Route = HomeRoute | ProductRoute | NotFoundRoute;
+```
+
+In Angular components, string literal unions are everywhere:
+
+```typescript
+@Component({ selector: 'app-button', template: `...` })
+class ButtonComponent {
+  @Input() variant: 'primary' | 'secondary' | 'danger' = 'primary';
+  @Input() size: 'sm' | 'md' | 'lg' = 'md';
+  @Input() loading = false;
+}
+```
+
+TypeScript enforces these at the template and call sites — you can't accidentally pass `variant="warning"` if it's not in the union.
+
+## Intersection Types: The AND of Types
+
+The `&` operator means "type A AND type B" — the result has all properties of both:
+
+```typescript
+type Timestamped = {
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type User = {
+  id: number;
+  name: string;
+  email: string;
+};
+
+type AuditedUser = User & Timestamped;
+// Has: id, name, email, createdAt, updatedAt
+
+// Practical Angular pattern: base + extra
+type ComponentInput = {
+  label: string;
+  disabled: boolean;
+};
+
+type SelectInput = ComponentInput & {
+  options: { value: string; label: string }[];
+  multiple: boolean;
+};
+```
+
+<Callout type="warning">
+Intersection of incompatible types creates `never`: `type Impossible = string & number` is `never` because no value can be both a string and a number. Watch for this when intersecting types that share a property with incompatible types.
+</Callout>
+
+## Discriminated Unions: The Most Powerful Pattern
+
+A discriminated union (also called a tagged union) is a union where each member has a literal type property called the **discriminant**. TypeScript uses this to narrow the type automatically:
+
+```typescript
+// Each branch has a unique literal 'type' field
+type LoadingState<T> =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: T }
+  | { status: 'error'; error: Error; retryable: boolean };
+
+// In an Angular component
+@Component({
+  template: `
+    @switch (state.status) {
+      @case ('idle') { <p>Ready</p> }
+      @case ('loading') { <app-spinner /> }
+      @case ('success') { <app-data [data]="state.data" /> }
+      @case ('error') { <app-error [message]="state.error.message" /> }
+    }
+  `
+})
+class DataComponent<T> {
+  state: LoadingState<T> = { status: 'idle' };
+
+  load(fetch: () => Observable<T>) {
+    this.state = { status: 'loading' };
+    fetch().subscribe({
+      next: (data) => this.state = { status: 'success', data },
+      error: (error) => this.state = { status: 'error', error, retryable: true }
+    });
+  }
+}
+```
+
+The magic: when you check `state.status === 'success'`, TypeScript knows `state.data` exists. You don't need any casts.
+
+## Exhaustiveness Checking
+
+A key advantage of discriminated unions is exhaustiveness checking — TypeScript can warn you when you forgot a branch:
+
+```typescript
+type Shape =
+  | { kind: 'circle'; radius: number }
+  | { kind: 'rectangle'; width: number; height: number }
+  | { kind: 'triangle'; base: number; height: number };
+
+function area(shape: Shape): number {
+  switch (shape.kind) {
+    case 'circle':
+      return Math.PI * shape.radius ** 2;
+    case 'rectangle':
+      return shape.width * shape.height;
+    case 'triangle':
+      return (shape.base * shape.height) / 2;
+    default:
+      // This 'never' trick ensures exhaustiveness
+      const _exhaustive: never = shape;
+      throw new Error(`Unhandled shape: ${JSON.stringify(_exhaustive)}`);
+  }
+}
+
+// Now if you add kind: 'pentagon' to Shape without updating area(),
+// TypeScript errors at the default case — compile-time protection!
+```
+
+## Distributing over Unions
+
+Conditional types distribute over union members — a powerful advanced feature:
+
+```typescript
+// Unwrap array types from a union
+type Flatten<T> = T extends Array<infer U> ? U : T;
+
+type A = Flatten<string[]>;       // string
+type B = Flatten<number>;         // number
+type C = Flatten<string | number[]>; // string | number (distributes!)
+
+// Exclude members from a union
+type WithoutNull<T> = T extends null | undefined ? never : T;
+type CleanString = WithoutNull<string | null | undefined>; // string
+// This is exactly how TypeScript's built-in NonNullable<T> works
+```
+
+## Real Angular Use Case: Router Events
+
+Angular's Router emits a discriminated union of events:
+
+```typescript
+import { Router, NavigationStart, NavigationEnd, NavigationError } from '@angular/router';
+
+@Injectable({ providedIn: 'root' })
+class NavigationService {
+  constructor(private router: Router) {
+    this.router.events.pipe(
+      filter(event => event instanceof NavigationStart
+        || event instanceof NavigationEnd
+        || event instanceof NavigationError)
+    ).subscribe(event => {
+      if (event instanceof NavigationStart) {
+        // TypeScript knows event.url exists here
+        console.log('Navigating to:', event.url);
+      } else if (event instanceof NavigationEnd) {
+        console.log('Arrived at:', event.urlAfterRedirects);
+      } else if (event instanceof NavigationError) {
+        console.error('Navigation failed:', event.error);
+      }
+    });
+  }
+}
+```
+
+<CodeChallenge
+  id="discriminated-union-narrowing"
+  difficulty="intermediate"
+  description="Given type Result<T> = { ok: true; value: T } | { ok: false; error: string }, what does TypeScript infer for 'result.value' inside an 'if (result.ok)' block?"
+  options={[
+    "T | undefined — it might not exist",
+    "T — TypeScript narrows to the success branch",
+    "unknown — TypeScript can't tell",
+    "It's a compile error — you must cast first"
+  ]}
+  correctAnswer={1}
+  explanation="Checking result.ok (the discriminant) narrows the type to { ok: true; value: T }. Inside the if block, TypeScript knows you're in the success branch, so result.value is type T with no cast needed. This is the core power of discriminated unions."
+/>
+
+## Senior Insight: Union Over Optional Properties
+
+A common mistake is modeling states with optional properties instead of discriminated unions:
+
+```typescript
+// ❌ Fragile — properties that shouldn't coexist can be set together
+interface BadState {
+  loading: boolean;
+  data?: User[];
+  error?: string;
+}
+
+// ✅ Correct — TypeScript enforces valid combinations
+type GoodState =
+  | { status: 'loading' }
+  | { status: 'success'; data: User[] }
+  | { status: 'error'; error: string };
+```
+
+The discriminated union approach means TypeScript will catch bugs like accessing `state.data` when the state is 'error' — something the optional property approach cannot do.

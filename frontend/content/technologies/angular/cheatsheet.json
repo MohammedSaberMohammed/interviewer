@@ -1,0 +1,83 @@
+{
+  "sections": [
+    {
+      "id": "typescript",
+      "title": "📘 TypeScript Essentials",
+      "content": [
+        { "label": "type vs interface", "value": "interface for object shapes/contracts; type for unions, tuples, utilities. Interfaces support declaration merging." },
+        { "label": "Generic constraints", "value": "T extends { createdAt: Date }. Restricts T to shapes with required properties." },
+        { "label": "Decorators", "value": "@Component, @Injectable, @Pipe — metadata annotations. Angular compiles them at build time." },
+        { "label": "Strict mode", "value": "\"strict\": true in tsconfig. Enables strictNullChecks, noImplicitAny, useUnknownInCatchVariables." },
+        { "label": "Utility types", "value": "Partial<T>, Pick<T,K>, Omit<T,K>, Record<K,V>, Required<T> — avoid code duplication." }
+      ]
+    },
+    {
+      "id": "components",
+      "title": "🧩 Components & Templates",
+      "content": [
+        { "label": "Change detection", "value": "Angular checks component tree top-down. Default strategy uses Zone.js dirty-checking." },
+        { "label": "OnPush strategy", "value": "Only re-check when @Input reference changes or async pipe emits. Massive perf win." },
+        { "label": "Signals", "value": "Angular 16+ reactive primitives. signal(), computed(), effect(). Fine-grained — no Zone.js needed." },
+        { "label": "ng-content", "value": "Projects external content into component slots. Multi-slot with select=\".class\" or [attr]." },
+        { "label": "ViewChild vs ContentChild", "value": "ViewChild queries own template; ContentChild queries projected content (ng-content)." },
+        { "label": "Lifecycle order", "value": "ngOnChanges → ngOnInit → ngDoCheck → ngAfterContentInit → ngAfterViewInit → ngOnDestroy" }
+      ]
+    },
+    {
+      "id": "di",
+      "title": "💉 Dependency Injection",
+      "content": [
+        { "label": "providedIn: 'root'", "value": "Singleton app-wide, tree-shaken if unused. Default for most services." },
+        { "label": "Component providers", "value": "providers: [MyService] in @Component — new instance per component, destroyed with it." },
+        { "label": "InjectionToken", "value": "Type-safe token for non-class values (config objects, primitives, functions)." },
+        { "label": "inject() function", "value": "Alternative to constructor injection. Works in factories, guards, interceptors, and signal contexts." },
+        { "label": "@Self / @SkipSelf", "value": "@Self = only own injector; @SkipSelf = skip own, walk up; @Optional = null if not found." }
+      ]
+    },
+    {
+      "id": "rxjs",
+      "title": "🔄 RxJS & Observables",
+      "content": [
+        { "label": "Cold vs hot", "value": "Cold: new execution per subscriber (HTTP). Hot: shared execution (Subject, WebSocket)." },
+        { "label": "Subject vs BehaviorSubject", "value": "Subject = no initial value; BehaviorSubject = requires init, replays last value to new subscribers." },
+        { "label": "switchMap", "value": "Cancels previous inner observable on new emission. Ideal for typeahead/search HTTP." },
+        { "label": "combineLatest vs forkJoin", "value": "combineLatest = emits on any change; forkJoin = waits for all to complete then emits once." },
+        { "label": "takeUntilDestroyed", "value": "Angular 16+ operator. Auto-unsubscribes on component destroy. Use in ngOnInit." },
+        { "label": "async pipe", "value": "Subscribes and unsubscribes automatically. Triggers OnPush change detection on emit." }
+      ]
+    },
+    {
+      "id": "forms",
+      "title": "📝 Forms",
+      "content": [
+        { "label": "Template-driven", "value": "[(ngModel)] binding. Simple forms. Logic in template. Harder to unit-test." },
+        { "label": "Reactive Forms", "value": "FormGroup/FormControl/FormArray. Explicit, testable, scalable. Logic in component class." },
+        { "label": "Validators", "value": "Validators.required, Validators.email, Validators.min(). Custom: ValidatorFn returns null | error object." },
+        { "label": "updateOn", "value": "updateOn: 'blur' or 'submit' — defer validation to focus loss or form submit event." },
+        { "label": "FormArray", "value": "Dynamic list of controls. Use for repeating fields (addresses, contacts)." }
+      ]
+    },
+    {
+      "id": "routing",
+      "title": "🗺️ Routing",
+      "content": [
+        { "label": "Lazy loading", "value": "loadComponent/loadChildren: () => import(...). Splits bundle. Reduces initial load." },
+        { "label": "Route guards", "value": "canActivate, canDeactivate, canMatch — functions returning boolean or UrlTree." },
+        { "label": "ActivatedRoute", "value": "Inject for params, queryParams, data. Use snapshot for one-time reads, observable for changes." },
+        { "label": "Resolver", "value": "resolve: { data: myResolver } — pre-fetches data before navigation completes." },
+        { "label": "Router events", "value": "NavigationStart, NavigationEnd — use for loading spinners, analytics tracking." }
+      ]
+    },
+    {
+      "id": "performance",
+      "title": "⚡ Performance",
+      "content": [
+        { "label": "trackBy", "value": "trackBy: (i, item) => item.id in *ngFor. Prevents full DOM re-render on list changes." },
+        { "label": "Pure pipes", "value": "Pure pipes only recalculate when input reference changes. Default and preferred." },
+        { "label": "@defer block", "value": "Angular 17+ template syntax. Lazy-renders content on viewport/idle/interaction." },
+        { "label": "Bundle analysis", "value": "ng build --stats-json + webpack-bundle-analyzer. Find large third-party imports." },
+        { "label": "Standalone components", "value": "No NgModule = better tree-shaking. Import only what the component needs." }
+      ]
+    }
+  ]
+}

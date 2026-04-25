@@ -1,0 +1,315 @@
+---
+title: "Read Replicas and CQRS at Scale: Eventual Consistency Trade-offs"
+slug: "read-replicas-cqrs"
+order: 13
+difficulty: "expert"
+readingTime: 17
+status: "published"
+tags: ["CQRS", "read replicas", "eventual consistency", "query side", "command side", "EF Core", "system design", "scaling"]
+summary: "CQRS separates the write model from the read model — combining it with read replicas gives you massive read scalability while accepting a well-understood consistency trade-off."
+docsLinks:
+  - label: "CQRS pattern — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs"
+  - label: "Azure SQL — read scale-out"
+    url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/read-scale-out"
+  - label: "Event Sourcing pattern — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## Why CQRS Exists
+
+Traditional CRUD applications use the same data model for reading and writing. This creates tension at scale:
+
+- **Write model** needs strong consistency, validation, domain logic — complex, normalized
+- **Read model** needs fast query performance, denormalized projections, flexible shapes — simple, wide
+
+CQRS (**Command Query Responsibility Segregation**) separates these into two explicit models:
+- **Commands**: Mutations with business logic. Write to the authoritative store.
+- **Queries**: Read projections. Read from a store optimized for query patterns.
+
+<ArchDiagram
+  title="CQRS: Separated Write and Read Models"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client / API', type: 'client' }] },
+    { nodes: [
+      { id: 'cmd', label: 'Command Handler', sublabel: 'writes + domain logic', type: 'service' },
+      { id: 'qry', label: 'Query Handler', sublabel: 'reads + projections', type: 'service' },
+    ]},
+    { nodes: [
+      { id: 'writedb', label: 'Write DB', sublabel: 'normalized, consistent', type: 'database' },
+      { id: 'readdb', label: 'Read Replica / View', sublabel: 'denormalized, fast', type: 'database' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'command or query' },
+    { label: 'writes left, reads right' },
+  ]}
+  caption="Commands (mutations) and Queries (reads) use completely separate models, handlers, and data stores. Read stores can be replicas, materialized views, or even Elasticsearch."
+/>
+
+---
+
+## Simple CQRS with EF Core (Same Database)
+
+The simplest form of CQRS uses two different DbContext configurations against the same database — no read replica yet.
+
+```csharp
+// Write side — full EF Core with change tracking, validation, domain events
+public class WriteOrderRepository
+{
+    private readonly WriteDbContext _db; // tracked, full model
+
+    public async Task<Order> CreateAsync(CreateOrderCommand cmd)
+    {
+        var order = Order.Create(cmd); // domain logic, invariants enforced
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync();
+        return order;
+    }
+}
+
+// Read side — lean queries, no tracking, flat DTOs
+public class OrderQueryService
+{
+    private readonly ReadDbContext _db; // no-tracking, read-only
+
+    public async Task<OrderSummaryDto[]> GetCustomerOrdersAsync(Guid customerId)
+    {
+        return await _db.Orders
+            .AsNoTracking() // critical — no change tracking overhead
+            .Where(o => o.CustomerId == customerId)
+            .OrderByDescending(o => o.PlacedAt)
+            .Select(o => new OrderSummaryDto(
+                o.Id,
+                o.Status.ToString(),
+                o.TotalAmount,
+                o.PlacedAt
+            ))
+            .ToArrayAsync();
+    }
+}
+
+// Two DbContext registrations — same connection string, different behaviors
+builder.Services.AddDbContext<WriteDbContext>(o =>
+    o.UseSqlServer(writeConnectionString));
+
+builder.Services.AddDbContext<ReadDbContext>(o =>
+    o.UseSqlServer(readConnectionString) // can be replica connection string
+     .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking));
+```
+
+---
+
+## Scaling Reads with Read Replicas
+
+A read replica is a continuously synchronized copy of the primary database. Reads are routed to the replica; writes go to the primary.
+
+```
+Write:  Application ──COMMAND──► [Primary DB] ──replication──► [Read Replica]
+Read:   Application ──QUERY───►                                 [Read Replica]
+```
+
+**Replication lag**: There is always a delay between when a write commits on the primary and when it is visible on the replica. In Azure SQL, this is typically 0–5 seconds under normal conditions.
+
+```csharp
+// Routing reads to the read replica using connection string ApplicationIntent
+// Azure SQL automatically routes to a read replica with this setting
+var readConnectionString = new SqlConnectionStringBuilder(primaryConnectionString)
+{
+    ApplicationIntent = ApplicationIntent.ReadOnly
+}.ToString();
+// Append: ;ApplicationIntent=ReadOnly to connection string
+
+// Or configure directly in the connection string:
+// Server=sql.database.windows.net;Database=mydb;ApplicationIntent=ReadOnly;...
+
+// EF Core read context pointing at read replica
+builder.Services.AddDbContext<ReadDbContext>(o =>
+    o.UseSqlServer("Server=...;Database=mydb;ApplicationIntent=ReadOnly;..."));
+```
+
+---
+
+## Full CQRS: Separate Read Stores
+
+For maximum query flexibility, the read model lives in a completely different store — often denormalized and shaped for specific query patterns.
+
+```
+Command Side:                          Query Side:
+OrderService ──writes──► SQL DB        SQL DB ──events──► EventHandler ──projects──► Elasticsearch
+                                                                                       (search)
+                                       SQL DB ──events──► EventHandler ──projects──► Redis
+                                                                                       (dashboard)
+                                       SQL DB ──events──► EventHandler ──projects──► CosmosDB
+                                                                                       (API reads)
+```
+
+```csharp
+// Projection handler — rebuilds the read model from domain events
+public class OrderProjectionHandler :
+    IEventHandler<OrderPlacedEvent>,
+    IEventHandler<OrderShippedEvent>
+{
+    private readonly IElasticClient _elastic;
+
+    public async Task HandleAsync(OrderPlacedEvent evt)
+    {
+        // Project into Elasticsearch document — denormalized, search-optimized
+        await _elastic.IndexDocumentAsync(new OrderDocument
+        {
+            Id = evt.OrderId.ToString(),
+            CustomerId = evt.CustomerId,
+            CustomerName = evt.CustomerName, // denormalized — no join needed
+            Status = "Placed",
+            TotalAmount = evt.TotalAmount,
+            PlacedAt = evt.PlacedAt,
+            Items = evt.Items.Select(i => i.ProductName).ToArray() // searchable
+        });
+    }
+
+    public async Task HandleAsync(OrderShippedEvent evt)
+    {
+        // Update the existing document — partial update
+        await _elastic.UpdateAsync<OrderDocument>(
+            evt.OrderId.ToString(),
+            u => u.Doc(new { Status = "Shipped", ShippedAt = evt.ShippedAt })
+        );
+    }
+}
+```
+
+---
+
+## MediatR: CQRS Mediator Pattern in .NET
+
+MediatR is the idiomatic way to implement CQRS command/query dispatch in ASP.NET Core.
+
+```csharp
+// Install: Install-Package MediatR
+
+// Command — mutates state
+public record PlaceOrderCommand(Guid CustomerId, List<OrderItem> Items)
+    : IRequest<Guid>;
+
+// Command handler
+public class PlaceOrderHandler : IRequestHandler<PlaceOrderCommand, Guid>
+{
+    private readonly WriteDbContext _db;
+    private readonly IPublisher _publisher;
+
+    public async Task<Guid> Handle(PlaceOrderCommand cmd, CancellationToken ct)
+    {
+        var order = Order.Create(cmd.CustomerId, cmd.Items);
+        _db.Orders.Add(order);
+        await _db.SaveChangesAsync(ct);
+
+        await _publisher.Publish(new OrderPlacedNotification(order.Id), ct);
+        return order.Id;
+    }
+}
+
+// Query — returns data without side effects
+public record GetOrderSummaryQuery(Guid OrderId) : IRequest<OrderSummaryDto?>;
+
+// Query handler — reads from read model
+public class GetOrderSummaryHandler : IRequestHandler<GetOrderSummaryQuery, OrderSummaryDto?>
+{
+    private readonly ReadDbContext _db;
+
+    public async Task<OrderSummaryDto?> Handle(GetOrderSummaryQuery query, CancellationToken ct)
+    {
+        return await _db.OrderSummaries
+            .AsNoTracking()
+            .Where(o => o.Id == query.OrderId)
+            .Select(o => new OrderSummaryDto(o.Id, o.Status, o.Total, o.PlacedAt))
+            .FirstOrDefaultAsync(ct);
+    }
+}
+
+// Controller — thin, just dispatches
+[ApiController, Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    private readonly ISender _mediator;
+
+    [HttpPost]
+    public async Task<IActionResult> PlaceOrder(PlaceOrderRequest req)
+    {
+        var orderId = await _mediator.Send(new PlaceOrderCommand(req.CustomerId, req.Items));
+        return CreatedAtAction(nameof(GetOrder), new { id = orderId }, new { orderId });
+    }
+
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetOrder(Guid id)
+    {
+        var order = await _mediator.Send(new GetOrderSummaryQuery(id));
+        return order is null ? NotFound() : Ok(order);
+    }
+}
+```
+
+---
+
+<ComparisonTable
+  headers={["CQRS Variant", "Complexity", "Consistency", "Query Flexibility", "When to Use"]}
+  rows={[
+    ["Same model (no CQRS)", "Low", "Strong", "Low (normalized)", "Simple apps, early stage"],
+    ["Separate command/query services (same DB)", "Medium", "Strong", "Medium (still SQL)", "Medium-scale, team boundaries"],
+    ["Read replica (same schema)", "Medium", "Eventual (replica lag)", "Medium", "Read-heavy, 80/20 read/write ratio"],
+    ["Separate read store (projections)", "High", "Eventual (projection lag)", "High (Elasticsearch, NoSQL)", "Complex query needs, extreme read scale"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: The Write-After-Read Anti-Pattern**
+
+The most common CQRS mistake: a user submits a form, which fires a command, which saves to the primary DB. The API redirects to a GET — which reads from the replica. But the replica hasn't synced yet (replication lag = 200ms). The user sees the page before their change — a confusing UX.
+
+Solutions:
+1. **Session token (Cosmos DB)**: Use the write's session token to force the read to wait for sync
+2. **Optimistic UI**: Show the submitted data immediately without re-fetching
+3. **Command response includes the written data**: Return the created/updated object from the POST response; the client displays that directly without a GET
+4. **Read from primary after write**: For the immediate post-write read, route to primary (use the write DbContext). For subsequent requests, use the replica.
+
+```csharp
+// Pattern 4: Route the post-write read to primary
+public async Task<IActionResult> PlaceOrder(PlaceOrderRequest req)
+{
+    var orderId = await _mediator.Send(new PlaceOrderCommand(req.CustomerId, req.Items));
+
+    // Read from PRIMARY (not replica) to avoid lag on the immediately-following GET
+    var order = await _writeDb.Orders.FindAsync(orderId); // fresh, guaranteed
+    return CreatedAtAction(nameof(GetOrder), new { id = orderId }, MapToDto(order!));
+}
+```
+</Callout>
+
+---
+
+<Quiz
+  id="12-system-design/read-replicas-cqrs/challenge-1"
+  question="In a CQRS system with a separate Elasticsearch read store, a user updates their delivery address and immediately views their order. The order still shows the old address. What is happening?"
+  options={[
+    "A bug — CQRS systems must be strongly consistent",
+    "The projection handler has not yet processed the AddressUpdatedEvent — eventual consistency lag between write and read model",
+    "Elasticsearch does not support updates — only inserts are possible",
+    "The command handler forgot to publish the event to trigger the projection"
+  ]}
+  correctAnswer={1}
+  explanation="This is expected eventual consistency behavior in full CQRS with a separate read store. The command updated the write database and published an AddressUpdatedEvent. The projection handler processes this event asynchronously and updates Elasticsearch. If the user reads the order before the projection handler runs, they see the old address. Solutions: display the submitted address optimistically in the UI, delay the redirect slightly, or read from the write database for the immediately-post-update view. This lag is a known trade-off of eventual consistency, not a bug."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "CQRS pattern — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs" },
+    { label: "Azure SQL — read scale-out (read replicas)", url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/read-scale-out" },
+    { label: "Materialized View pattern", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/materialized-view" },
+    { label: "Event Sourcing + CQRS", url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/event-sourcing" },
+  ]}
+/>

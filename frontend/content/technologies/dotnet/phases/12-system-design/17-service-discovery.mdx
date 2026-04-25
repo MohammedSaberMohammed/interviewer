@@ -1,0 +1,279 @@
+---
+title: "Service Discovery: DNS-Based, Client-Side, Consul, Kubernetes Services"
+slug: "service-discovery"
+order: 17
+difficulty: "advanced"
+readingTime: 15
+status: "published"
+tags: ["service discovery", "DNS", "client-side discovery", "Consul", "Kubernetes", "service mesh", "microservices", "system design"]
+summary: "Service discovery lets microservices find each other dynamically — understanding DNS-based vs client-side discovery and how Kubernetes Services work is essential for cloud-native .NET development."
+docsLinks:
+  - label: "Azure Container Apps — service discovery"
+    url: "https://learn.microsoft.com/en-us/azure/container-apps/connect-apps"
+  - label: "Azure Kubernetes Service — DNS for services"
+    url: "https://learn.microsoft.com/en-us/azure/aks/coredns-custom"
+  - label: "Azure Service Fabric — service discovery"
+    url: "https://learn.microsoft.com/en-us/azure/service-fabric/service-fabric-connect-and-communicate-with-services"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## The Service Discovery Problem
+
+In a static deployment, services have fixed IPs. In dynamic environments (Kubernetes, Azure Container Apps), containers start and stop, IPs change, and multiple instances exist. How does Service A know where Service B is right now?
+
+<ArchDiagram
+  title="Service Discovery: Resolving Dynamic Instance Addresses"
+  layers={[
+    { nodes: [{ id: 'caller', label: 'OrderService', sublabel: 'wants to call InventoryService', type: 'service' }] },
+    { nodes: [{ id: 'registry', label: 'Service Registry', sublabel: 'Kubernetes DNS / Consul / Azure Service Fabric', type: 'database' }] },
+    { nodes: [
+      { id: 'i1', label: 'Inventory Pod 1', sublabel: '10.0.0.5:8080', type: 'server' },
+      { id: 'i2', label: 'Inventory Pod 2', sublabel: '10.0.0.6:8080', type: 'server' },
+      { id: 'i3', label: 'Inventory Pod 3', sublabel: '10.0.0.7:8080', type: 'server' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'lookup: "inventory-svc" → healthy IP list', step: 1 },
+    { label: 'route to one healthy instance', step: 2 },
+  ]}
+  caption="The registry tracks which instances are healthy and their current IPs. Callers resolve the logical name ('inventory-svc') rather than hardcoded IPs that change on every pod restart or scale event."
+/>
+
+```
+Static (bad for cloud):         Dynamic (cloud-native):
+OrderService → 10.0.0.5:8080   OrderService → ??? (3 instances, IPs change)
+                                  10.0.1.12:8080
+                                  10.0.1.45:8080
+                                  10.0.2.8:8080   (just started)
+```
+
+Service discovery solves this by maintaining a **registry** of live service instances and providing a mechanism to look them up.
+
+---
+
+## Approach 1: DNS-Based Discovery (Server-Side)
+
+The simplest approach: use DNS. A DNS name (e.g., `order-service`) resolves to the IP of one or more healthy instances. The load balancer or Kubernetes Service handles resolution.
+
+```
+Client calls: http://order-service/api/orders
+DNS resolves: order-service → 10.0.1.12 (round-robin across healthy pods)
+```
+
+**How Kubernetes Services work**:
+- A Kubernetes Service gets a stable DNS name: `order-service.default.svc.cluster.local`
+- `kube-proxy` maintains iptables rules that route traffic to healthy pods
+- Health checks (readiness probes) remove unhealthy pods from the pool automatically
+
+```yaml
+# Kubernetes Service — DNS-based discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: default
+spec:
+  selector:
+    app: order-service    # routes to pods with this label
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP         # internal-only — no external exposure
+---
+# .NET app calls via stable DNS name
+# No code changes needed — just use the service name as hostname
+```
+
+```csharp
+// In .NET — reference other services by Kubernetes DNS name
+builder.Services.AddHttpClient<IOrderClient, OrderClient>(client =>
+{
+    // Kubernetes DNS resolves "order-service" to the correct IP
+    client.BaseAddress = new Uri("http://order-service");
+});
+
+// In Azure Container Apps — similar DNS-based discovery
+// Services in the same environment find each other by app name:
+builder.Services.AddHttpClient<IInventoryClient, InventoryClient>(client =>
+{
+    client.BaseAddress = new Uri("http://inventory-svc"); // ACA app name
+});
+```
+
+---
+
+## Approach 2: Client-Side Discovery
+
+The client directly queries a **service registry** (e.g., Consul, Eureka) to get a list of healthy instances, then picks one using a load-balancing strategy.
+
+```
+1. OrderService queries Consul: "Where is InventoryService?"
+2. Consul returns: [10.0.1.12:8080, 10.0.1.45:8080]
+3. OrderService picks one (round-robin, least connections, etc.)
+4. OrderService calls 10.0.1.12:8080 directly
+```
+
+```csharp
+// Client-side discovery with Consul
+// Install: Install-Package Consul
+
+// Service registration on startup
+public class ConsulRegistrationService : IHostedService
+{
+    private readonly IConsulClient _consul;
+    private readonly string _serviceId;
+
+    public async Task StartAsync(CancellationToken ct)
+    {
+        var registration = new AgentServiceRegistration
+        {
+            ID = _serviceId,
+            Name = "inventory-service",
+            Address = _hostIp,
+            Port = 8080,
+            Check = new AgentServiceCheck
+            {
+                HTTP = \$"http://{_hostIp}:8080/health",
+                Interval = TimeSpan.FromSeconds(10),
+                Timeout = TimeSpan.FromSeconds(3),
+                DeregisterCriticalServiceAfter = TimeSpan.FromMinutes(1)
+            }
+        };
+
+        await _consul.Agent.ServiceRegister(registration, ct);
+    }
+
+    public async Task StopAsync(CancellationToken ct)
+    {
+        await _consul.Agent.ServiceDeregister(_serviceId, ct);
+    }
+}
+
+// Client-side resolution — query Consul for healthy instances
+public class ConsulDiscoveryClient
+{
+    private readonly IConsulClient _consul;
+
+    public async Task<Uri> ResolveAsync(string serviceName)
+    {
+        var queryResult = await _consul.Health.Service(serviceName, passing: true);
+        var services = queryResult.Response;
+
+        if (services.Length == 0)
+            throw new ServiceUnavailableException(\$"No healthy instances of {serviceName}");
+
+        // Simple round-robin (or weighted random, least connections)
+        var service = services[Random.Shared.Next(services.Length)];
+        return new Uri(\$"http://{service.Service.Address}:{service.Service.Port}");
+    }
+}
+```
+
+---
+
+## Approach 3: .NET Aspire and Service Discovery
+
+.NET Aspire (preview, .NET 9) provides first-class service discovery for distributed .NET apps during development and production.
+
+```csharp
+// AppHost — defines the distributed app
+var builder = DistributedApplication.CreateBuilder(args);
+
+var orderDb = builder.AddSqlServer("orderdb");
+var inventoryService = builder.AddProject<Projects.InventoryService>("inventory-svc");
+var orderService = builder.AddProject<Projects.OrderService>("order-svc")
+    .WithReference(inventoryService)   // Aspire wires service discovery
+    .WithReference(orderDb);
+
+builder.Build().Run();
+
+// In OrderService — reference InventoryService by name (no hardcoded URL)
+builder.Services.AddHttpClient<IInventoryClient, InventoryClient>(client =>
+{
+    // Aspire resolves this to the correct URL in dev and production
+    client.BaseAddress = new Uri("http://inventory-svc");
+});
+```
+
+---
+
+## Approach 4: Service Mesh (Envoy/Istio/Linkerd)
+
+A service mesh moves service discovery and load balancing into a **sidecar proxy** alongside each service. The application does not need discovery logic — it calls `localhost:PORT` and the sidecar handles routing.
+
+```
+OrderService container                    InventoryService container
+┌──────────────────────┐                  ┌──────────────────────┐
+│ OrderService (8080)  │                  │ InventorySvc (8080)  │
+│ Envoy sidecar (15001)│──────────────────│ Envoy sidecar (15001)│
+└──────────────────────┘  mTLS/discovery  └──────────────────────┘
+```
+
+Benefits: mTLS between services, circuit breaking, retries, canary routing — all without application code changes.
+
+---
+
+<ComparisonTable
+  headers={["Approach", "Complexity", "Dynamic Updates", "Load Balancing", "Best For"]}
+  rows={[
+    ["DNS (Kubernetes Services)", "Low — built-in", "Automatic via kube-proxy", "Round-robin (iptables)", "Kubernetes deployments — default choice"],
+    ["Client-side (Consul)", "Medium — registry + code", "Consul health checks", "App-controlled (weighted, least-conn)", "Non-Kubernetes, fine-grained control"],
+    [".NET Aspire", "Low — declarative", "Automatic in dev/prod", "Built-in", "New .NET cloud-native projects"],
+    ["Service Mesh (Istio/Linkerd)", "High — sidecar infra", "Automatic via control plane", "Advanced (L7 routing, canary)", "Multi-language, advanced traffic management"],
+    ["Hardcoded URLs + config", "None", "Manual config change required", "None (single instance)", "Development only — never production"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Kubernetes DNS Is Sufficient for Most Workloads**
+
+Teams often reach for Consul or a service mesh when Kubernetes DNS handles 95% of service discovery needs. The decision tree:
+
+1. **Running on Kubernetes?** Use Kubernetes Services (ClusterIP) — DNS-based discovery is automatic and zero-operational-overhead.
+
+2. **Need health-check-aware routing beyond readiness probes?** Consider adding a liveness probe and adjusting your Kubernetes Service `sessionAffinity` setting before adding Consul.
+
+3. **Need cross-cluster discovery, multi-cloud, or non-Kubernetes services?** Now consider Consul or Azure Service Fabric's naming service.
+
+4. **Need mTLS, circuit breaking, retries, and advanced traffic shaping without touching application code?** Service mesh (Istio on AKS, Linkerd).
+
+In Azure environments specifically: Azure Container Apps handles service discovery automatically — containers in the same ACA Environment find each other by app name without any additional tooling. Azure Kubernetes Service uses CoreDNS for in-cluster DNS resolution.
+
+One pattern worth knowing: **health-check-based deregistration**. Configure your Consul service registration with `DeregisterCriticalServiceAfter = 1 minute`. If the health check fails for 1 minute, Consul automatically removes the instance from discovery results. Without this, a crashed pod may remain in the registry and receive traffic until manual cleanup.
+</Callout>
+
+---
+
+<MythBuster
+  myth="You need a service mesh like Istio for service discovery to work in Kubernetes."
+  reality="Kubernetes has built-in DNS-based service discovery via CoreDNS and Service resources. Every service gets a stable DNS name that resolves to healthy pods via kube-proxy. You do not need Istio, Consul, or any additional tooling for basic service discovery. A service mesh adds value for mTLS, fine-grained traffic control, and observability — but these are separate concerns from basic discovery. Start with Kubernetes DNS; add a service mesh only when you have a specific requirement it solves."
+/>
+
+---
+
+<Quiz
+  id="12-system-design/service-discovery/challenge-1"
+  question="OrderService calls InventoryService using the URL http://inventory-service/api/stock. Inventory is deployed as 3 Kubernetes pods. OrderService never changes its URL but traffic is distributed across all 3 pods. What Kubernetes component makes this possible?"
+  options={[
+    "Kubernetes Deployment — manages replica count",
+    "Kubernetes ConfigMap — stores the inventory service URL",
+    "Kubernetes Service (ClusterIP) — provides a stable DNS name that load-balances across healthy pods",
+    "Kubernetes Ingress — routes external traffic to pods"
+  ]}
+  correctAnswer={2}
+  explanation="A Kubernetes Service (ClusterIP type) provides a stable DNS name (inventory-service.default.svc.cluster.local, shortened to inventory-service within the cluster) and a virtual IP. kube-proxy maintains iptables rules that distribute traffic across all healthy pods matching the Service selector. OrderService always calls the same URL; Kubernetes transparently handles pod IP changes, scaling events, and health-based routing. A Deployment (A) manages replica count but provides no DNS or routing. ConfigMap (B) stores config but provides no routing. Ingress (D) handles external-to-cluster traffic, not internal service-to-service communication."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Azure Container Apps — connect apps", url: "https://learn.microsoft.com/en-us/azure/container-apps/connect-apps" },
+    { label: "AKS — CoreDNS customization", url: "https://learn.microsoft.com/en-us/azure/aks/coredns-custom" },
+    { label: ".NET Aspire — service discovery", url: "https://learn.microsoft.com/en-us/dotnet/aspire/service-discovery/overview" },
+    { label: "AKS — Istio service mesh add-on", url: "https://learn.microsoft.com/en-us/azure/aks/istio-about" },
+  ]}
+/>

@@ -1,0 +1,225 @@
+---
+title: "CAP Theorem: Consistency, Availability, Partition Tolerance"
+slug: "cap-theorem"
+order: 1
+difficulty: "advanced"
+readingTime: 16
+status: "published"
+tags: ["CAP theorem", "distributed systems", "consistency", "availability", "partition tolerance", "system design"]
+summary: "Every distributed system makes a trade-off between consistency and availability when a network partition occurs — understanding CAP is foundational to every system design interview."
+docsLinks:
+  - label: "Azure Architecture: Data consistency primer"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/patterns/category/data-management"
+  - label: "Reliability patterns — Azure Architecture Center"
+    url: "https://learn.microsoft.com/en-us/azure/architecture/framework/resiliency/reliability-patterns"
+  - label: "Azure Cosmos DB consistency levels"
+    url: "https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels"
+---
+
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## What Is CAP Theorem?
+
+CAP Theorem, proven by Eric Brewer in 2000, states that a distributed data store can provide **at most two of three guarantees** simultaneously:
+
+- **C — Consistency**: Every read receives the most recent write or an error. All nodes see the same data at the same time.
+- **A — Availability**: Every request receives a (non-error) response — but the response may not contain the most recent write.
+- **P — Partition Tolerance**: The system continues operating even when network partitions cause message loss between nodes.
+
+The critical insight: **in a real distributed system, network partitions are not optional**. They will happen. This means the real choice is always between **C and A** when a partition occurs.
+
+<ArchDiagram
+  title="CAP Theorem: Partition Forces a Trade-off"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client Request', type: 'client' }] },
+    { nodes: [{ id: 'partition', label: 'Network Partition', sublabel: 'nodes cannot communicate', type: 'gateway' }] },
+    { nodes: [
+      { id: 'cp', label: 'CP System', sublabel: 'Reject writes → strong consistency', type: 'database' },
+      { id: 'ap', label: 'AP System', sublabel: 'Serve stale reads → always available', type: 'cache' },
+    ]},
+  ]}
+  connectors={[
+    { label: 'partition occurs', dashed: true },
+    { label: 'system must choose one' },
+  ]}
+  caption="CP databases (SQL Server, etcd) return an error during a partition. AP databases (Cassandra, DynamoDB) serve potentially stale data. CA (no partition tolerance) only exists in single-node setups."
+/>
+
+```
+Normal operation:          During a partition:
+┌──────────┐               ┌──────────┐   ~~~~~   ┌──────────┐
+│  Node A  │◄──────────────│  Node B  │           │  Node C  │
+│  (write) │               │          │           │(isolated)│
+└──────────┘               └──────────┘           └──────────┘
+
+You must choose:
+  CP → refuse reads on Node C (return error) — prioritize correctness
+  AP → serve stale data on Node C — prioritize uptime
+```
+
+---
+
+## The Three System Categories
+
+### CP Systems — Consistency + Partition Tolerance
+
+When a partition occurs, a CP system **refuses to serve potentially stale data**. Nodes that cannot confirm they have the latest state return an error or become unavailable.
+
+**Examples**: HBase, Zookeeper, etcd, MongoDB (with majority write concern), SQL Server (synchronous replication)
+
+**Use when**: Financial transactions, inventory counts, anything where showing stale data causes business harm.
+
+### AP Systems — Availability + Partition Tolerance
+
+When a partition occurs, an AP system **continues serving requests** even if some nodes may have stale data. Consistency is achieved eventually once the partition heals.
+
+**Examples**: DynamoDB (by default), Cassandra, CouchDB, DNS, shopping cart systems
+
+**Use when**: High read throughput, user-facing features that tolerate slight staleness (social media feeds, product recommendations).
+
+### CA Systems — Consistency + Availability (No Partition Tolerance)
+
+This category only exists in **single-node or LAN-connected systems** where you assume partitions never happen. Real distributed systems cannot choose this.
+
+**Examples**: Single-node PostgreSQL, single-node MySQL (not distributed)
+
+---
+
+## CAP Is a Spectrum, Not a Binary Choice
+
+Modern distributed systems do not sit squarely in one camp. **PACELC** (proposed by Daniel Abadi) is a more nuanced model:
+
+```
+PACELC:
+  If Partition → choose between Availability and Consistency (like CAP)
+  Else (no partition) → choose between Latency and Consistency
+```
+
+Even without partitions, replication lag means you trade **latency for consistency**. For example:
+- Azure Cosmos DB exposes 5 explicit consistency levels (strong → eventual)
+- DynamoDB allows per-request consistency choice
+- PostgreSQL allows `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` for read replicas
+
+```csharp
+// Cosmos DB — choose consistency per operation
+var options = new ItemRequestOptions
+{
+    ConsistencyLevel = ConsistencyLevel.Session // or Strong, BoundedStaleness, Eventual
+};
+
+var item = await container.ReadItemAsync<Order>(
+    id: "order-123",
+    partitionKey: new PartitionKey("customer-456"),
+    requestOptions: options
+);
+```
+
+---
+
+## Interview War Story: The Shopping Cart Problem
+
+Amazon famously chose AP for shopping carts. Here's the reasoning:
+
+**CP choice**: If you can't confirm cart state across nodes, return an error. Customer sees "service unavailable" during checkout.
+
+**AP choice**: Serve potentially stale cart. In the worst case, the customer sees an item that's no longer in their cart — then you reconcile. The business prefers a slightly wrong cart over no cart at all.
+
+This is why Dynamo (the precursor to DynamoDB) was born — Amazon needed AP semantics with eventual consistency and application-level conflict resolution.
+
+<Callout type="senior">
+**Senior Insight: CAP Applies Per Operation, Not Per System**
+
+You do not pick one CAP profile for your entire application. Sophisticated architectures apply different trade-offs to different data:
+
+- **User profile reads**: AP — serve stale, it's fine if the name is 1 second old
+- **Account balance reads**: CP — never serve stale, risk of overdraft
+- **Order placement writes**: CP — require quorum before confirming
+- **Analytics dashboards**: AP — eventual consistency is acceptable
+
+In code, this means using **different data stores or consistency configurations** for different bounded contexts. A single microservice might use strong consistency for writes and read replicas for reads, accepting the replication lag. That's a deliberate CAP choice at the operation level.
+
+Always ask in interviews: "What's the acceptable staleness window for this data?" That answer drives your CAP positioning.
+</Callout>
+
+---
+
+## Real-World CAP Positioning of Common Technologies
+
+<ComparisonTable
+  headers={["Technology", "CAP Position", "Partition Behavior", "Use Case"]}
+  rows={[
+    ["PostgreSQL (single)", "CA", "N/A — not distributed", "OLTP, relational data"],
+    ["PostgreSQL + Patroni", "CP", "Promote primary, block writes on old primary", "HA relational with strong consistency"],
+    ["MongoDB (majority writes)", "CP", "Refuse writes without quorum", "Document store, strong consistency"],
+    ["Cassandra", "AP", "Accept writes, reconcile later with LWW", "High-write time-series, geo-distributed"],
+    ["DynamoDB (eventually consistent)", "AP", "Serve stale reads, no errors", "Serverless, global scale, shopping carts"],
+    ["DynamoDB (strongly consistent)", "CP", "Coordinate across AZs, higher latency", "Inventory, financial ledgers"],
+    ["Redis Cluster", "AP (default)", "Serve from available shards", "Caching, sessions, leaderboards"],
+    ["etcd / Zookeeper", "CP", "Block until leader confirmed", "Leader election, configuration, locks"],
+    ["Cosmos DB (Strong)", "CP", "Multi-region coordination, slower writes", "Global ACID transactions"],
+    ["Cosmos DB (Eventual)", "AP", "Serve from nearest region", "Read-heavy global apps"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="CAP theorem means you can only have 2 of 3 properties — so choose wisely and you're done."
+  reality="CAP describes the worst-case scenario during a network partition. In practice: partitions are rare, you can tune per-operation, and modern systems like Cosmos DB let you pick consistency per request. PACELC extends CAP to also consider the latency-consistency trade-off during normal operation, which is often more relevant day-to-day."
+/>
+
+---
+
+## Applying CAP in a System Design Interview
+
+When asked to design a system, address CAP explicitly with this framework:
+
+1. **Identify consistency requirements**: Which operations absolutely cannot tolerate stale data?
+2. **Identify availability requirements**: What is the acceptable downtime? SLA?
+3. **Assume partitions will happen**: Never choose CA for distributed systems.
+4. **State your choice and justify**: "I'm choosing AP for the feed service because a 5-second stale feed is acceptable. For payments, I'm choosing CP because showing an incorrect balance has direct financial consequences."
+
+```csharp
+// Example: Dual-write pattern with explicit consistency choice
+public class OrderService
+{
+    private readonly IOrderRepository _orders;       // CP: SQL with strong consistency
+    private readonly IFeedRepository _feed;          // AP: Cassandra with eventual consistency
+
+    public async Task PlaceOrderAsync(PlaceOrderCommand cmd)
+    {
+        // CP: This must succeed with strong consistency — financial record
+        var order = await _orders.SaveAsync(cmd); // throws on partition failure
+
+        // AP: Best-effort — feed update can lag or fail without blocking order
+        await _feed.PublishActivityAsync(order).ConfigureAwait(false);
+        // If feed fails, we accept staleness — order is what matters
+    }
+}
+```
+
+---
+
+<Quiz
+  id="12-system-design/cap-theorem/challenge-1"
+  question="Your e-commerce platform shows product inventory counts to users. A network partition occurs between your inventory service nodes. Which choice aligns with CP?"
+  options={[
+    "Return the count from whichever node responds first, even if it may be stale",
+    "Return an error or 'unavailable' response until the partition heals and nodes sync",
+    "Cache the last known count in the browser and display that",
+    "Degrade to showing 'In Stock' / 'Out of Stock' without exact numbers"
+  ]}
+  correctAnswer={1}
+  explanation="CP means prioritizing Consistency over Availability. During a partition, a CP system refuses to serve potentially inconsistent data — it returns an error or waits until it can guarantee the data is current. Options A, C, and D all serve potentially stale data, which is AP behavior. For inventory, CP makes sense because selling an item that's actually out of stock (overselling) is a direct business problem."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Azure Cosmos DB consistency levels explained", url: "https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels" },
+    { label: "Data consistency primer — Azure Architecture Center", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/data-partitioning" },
+    { label: "Distributed systems — reliability patterns", url: "https://learn.microsoft.com/en-us/azure/architecture/framework/resiliency/reliability-patterns" },
+    { label: "Azure SQL — business continuity and HA", url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/business-continuity-high-availability-disaster-recover-hadr-overview" },
+  ]}
+/>

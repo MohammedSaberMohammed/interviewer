@@ -1,0 +1,219 @@
+---
+title: "CSRF Protection"
+slug: "csrf-protection"
+order: 5
+difficulty: "advanced"
+readingTime: 8
+status: "published"
+tags: ["Angular", "security", "CSRF", "XSRF", "HttpXsrfTokenExtractor", "withXsrfConfiguration", "SameSite cookies"]
+summary: "CSRF attacks trick authenticated users into making unintended requests. Angular's HttpClient has built-in XSRF protection using the double-submit cookie pattern. Modern SameSite cookie attributes largely mitigate CSRF for new applications."
+docsLinks:
+  - label: "Angular Security - XSRF"
+    url: "https://angular.dev/best-practices/security#cross-site-request-forgery"
+  - label: "Angular HttpClient XSRF"
+    url: "https://angular.dev/api/common/http/withXsrfConfiguration"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What is CSRF?
+
+Cross-Site Request Forgery exploits the browser's automatic cookie sending behavior:
+
+```
+Scenario:
+1. User logs into bank.com — session cookie is set
+2. User visits malicious-site.com (in another tab)
+3. malicious-site.com has hidden form:
+   <form action="https://bank.com/transfer" method="POST">
+     <input name="amount" value="10000">
+     <input name="to" value="attacker-account">
+   </form>
+   <script>document.forms[0].submit();</script>
+4. Browser sends POST to bank.com WITH the session cookie!
+5. Bank thinks it's a legitimate request from the authenticated user
+6. Money transferred to attacker
+```
+
+CSRF is a problem when your app uses cookie-based authentication (including session cookies) — the browser sends cookies automatically with every request, including requests from other origins.
+
+<Callout type="tip">
+CSRF is NOT a concern if you use header-based authentication (Bearer tokens in Authorization header). Browsers only automatically send cookies — they don't automatically add custom headers. Malicious sites cannot read or set the Authorization header.
+</Callout>
+
+## Angular's Built-In XSRF Protection
+
+Angular implements the **double-submit cookie** (also called synchronizer token) pattern:
+
+```typescript
+// How it works:
+// 1. Server sets a CSRF token in a readable cookie (not httpOnly)
+// 2. Angular reads the cookie and adds it as a request header
+// 3. Server validates that the cookie value matches the header value
+// 4. Attacker's site cannot read the cookie (cross-origin) so can't forge the header
+
+// Angular does this automatically for same-origin requests:
+// Reads: Cookie 'XSRF-TOKEN'
+// Sends: Header 'X-XSRF-TOKEN'
+```
+
+### Default Configuration
+
+```typescript
+// Angular looks for cookie: XSRF-TOKEN
+// And sends header: X-XSRF-TOKEN
+// This works with Spring Security, Django, and Rails defaults
+
+// app.config.ts — XSRF protection is enabled by default with provideHttpClient()
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(), // XSRF enabled by default
+  ]
+};
+```
+
+### Custom Cookie/Header Names
+
+```typescript
+import { provideHttpClient, withXsrfConfiguration } from '@angular/common/http';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(
+      withXsrfConfiguration({
+        cookieName: 'MY-CSRF-TOKEN',   // Custom cookie name
+        headerName: 'X-MY-CSRF-TOKEN'  // Custom header name
+      })
+    )
+  ]
+};
+```
+
+## Server-Side Setup
+
+Angular's client-side XSRF only works if the server:
+1. Sets the CSRF token cookie on responses
+2. Validates the token from the request header
+
+```typescript
+// Express.js example
+import csrf from 'csurf';
+import cookieParser from 'cookie-parser';
+
+app.use(cookieParser());
+app.use(csrf({ cookie: { httpOnly: false } })); // Must NOT be httpOnly (Angular reads it)
+
+// Set the CSRF cookie on every request
+app.use((req, res, next) => {
+  res.cookie('XSRF-TOKEN', req.csrfToken()); // Set readable cookie
+  next();
+});
+
+// CSRF validation is automatic via the middleware
+app.post('/api/transfer', (req, res) => {
+  // csurf validates X-XSRF-TOKEN header automatically
+  // If it doesn't match the cookie, request is rejected with 403
+  processTransfer(req.body);
+});
+```
+
+## Modern Alternative: SameSite Cookies
+
+The `SameSite` cookie attribute is now the primary CSRF defense:
+
+```
+Set-Cookie: session=abc123; SameSite=Strict; Secure; HttpOnly
+
+SameSite=Strict:  Cookie only sent for same-origin requests
+SameSite=Lax:     Cookie sent for top-level navigations + GET requests (default in modern browsers)
+SameSite=None:    Cookie sent for all requests (requires Secure)
+```
+
+```
+With SameSite=Strict:
+User on malicious-site.com submits form to bank.com
+→ Browser does NOT send session cookie (different origin!)
+→ Bank sees unauthenticated request
+→ CSRF attack fails
+```
+
+```typescript
+// Server response (for context):
+// Set-Cookie: session=abc123; SameSite=Strict; Secure; HttpOnly; Path=/; Max-Age=86400
+
+// No Angular code needed — browser enforces SameSite automatically
+```
+
+## Disabling XSRF for Specific Requests
+
+For requests to external APIs that don't need CSRF protection:
+
+```typescript
+import { HttpContextToken, HttpContext } from '@angular/common/http';
+
+// Angular checks origin — it won't add XSRF headers to cross-origin requests by default
+// But you can also explicitly opt out using HttpContext:
+
+this.http.post('https://external-api.com/endpoint', data, {
+  context: new HttpContext().set(DISABLE_XSRF, true) // Custom context token
+});
+
+// Or configure at interceptor level
+export const xsrfInterceptor: HttpInterceptorFn = (req, next) => {
+  // Angular's built-in XSRF only applies to same-origin by default
+  // For external APIs, Angular won't add the header anyway
+  return next(req);
+};
+```
+
+<CodeChallenge
+  id="csrf-bearer-token"
+  difficulty="intermediate"
+  description="Your Angular app uses JWT tokens stored in localStorage and adds them via an Authorization: Bearer header interceptor. Does your app need CSRF protection?"
+  options={[
+    "Yes — CSRF can steal the Authorization header just like cookies",
+    "No — CSRF exploits cookie auto-sending. Custom headers cannot be added by cross-origin requests, so Bearer token auth is CSRF-safe by design",
+    "Yes — localStorage tokens are just as vulnerable as cookies to CSRF",
+    "It depends on whether the server validates the Origin header"
+  ]}
+  correctAnswer={1}
+  explanation="CSRF attacks work by exploiting the browser's automatic cookie sending — browsers automatically include cookies with every request to a domain, regardless of origin. Custom headers (like Authorization: Bearer) are NOT automatically added by browsers. Cross-origin requests can only add custom headers if the server explicitly allows them via CORS preflight. A CSRF attack (hidden form submission, img src attack) cannot forge custom request headers — the attacker can only force cookie-carrying requests. Therefore, JWT auth via Authorization header is inherently CSRF-safe, and Angular's XSRF protection is only needed for cookie-based authentication."
+/>
+
+## CSRF Checklist for Angular Apps
+
+```typescript
+// 1. Are you using cookie-based auth?
+// Yes → Implement CSRF protection (Angular's XSRF + server-side validation)
+// No (Bearer tokens) → CSRF not applicable
+
+// 2. Is your server setting the XSRF-TOKEN cookie?
+// Check: Network tab → Response headers → Set-Cookie: XSRF-TOKEN=...
+// Should be non-httpOnly so Angular can read it
+
+// 3. Is Angular sending the X-XSRF-TOKEN header?
+// Check: Network tab → POST request headers → X-XSRF-TOKEN: ...
+// Only on same-origin requests by default
+
+// 4. Is your server validating the token?
+// Test: Manually POST without the header → Should get 403 Forbidden
+
+// 5. Are cookies using SameSite?
+// Check: Response headers → Set-Cookie → SameSite=Lax or Strict
+// This is the defense-in-depth layer
+```
+
+## Senior Insight: CSRF in 2024+
+
+The CSRF threat landscape has changed significantly:
+
+1. **Modern browsers default to `SameSite=Lax`** — most CSRF attacks are automatically blocked
+2. **SPAs with Bearer tokens don't need CSRF protection** — header-based auth is immune
+3. **CSRF tokens still matter for**: server-rendered forms, cookie auth, older browser support
+
+For new Angular apps:
+- If using JWT + localStorage → No CSRF needed
+- If using httpOnly cookies → Use `SameSite=Strict` (primary defense) + CSRF tokens (defense in depth)
+- If using session cookies (server-rendered or hybrid) → Both `SameSite` and CSRF tokens required
+
+The Angular XSRF documentation is somewhat mismatched to how most modern Angular apps authenticate. Understanding when CSRF applies (and when it doesn't) demonstrates security depth that impresses interviewers.

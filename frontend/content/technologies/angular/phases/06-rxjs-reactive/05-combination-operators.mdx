@@ -1,0 +1,209 @@
+---
+title: "Combination Operators"
+slug: "combination-operators"
+order: 5
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["RxJS", "combineLatest", "forkJoin", "merge", "zip", "withLatestFrom"]
+summary: "Combination operators merge multiple Observables into one. combineLatest, forkJoin, and withLatestFrom appear constantly in Angular HTTP and state management — know the differences."
+docsLinks:
+  - label: "RxJS Combination Operators"
+    url: "https://rxjs.dev/guide/operators#join-creation-operators"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## Why Combine Streams?
+
+Real applications have multiple data sources — the current user, their permissions, their profile data, filtered results from multiple APIs. Combination operators merge these independent streams into a single Observable, making it easy to react when any or all of them update.
+
+## `combineLatest()` — React When Any Source Changes
+
+Combines the latest values from all source Observables. Emits a new value whenever ANY source emits, with the latest value from all sources:
+
+```typescript
+import { combineLatest } from 'rxjs';
+
+// Prerequisite: all sources must emit at least once before combineLatest emits
+const user$ = this.userService.getCurrentUser();
+const permissions$ = this.permService.getPermissions();
+const settings$ = this.settingsService.getSettings();
+
+// Emits whenever user, permissions, OR settings changes
+combineLatest([user$, permissions$, settings$]).pipe(
+  map(([user, permissions, settings]) => ({
+    user,
+    canEdit: permissions.includes('edit'),
+    theme: settings.theme,
+  }))
+).subscribe(viewModel => this.viewModel = viewModel);
+
+// Object syntax (cleaner for named sources)
+combineLatest({
+  user: user$,
+  permissions: permissions$,
+  settings: settings$,
+}).subscribe(({ user, permissions, settings }) => {
+  // Fully destructured
+});
+```
+
+<Callout type="tip">
+`combineLatest` won't emit until ALL sources have emitted at least once. If `user$` emits but `permissions$` hasn't yet, nothing comes out. Use `startWith(defaultValue)` on each source if you need immediate emission.
+</Callout>
+
+## `forkJoin()` — Wait for All to Complete
+
+Like `Promise.all()` — waits for ALL source Observables to **complete**, then emits an array of their final values:
+
+```typescript
+import { forkJoin } from 'rxjs';
+
+// Make multiple HTTP requests in parallel, get all results at once
+forkJoin({
+  user: this.http.get<User>(`/api/users/${id}`),
+  orders: this.http.get<Order[]>(`/api/users/${id}/orders`),
+  reviews: this.http.get<Review[]>(`/api/users/${id}/reviews`),
+}).subscribe(({ user, orders, reviews }) => {
+  this.user = user;
+  this.orders = orders;
+  this.reviews = reviews;
+});
+
+// If ANY source errors, forkJoin errors immediately
+// To handle individual errors:
+forkJoin({
+  user: this.getUser(id).pipe(catchError(() => of(null))),
+  orders: this.getOrders(id).pipe(catchError(() => of([]))),
+}).subscribe(({ user, orders }) => {
+  // user might be null if that request failed
+});
+```
+
+**Key difference from combineLatest**: `forkJoin` waits for completion; `combineLatest` reacts to each new emission. Use `forkJoin` for "get this data once"; use `combineLatest` for "keep this data updated".
+
+## `withLatestFrom()` — Triggered Stream + Latest Snapshot
+
+Combines a trigger stream with the latest value from other streams. Only emits when the **primary (left) stream** emits:
+
+```typescript
+import { withLatestFrom } from 'rxjs/operators';
+
+// When button is clicked, combine with the CURRENT filter state
+saveButton.clicks$.pipe(
+  withLatestFrom(
+    this.filterState$,
+    this.sortState$
+  ),
+  // Emits [clickEvent, currentFilter, currentSort] when button clicked
+  map(([_, filter, sort]) => ({ filter, sort }))
+).subscribe(state => this.saveUserPreferences(state));
+
+// Vs combineLatest: this would fire whenever filter OR sort changes
+// withLatestFrom only fires when the button is clicked
+```
+
+## `merge()` — Interleave Multiple Streams
+
+Subscribes to all sources and emits values as they arrive from any source:
+
+```typescript
+import { merge } from 'rxjs';
+
+// Handle both keyboard and mouse events
+merge(
+  fromEvent<KeyboardEvent>(document, 'keydown'),
+  fromEvent<MouseEvent>(document, 'mousemove')
+).subscribe(event => this.handleUserInteraction(event));
+
+// Activity timeout — reset on any user activity
+const userActivity$ = merge(
+  fromEvent(document, 'click'),
+  fromEvent(document, 'keydown'),
+  fromEvent(document, 'scroll'),
+);
+
+userActivity$.pipe(
+  debounceTime(30 * 60 * 1000) // 30 minutes of inactivity
+).subscribe(() => this.sessionService.logout());
+```
+
+## `zip()` — Synchronized Pairs
+
+Combines values at the **same index position** from all sources. Waits for all sources to emit their Nth value before emitting:
+
+```typescript
+import { zip } from 'rxjs';
+
+// Pair up values from two streams by position
+const numbers$ = of(1, 2, 3);
+const letters$ = of('A', 'B', 'C');
+
+zip(numbers$, letters$).subscribe(([n, l]) => console.log(`${n}${l}`));
+// '1A', '2B', '3C'
+
+// Less common in Angular — useful for pairing items from parallel streams
+```
+
+## `race()` — First to Emit Wins
+
+```typescript
+import { race } from 'rxjs';
+
+// Use whichever API responds first
+race(
+  this.primaryApi.getUser(id),
+  this.fallbackApi.getUser(id)
+).subscribe(user => this.user = user);
+// Whichever resolves first is used; the other is unsubscribed
+```
+
+<ComparisonTable
+  headers={["Operator", "Emits when?", "Use case"]}
+  rows={[
+    ["combineLatest", "Any source emits (all must have emitted once)", "Live state combinations, form + filter UI"],
+    ["forkJoin", "ALL sources complete", "Parallel HTTP requests (page initialization)"],
+    ["withLatestFrom", "Primary source emits (gets latest from others)", "Button click + current state snapshot"],
+    ["merge", "Any source emits", "Multiple event types, activity detection"],
+    ["zip", "All sources emit Nth value", "Synchronized parallel streams"],
+    ["race", "First source to emit", "Timeout, redundant API calls"]
+  ]}
+/>
+
+<CodeChallenge
+  id="combination-operator-forkjoin"
+  difficulty="intermediate"
+  description="A component initializes by loading user data and their permissions from two separate endpoints. Both are one-time HTTP requests. Which operator is correct?"
+  options={[
+    "combineLatest — combines the latest values from both streams",
+    "merge — emits as each request completes",
+    "forkJoin — waits for both HTTP requests to complete, then emits once",
+    "withLatestFrom — emits user data combined with the latest permissions"
+  ]}
+  correctAnswer={2}
+  explanation="forkJoin is the Angular equivalent of Promise.all() — it runs both HTTP requests in parallel and emits once when BOTH complete. combineLatest would also work but is overkill for one-time HTTP requests (it stays subscribed and would re-emit if sources re-emitted). forkJoin is perfect here: parallel execution, single emission, correct typing of both results."
+/>
+
+## Senior Insight: combineLatest Pitfall
+
+`combineLatest` emits on every change from any source. In components with multiple signal/subject subscriptions, this can cause excessive emissions:
+
+```typescript
+// ❌ May emit on every individual state change
+combineLatest([
+  this.filter$,
+  this.sort$,
+  this.pagination$,
+  this.search$
+]).pipe(
+  switchMap(([filter, sort, page, search]) => this.load(filter, sort, page, search))
+).subscribe(data => this.data = data);
+
+// ✅ Debounce to avoid excessive HTTP requests
+combineLatest([this.filter$, this.sort$, this.pagination$, this.search$]).pipe(
+  debounceTime(0), // Batch same-tick changes (next microtask)
+  distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
+  switchMap(([filter, sort, page, search]) => this.load(filter, sort, page, search))
+).subscribe(data => this.data = data);
+```

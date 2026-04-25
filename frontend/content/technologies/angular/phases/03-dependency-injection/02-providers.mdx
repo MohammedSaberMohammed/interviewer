@@ -1,0 +1,273 @@
+---
+title: "Providers"
+slug: "providers"
+order: 2
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["Angular", "providers", "useClass", "useValue", "useFactory", "useExisting"]
+summary: "Angular's four provider types (useClass, useValue, useFactory, useExisting) let you control exactly how dependencies are instantiated. Each has specific use cases interviewers love to ask about."
+docsLinks:
+  - label: "Angular Providers"
+    url: "https://angular.dev/guide/di/dependency-injection-providers"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## Providers: The Recipe for Creating Dependencies
+
+When Angular's injector needs to provide a dependency, it looks up its **provider** — the recipe for creating or obtaining the value. There are four provider types, each for a different scenario.
+
+## `useClass` — Swap Implementations
+
+`useClass` tells the injector "when token X is requested, create an instance of class Y":
+
+```typescript
+// Basic useClass — same as just providing the class directly
+providers: [
+  { provide: UserService, useClass: UserService },
+  // Equivalent to:
+  UserService,
+]
+
+// More useful: swap implementation based on environment
+@NgModule({
+  providers: [
+    {
+      provide: LogService,
+      useClass: environment.production ? SilentLogService : VerboseLogService
+    }
+  ]
+})
+
+// Or for testing — swap real HTTP with a mock
+TestBed.configureTestingModule({
+  providers: [
+    { provide: UserService, useClass: MockUserService }
+  ]
+});
+```
+
+A common pattern: provide an interface (via InjectionToken) and swap implementations:
+
+```typescript
+abstract class AnalyticsService {
+  abstract track(event: string): void;
+}
+
+@Injectable()
+class GoogleAnalyticsService extends AnalyticsService {
+  track(event: string) { gtag('event', event); }
+}
+
+@Injectable()
+class MixpanelService extends AnalyticsService {
+  track(event: string) { mixpanel.track(event); }
+}
+
+// In app providers
+{ provide: AnalyticsService, useClass: GoogleAnalyticsService }
+
+// Components just inject AnalyticsService — no coupling to the implementation
+constructor(private analytics: AnalyticsService) {}
+```
+
+## `useValue` — Provide a Constant
+
+`useValue` provides a pre-created value — perfect for configuration, constants, or mock objects:
+
+```typescript
+// Configuration object
+const APP_CONFIG = {
+  apiUrl: 'https://api.example.com',
+  pageSize: 20,
+  maxRetries: 3,
+};
+
+providers: [
+  { provide: APP_CONFIG_TOKEN, useValue: APP_CONFIG },
+
+  // Provide a primitive value
+  { provide: API_URL, useValue: 'https://api.example.com' },
+
+  // Provide a mock in tests
+  { provide: Router, useValue: { navigate: jest.fn(), url: '/' } },
+]
+```
+
+<Callout type="tip">
+When using `useValue` with TypeScript, the token type must be compatible with the value type. Using an `InjectionToken<T>` (covered in the next lesson) gives you type safety and avoids string-based tokens.
+</Callout>
+
+## `useFactory` — Dynamic Creation
+
+`useFactory` creates the dependency using a function — useful when creation logic is complex or depends on other dependencies:
+
+```typescript
+// Simple factory function
+providers: [
+  {
+    provide: WINDOW,
+    useFactory: () => window, // In SSR, window isn't available
+  }
+]
+
+// Factory with dependencies (deps array specifies what to inject)
+providers: [
+  {
+    provide: HttpClient,
+    useFactory: (backend: HttpBackend, xhrFactory: XhrFactory) => {
+      return new HttpClient(backend);
+    },
+    deps: [HttpBackend, XhrFactory]
+  }
+]
+
+// Real-world: feature flag service that reads from config
+providers: [
+  {
+    provide: FeatureFlagService,
+    useFactory: (config: AppConfig, http: HttpClient) => {
+      return config.useRemoteFlags
+        ? new RemoteFeatureFlagService(http, config.flagsUrl)
+        : new LocalFeatureFlagService(config.localFlags);
+    },
+    deps: [APP_CONFIG, HttpClient]
+  }
+]
+```
+
+`deps` is crucial — it's the list of tokens to inject into the factory function. Order must match the function parameters.
+
+## `useExisting` — Alias One Token to Another
+
+`useExisting` makes one token point to the same instance as another (no new instance created):
+
+```typescript
+// Create an alias — NG_VALIDATORS expects a token that provides validators
+@Component({
+  selector: 'app-custom-input',
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR, // Angular's control value accessor token
+      useExisting: forwardRef(() => CustomInputComponent), // Reference the component itself
+      multi: true
+    }
+  ]
+})
+class CustomInputComponent implements ControlValueAccessor { /* ... */ }
+```
+
+**Key difference from `useClass`**:
+- `useClass: ServiceB` → creates a **new instance** of ServiceB
+- `useExisting: tokenB` → returns the **same instance** already registered for tokenB
+
+```typescript
+// Both AuthService and CurrentUserService refer to the same singleton
+providers: [
+  AuthService,
+  { provide: CurrentUserService, useExisting: AuthService }
+]
+// injecting CurrentUserService gives the same instance as AuthService
+```
+
+## `multi: true` — Multi-Providers
+
+Some Angular tokens collect multiple providers into an array:
+
+```typescript
+// Register multiple HTTP interceptors
+providers: [
+  {
+    provide: HTTP_INTERCEPTORS,
+    useClass: AuthInterceptor,
+    multi: true  // Adds to array, doesn't replace
+  },
+  {
+    provide: HTTP_INTERCEPTORS,
+    useClass: LoggingInterceptor,
+    multi: true
+  },
+  // HttpClient receives both interceptors in order
+]
+
+// Custom multi-provider for validation
+const EMAIL_VALIDATORS = new InjectionToken<ValidatorFn[]>('EMAIL_VALIDATORS');
+
+providers: [
+  { provide: EMAIL_VALIDATORS, useValue: Validators.email, multi: true },
+  { provide: EMAIL_VALIDATORS, useValue: myCustomValidator, multi: true },
+  // Injecting EMAIL_VALIDATORS gives [Validators.email, myCustomValidator]
+]
+```
+
+<ComparisonTable
+  headers={["Provider Type", "Creates New Instance?", "Use Case"]}
+  rows={[
+    ["useClass: Foo", "Yes", "Swap implementation; use different class for same token"],
+    ["useValue: val", "No (value is pre-created)", "Constants, config objects, mock objects in tests"],
+    ["useFactory: fn", "Yes (via function)", "Complex creation logic; depends on runtime conditions"],
+    ["useExisting: token", "No (shares existing)", "Alias one token to another; multi-provider registration"]
+  ]}
+/>
+
+<CodeChallenge
+  id="provider-types"
+  difficulty="intermediate"
+  description="You need to provide a configuration object { apiUrl: 'https://api.prod.com', timeout: 5000 } via dependency injection. Which provider type is most appropriate?"
+  options={[
+    "useClass — create a class with these values",
+    "useValue — provide the object directly",
+    "useFactory — use a function that returns the object",
+    "useExisting — alias to the environment variable"
+  ]}
+  correctAnswer={1}
+  explanation="useValue is ideal for configuration objects, constants, and primitives — values that are already created and don't need complex instantiation. { provide: APP_CONFIG, useValue: { apiUrl: '...', timeout: 5000 } }. useFactory would also work but is unnecessarily complex for a static object. useClass requires creating a class just to hold config values — poor design."
+/>
+
+## `forwardRef` — Solving Circular Reference Issues
+
+When a provider references a class defined later in the file (or the class itself), use `forwardRef`:
+
+```typescript
+import { forwardRef } from '@angular/core';
+
+// Component registers itself as a ControlValueAccessor
+@Component({
+  providers: [{
+    provide: NG_VALUE_ACCESSOR,
+    useExisting: forwardRef(() => MyInputComponent), // Forward reference to self
+    multi: true
+  }]
+})
+class MyInputComponent implements ControlValueAccessor { /* ... */ }
+```
+
+`forwardRef` delays the class reference evaluation until after the class is defined, breaking circular initialization.
+
+## Senior Insight: Functional Providers
+
+In modern Angular, standalone APIs prefer functional provider helpers over manual configuration:
+
+```typescript
+// Old NgModule way
+@NgModule({
+  imports: [
+    HttpClientModule,
+    RouterModule.forRoot(routes),
+  ]
+})
+
+// New standalone way — cleaner and more composable
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideHttpClient(withInterceptors([authInterceptor, loggingInterceptor])),
+    provideRouter(routes, withPreloading(PreloadAllModules)),
+    provideAnimations(),
+    provideStore(reducers),   // NgRx
+    provideEffects(UserEffects),
+  ]
+});
+```
+
+These `provide*()` functions are just `useFactory` providers under the hood, but they provide a typed, composable API with better tree-shaking.

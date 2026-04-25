@@ -1,0 +1,282 @@
+---
+title: "TestBed Fundamentals"
+slug: "testbed-fundamentals"
+order: 1
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "testing", "TestBed", "Jasmine", "Jest", "spec", "configureTestingModule"]
+summary: "TestBed is Angular's primary testing utility — it creates a full Angular testing module that mirrors how Angular bootstraps applications. Understanding TestBed setup, providers, and the difference between TestBed and unit tests is foundational for Angular testing."
+docsLinks:
+  - label: "Angular Testing"
+    url: "https://angular.dev/guide/testing"
+  - label: "TestBed API"
+    url: "https://angular.dev/api/core/testing/TestBed"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What TestBed Does
+
+TestBed creates a complete Angular testing environment — a mini Angular application that you control:
+
+```typescript
+// Each test gets a fresh Angular module with exactly the dependencies you configure
+TestBed.configureTestingModule({
+  declarations: [],  // For NgModule-based components (legacy)
+  imports: [],       // Standalone components or modules
+  providers: [],     // Override services with mocks
+});
+```
+
+Without TestBed, you can unit-test services and pure functions directly. TestBed is needed when you need Angular's DI system, component rendering, or lifecycle hooks.
+
+## Basic TestBed Structure
+
+```typescript
+import { TestBed } from '@angular/core/testing';
+import { UserService } from './user.service';
+import { HttpClientTestingModule } from '@angular/common/http/testing';
+
+describe('UserService', () => {
+  let service: UserService;
+
+  beforeEach(() => {
+    // Recreates the module before every test — clean slate
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule], // Provides mock HttpClient
+      providers: [UserService]
+    });
+
+    // Retrieve the service from the testing module's injector
+    service = TestBed.inject(UserService);
+  });
+
+  it('should be created', () => {
+    expect(service).toBeTruthy();
+  });
+
+  it('should have no users initially', () => {
+    expect(service.getUsers()).toEqual([]);
+  });
+});
+```
+
+## Testing Services Without HTTP
+
+For services with no external dependencies:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class CartService {
+  private items = signal<CartItem[]>([]);
+
+  addItem(item: CartItem) {
+    this.items.update(current => [...current, item]);
+  }
+
+  removeItem(id: string) {
+    this.items.update(current => current.filter(i => i.id !== id));
+  }
+
+  total = computed(() =>
+    this.items().reduce((sum, item) => sum + item.price * item.quantity, 0)
+  );
+}
+
+// Pure unit test — no TestBed needed
+describe('CartService (no TestBed)', () => {
+  let service: CartService;
+
+  beforeEach(() => {
+    service = new CartService(); // Direct instantiation
+  });
+
+  it('should add items', () => {
+    service.addItem({ id: '1', name: 'Book', price: 20, quantity: 1 });
+    expect(service.total()).toBe(20);
+  });
+
+  it('should compute correct total', () => {
+    service.addItem({ id: '1', name: 'Book', price: 20, quantity: 2 });
+    service.addItem({ id: '2', name: 'Pen', price: 5, quantity: 3 });
+    expect(service.total()).toBe(55);
+  });
+});
+```
+
+<Callout type="tip">
+Prefer direct instantiation over TestBed for pure services with no Angular dependencies. It's faster, simpler, and reveals design issues (hard to test = hard to use). TestBed is needed when the service uses Angular DI (`inject()`) or depends on other Angular services.
+</Callout>
+
+## Providing Mocks in TestBed
+
+```typescript
+// Mock the dependency
+const mockAuthService = {
+  currentUser: signal<User | null>(null),
+  isAuthenticated: signal(false),
+  login: jasmine.createSpy('login').and.returnValue(of({ token: 'abc' })),
+  logout: jasmine.createSpy('logout'),
+};
+
+describe('UserProfileComponent', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [UserProfileComponent], // Standalone component
+      providers: [
+        // Replace real AuthService with the mock
+        { provide: AuthService, useValue: mockAuthService }
+      ]
+    });
+  });
+
+  it('should show login form when not authenticated', () => {
+    // mockAuthService.isAuthenticated is a signal returning false
+    const fixture = TestBed.createComponent(UserProfileComponent);
+    fixture.detectChanges();
+
+    const loginForm = fixture.nativeElement.querySelector('app-login-form');
+    expect(loginForm).toBeTruthy();
+  });
+});
+```
+
+## Testing Module vs Real Module
+
+```typescript
+// ❌ Avoid importing real modules with side effects
+TestBed.configureTestingModule({
+  imports: [AppModule] // Pulls in everything — slow, fragile
+});
+
+// ✅ Import only what the component under test actually needs
+TestBed.configureTestingModule({
+  imports: [
+    UserProfileComponent, // The component itself (standalone)
+    // Only stub out heavy deps
+    { provide: ImageUploadService, useClass: ImageUploadServiceStub }
+  ]
+});
+```
+
+## Spies and Jasmine
+
+```typescript
+describe('NotificationService', () => {
+  let service: NotificationService;
+  let httpSpy: jasmine.SpyObj<HttpClient>;
+
+  beforeEach(() => {
+    // Create spy object with all methods mocked
+    httpSpy = jasmine.createSpyObj('HttpClient', ['post', 'get', 'delete']);
+
+    TestBed.configureTestingModule({
+      providers: [
+        NotificationService,
+        { provide: HttpClient, useValue: httpSpy }
+      ]
+    });
+
+    service = TestBed.inject(NotificationService);
+  });
+
+  it('should send notification via POST', () => {
+    const notification = { message: 'Hello', type: 'info' };
+    httpSpy.post.and.returnValue(of({ id: '123' }));
+
+    service.send(notification).subscribe();
+
+    expect(httpSpy.post).toHaveBeenCalledWith('/api/notifications', notification);
+  });
+
+  it('should have been called once', () => {
+    httpSpy.post.and.returnValue(of({}));
+    service.send({ message: 'a', type: 'info' }).subscribe();
+
+    expect(httpSpy.post).toHaveBeenCalledTimes(1);
+  });
+});
+```
+
+## Jest vs Jasmine
+
+Angular projects can use either:
+
+```typescript
+// Jasmine (default with Angular CLI)
+describe('...', () => {
+  it('should...', () => {
+    expect(value).toBeTruthy();
+    expect(fn).toHaveBeenCalled();
+    spyOn(obj, 'method').and.returnValue('mock');
+  });
+});
+
+// Jest (increasingly common, especially with Nx)
+describe('...', () => {
+  it('should...', () => {
+    expect(value).toBeTruthy();
+    expect(fn).toHaveBeenCalled();
+    jest.spyOn(obj, 'method').mockReturnValue('mock');
+  });
+});
+```
+
+Setup for Jest with Angular:
+```bash
+npm install --save-dev jest jest-preset-angular @types/jest
+```
+
+The API is nearly identical — the main differences are `jest.fn()` vs `jasmine.createSpy()` and module mocking capabilities.
+
+<CodeChallenge
+  id="testbed-providers"
+  difficulty="intermediate"
+  description="A service under test injects AuthService and HttpClient. You provide { provide: AuthService, useValue: mockAuth } in TestBed.configureTestingModule but forget to provide HttpClient. What happens?"
+  options={[
+    "TestBed automatically uses the real HttpClient",
+    "Angular throws an error: NullInjectorError — no provider for HttpClient",
+    "The test passes but HTTP calls fail silently",
+    "TestBed provides a no-op HttpClient by default in test environments"
+  ]}
+  correctAnswer={1}
+  explanation="TestBed creates an isolated Angular injector with ONLY the providers you configure. If HttpClient isn't provided (either the real module via HttpClientModule, the mock via HttpClientTestingModule, or a custom useValue), Angular's injector cannot resolve it and throws NullInjectorError at test time. This is actually desirable behavior — it forces you to explicitly declare all dependencies, making test setup serve as documentation of what each service depends on."
+/>
+
+## TestBed Performance
+
+TestBed is slow because it compiles components. Strategies to speed up tests:
+
+```typescript
+// 1. Share TestBed configuration with beforeAll (careful — shared state)
+beforeAll(async () => {
+  await TestBed.configureTestingModule({...}).compileComponents();
+});
+
+// 2. Use NO_ERRORS_SCHEMA for component tests (ignores unknown elements)
+TestBed.configureTestingModule({
+  imports: [ComponentUnderTest],
+  schemas: [NO_ERRORS_SCHEMA] // Don't validate child component elements
+});
+
+// 3. Stub child components inline
+@Component({ selector: 'app-user-card', template: '' })
+class UserCardStub {}
+
+TestBed.configureTestingModule({
+  imports: [UserListComponent],
+  declarations: [UserCardStub] // Light stub instead of real component
+});
+```
+
+## Senior Insight: What TestBed Tests That Unit Tests Don't
+
+TestBed tests verify things pure unit tests cannot:
+- Angular's DI resolution (are providers configured correctly?)
+- Component compilation (are there template errors?)
+- Change detection integration (does the view update when state changes?)
+- Lifecycle hooks (do `ngOnInit`, `ngOnDestroy` fire correctly?)
+- Input/Output wiring (do `@Input()` and `@Output()` work end-to-end?)
+
+For business logic isolated to a service with no Angular dependencies — skip TestBed and use direct instantiation. For anything that involves Angular's compilation, DI, or rendering — use TestBed.

@@ -1,0 +1,284 @@
+---
+title: "Deferrable Views (@defer)"
+slug: "deferrable-views"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "performance", "@defer", "deferrable views", "lazy loading", "on viewport", "prefetch"]
+summary: "@defer blocks let you lazily load components, directives, and pipes at the template level — with built-in loading/error states and triggering conditions. It's Angular 17's most powerful performance feature."
+docsLinks:
+  - label: "Deferrable Views"
+    url: "https://angular.dev/guide/defer"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What @defer Solves
+
+Before Angular 17, lazy loading required either lazy routes or `ViewContainerRef.createComponent()`. Both required JavaScript-level code changes and only worked at the route level.
+
+`@defer` brings lazy loading to the template level — you can defer any component, directive, or pipe directly in HTML with no extra code:
+
+```html
+<!-- This entire block and its dependencies load lazily -->
+@defer {
+  <heavy-data-visualization [data]="chartData" />
+}
+```
+
+The Angular compiler analyzes `@defer` blocks and automatically creates separate chunks for their contents. `HeavyDataVisualizationComponent` and all its dependencies won't appear in the initial bundle.
+
+## Basic @defer Syntax
+
+```html
+@defer {
+  <!-- Deferred content — loaded lazily -->
+  <app-user-comments [postId]="post.id" />
+}
+@placeholder {
+  <!-- Shown before deferred content loads -->
+  <div class="comment-placeholder">Comments will load when scrolled into view...</div>
+}
+@loading (minimum 500ms) {
+  <!-- Shown while loading (minimum prevents flash for fast loads) -->
+  <app-spinner />
+}
+@error {
+  <!-- Shown if loading fails -->
+  <p>Failed to load comments. <button (click)="reload()">Retry</button></p>
+}
+```
+
+All four blocks are optional. Common minimal usage:
+
+```html
+@defer (on viewport) {
+  <app-below-fold-section />
+}
+```
+
+## Trigger Conditions
+
+### `on viewport` — Load When Visible
+
+```html
+<!-- Default trigger when no 'on' is specified is also viewport -->
+@defer (on viewport) {
+  <app-product-recommendations />
+}
+@placeholder {
+  <div style="height: 400px"><!-- Maintain layout space --></div>
+}
+```
+
+The `@placeholder` block is crucial here — it acts as the trigger anchor AND maintains layout space so the page doesn't jump when content loads.
+
+### `on interaction` — Load on Click/Focus
+
+```html
+<!-- Load heavy modal only when user clicks the button -->
+<button #triggerBtn (click)="showModal = true">Open Filters</button>
+
+@defer (on interaction(triggerBtn)) {
+  <app-filter-panel (close)="showModal = false" />
+}
+@placeholder {
+  <!-- Nothing shown until interaction -->
+}
+```
+
+### `on idle` — Load During Browser Idle Time
+
+```html
+<!-- Load analytics widget after browser is idle -->
+@defer (on idle) {
+  <app-analytics-widget />
+}
+```
+
+Ideal for non-critical UI that can wait until the browser finishes more important work.
+
+### `on timer` — Load After Delay
+
+```html
+<!-- Load after 3 seconds (e.g., chat widget) -->
+@defer (on timer(3000ms)) {
+  <app-chat-widget />
+}
+```
+
+### `on hover` — Load on Mouse Hover
+
+```html
+@defer (on hover) {
+  <app-rich-tooltip [content]="tooltipContent" />
+}
+@placeholder {
+  <span class="tooltip-trigger">Hover for details</span>
+}
+```
+
+### `when` — Custom Condition
+
+```html
+<!-- Defer until user is authenticated -->
+@defer (when isAuthenticated()) {
+  <app-user-dashboard />
+}
+@placeholder {
+  <app-login-prompt />
+}
+```
+
+The `when` trigger takes an expression — when it becomes truthy, the deferred content loads.
+
+<Callout type="tip">
+Multiple triggers can be combined: `@defer (on viewport; on interaction)` — whichever happens first triggers the load. This is useful for content that should load when visible OR when the user explicitly interacts with it.
+</Callout>
+
+## Prefetching
+
+You can separate when to **prefetch** (download) from when to **render**:
+
+```html
+<!-- Render on viewport, but prefetch during idle time -->
+@defer (on viewport; prefetch on idle) {
+  <app-comments-section />
+}
+
+<!-- Render on interaction, prefetch on hover (user is probably about to click) -->
+@defer (on interaction(triggerBtn); prefetch on hover(triggerBtn)) {
+  <app-heavy-dialog />
+}
+```
+
+Prefetching downloads the JavaScript chunk in the background so when the render trigger fires, the content appears instantly.
+
+## Nested @defer
+
+```html
+@defer (on viewport) {
+  <app-product-details [id]="productId" />
+
+  <!-- This is deferred within the already-deferred block -->
+  @defer (on idle) {
+    <app-related-products />
+  }
+}
+```
+
+Angular handles the dependency chain — the inner `@defer` won't load until the outer one has loaded.
+
+## @defer With Context Variables
+
+```html
+@defer (when productLoaded()) {
+  <!-- Access parent scope variables inside @defer -->
+  @let product = currentProduct();
+  <app-product-viewer [product]="product" />
+  <app-product-reviews [productId]="product.id" />
+}
+```
+
+<CodeChallenge
+  id="defer-placeholder"
+  difficulty="intermediate"
+  description="A page uses @defer (on viewport) for a large chart below the fold. The @placeholder block is empty. What layout problem occurs and why?"
+  options={[
+    "The chart loads immediately because the viewport trigger fires when the element is at position 0",
+    "Without placeholder height, there's no layout space — the viewport trigger fires immediately on load since the collapsed element is technically in the viewport",
+    "Angular throws a compile error because placeholder must have content",
+    "The chart loads correctly but with a small delay"
+  ]}
+  correctAnswer={1}
+  explanation="@defer triggers work based on the placeholder element's position. If the placeholder has no height (is collapsed), it may technically be 'in the viewport' even if it's below other content — causing the defer to trigger immediately at page load, defeating the purpose. Always give your @placeholder element a height matching the deferred content's approximate size. This serves two purposes: it maintains the page layout (prevents content shifting on load) and ensures the viewport intersection trigger behaves correctly."
+/>
+
+## Real-World Patterns
+
+### Comments Section (Common Pattern)
+
+```html
+<article>
+  <h1>{{ post.title }}</h1>
+  <p>{{ post.body }}</p>
+</article>
+
+<!-- Defer expensive comments section -->
+@defer (on viewport; prefetch on idle) {
+  <app-comments [postId]="post.id" />
+}
+@placeholder {
+  <!-- Maintains layout, triggers viewport intersection correctly -->
+  <div class="comments-placeholder" style="min-height: 300px">
+    <p>Loading comments...</p>
+  </div>
+}
+@loading (after 300ms; minimum 200ms) {
+  <!-- 'after 300ms': don't show spinner for fast loads (< 300ms) -->
+  <!-- 'minimum 200ms': once shown, display at least 200ms (no flash) -->
+  <app-comments-skeleton />
+}
+@error {
+  <p class="error">Could not load comments.</p>
+}
+```
+
+### Heavy Admin Panel
+
+```html
+<!-- Regular nav shows for all users -->
+<nav>
+  <a routerLink="/dashboard">Dashboard</a>
+
+  @if (isAdmin()) {
+    <!-- Admin panel only loads when user is confirmed admin -->
+    @defer (when isAdmin(); prefetch on idle) {
+      <app-admin-panel />
+    }
+  }
+</nav>
+```
+
+### Third-Party Widget
+
+```html
+<!-- Chat widget: prefetch on hover, render on interaction -->
+<div class="chat-trigger" #chatBtn>
+  Chat with us
+</div>
+
+@defer (on interaction(chatBtn); prefetch on hover(chatBtn)) {
+  <app-intercom-widget />
+}
+```
+
+## Build Output
+
+```bash
+ng build
+
+# Angular automatically creates chunks for @defer blocks:
+main.js           # Initial bundle (no heavy components)
+chunk-ABC123.js   # @defer block 1 (comments section)
+chunk-DEF456.js   # @defer block 2 (admin panel)
+chunk-GHI789.js   # @defer block 3 (chart component)
+```
+
+The lazy chunks are loaded by the Angular runtime when the trigger condition is met.
+
+## Senior Insight: @defer vs Route Lazy Loading
+
+These solve different problems and complement each other:
+
+| Feature | Route Lazy Loading | @defer |
+|---------|-------------------|--------|
+| Granularity | Per route | Per component within a route |
+| Trigger | Navigation | viewport, interaction, idle, timer, when |
+| Placeholder | Router outlet | Custom @placeholder block |
+| Loading state | Custom guard/resolver | @loading block |
+| Error state | Error handler | @error block |
+| Prefetch | Preloading strategy | `prefetch on` trigger |
+
+Best practice: use **route-level lazy loading** for entire feature areas + **`@defer`** for heavy components within a loaded route. This gives you a fast initial route load AND deferred rendering of below-fold content.

@@ -1,0 +1,337 @@
+---
+title: "HTTP Interceptors"
+slug: "http-interceptors"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "security", "HTTP interceptors", "HttpInterceptorFn", "withInterceptors", "auth token", "error handling"]
+summary: "HTTP interceptors are middleware for Angular's HttpClient — they process every request and response in sequence. Modern Angular uses functional interceptors registered with provideHttpClient(withInterceptors([...])). Interceptors handle auth tokens, error handling, logging, and retry logic."
+docsLinks:
+  - label: "HTTP Interceptors"
+    url: "https://angular.dev/guide/http/interceptors"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Interceptors Do
+
+Interceptors sit between your code and the network — every `HttpClient` request passes through all registered interceptors in order:
+
+```
+Your Code → Interceptor 1 → Interceptor 2 → Interceptor 3 → Network
+                                                              ↓
+Your Code ← Interceptor 1 ← Interceptor 2 ← Interceptor 3 ← Response
+```
+
+Common interceptor use cases:
+- Add authentication headers to every request
+- Handle 401/403 errors globally (redirect to login)
+- Log all requests and responses
+- Retry failed requests
+- Show/hide loading indicators
+- Transform request/response bodies
+
+## Functional Interceptors (Angular 15+)
+
+Modern Angular uses functional interceptors — plain functions, no class needed:
+
+```typescript
+import { HttpInterceptorFn, HttpRequest, HttpHandlerFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+
+// Functional interceptor — just a function
+export const authInterceptor: HttpInterceptorFn = (
+  req: HttpRequest<unknown>,
+  next: HttpHandlerFn
+) => {
+  const authService = inject(AuthService);
+  const token = authService.getToken();
+
+  if (!token) {
+    return next(req); // Pass through unmodified
+  }
+
+  // HttpRequest is immutable — clone to modify
+  const authReq = req.clone({
+    setHeaders: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  return next(authReq); // Pass modified request
+};
+```
+
+```typescript
+// Register in app.config.ts
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(
+      withInterceptors([
+        authInterceptor,
+        loggingInterceptor,
+        errorHandlingInterceptor
+      ])
+    )
+  ]
+};
+```
+
+## Auth Token Interceptor (Complete Pattern)
+
+```typescript
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+
+  // Don't add auth header to public endpoints
+  if (isPublicUrl(req.url)) {
+    return next(req);
+  }
+
+  const token = authService.accessToken();
+
+  if (!token) {
+    return next(req);
+  }
+
+  return next(
+    req.clone({
+      headers: req.headers.set('Authorization', `Bearer ${token}`)
+    })
+  );
+};
+
+function isPublicUrl(url: string): boolean {
+  const publicPaths = ['/api/auth/login', '/api/auth/refresh', '/api/public'];
+  return publicPaths.some(path => url.includes(path));
+}
+```
+
+## Error Handling Interceptor
+
+```typescript
+import { HttpInterceptorFn, HttpErrorResponse } from '@angular/common/http';
+import { catchError, throwError } from 'rxjs';
+
+export const errorHandlingInterceptor: HttpInterceptorFn = (req, next) => {
+  const router = inject(Router);
+  const notificationService = inject(NotificationService);
+
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      switch (error.status) {
+        case 401:
+          // Token expired or invalid — redirect to login
+          router.navigate(['/login'], {
+            queryParams: { returnUrl: router.url }
+          });
+          break;
+
+        case 403:
+          // Authenticated but not authorized
+          router.navigate(['/forbidden']);
+          break;
+
+        case 0:
+          // Network error (no internet, server down)
+          notificationService.error('Network error. Please check your connection.');
+          break;
+
+        case 500:
+        case 502:
+        case 503:
+          // Server error
+          notificationService.error('Server error. Please try again later.');
+          break;
+      }
+
+      return throwError(() => error); // Re-throw for component-level handling
+    })
+  );
+};
+```
+
+## Token Refresh Interceptor
+
+The most complex interceptor pattern — refresh expired tokens automatically:
+
+```typescript
+export const tokenRefreshInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      if (error.status !== 401) {
+        return throwError(() => error);
+      }
+
+      // Try to refresh the token
+      return authService.refreshToken().pipe(
+        switchMap(newToken => {
+          // Retry the original request with the new token
+          const retryReq = req.clone({
+            headers: req.headers.set('Authorization', `Bearer ${newToken}`)
+          });
+          return next(retryReq);
+        }),
+        catchError(refreshError => {
+          // Refresh failed — force logout
+          authService.logout();
+          return throwError(() => refreshError);
+        })
+      );
+    })
+  );
+};
+```
+
+<Callout type="warning">
+The token refresh interceptor has a race condition: if multiple requests fail with 401 simultaneously, each will try to refresh the token. Use a shared refresh Observable with `shareReplay(1)` or a BehaviorSubject-based lock to ensure only one refresh request is made when multiple 401s arrive concurrently.
+</Callout>
+
+```typescript
+// Preventing concurrent refresh attempts
+let refreshInProgress: Observable<string> | null = null;
+
+export const tokenRefreshInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      if (error.status !== 401) return throwError(() => error);
+
+      // Reuse in-progress refresh if one is already happening
+      if (!refreshInProgress) {
+        refreshInProgress = authService.refreshToken().pipe(
+          tap(() => refreshInProgress = null),
+          catchError(err => {
+            refreshInProgress = null;
+            return throwError(() => err);
+          }),
+          shareReplay(1) // All pending requests share the same refresh
+        );
+      }
+
+      return refreshInProgress.pipe(
+        switchMap(newToken =>
+          next(req.clone({
+            headers: req.headers.set('Authorization', `Bearer ${newToken}`)
+          }))
+        )
+      );
+    })
+  );
+};
+```
+
+## Loading Indicator Interceptor
+
+```typescript
+export const loadingInterceptor: HttpInterceptorFn = (req, next) => {
+  const loadingService = inject(LoadingService);
+
+  // Don't show loader for background requests
+  if (req.headers.has('X-Skip-Loading')) {
+    return next(req.clone({ headers: req.headers.delete('X-Skip-Loading') }));
+  }
+
+  loadingService.show();
+
+  return next(req).pipe(
+    finalize(() => loadingService.hide())
+  );
+};
+
+// Usage: mark a request to skip the loading indicator
+this.http.get('/api/data', {
+  headers: new HttpHeaders({ 'X-Skip-Loading': 'true' })
+});
+```
+
+## Request Caching Interceptor
+
+```typescript
+export const cachingInterceptor: HttpInterceptorFn = (req, next) => {
+  // Only cache GET requests
+  if (req.method !== 'GET') return next(req);
+
+  const cache = inject(RequestCacheService);
+  const cached = cache.get(req.url);
+
+  if (cached) {
+    return of(cached); // Return cached response immediately
+  }
+
+  return next(req).pipe(
+    tap(response => {
+      if (response instanceof HttpResponse) {
+        cache.set(req.url, response);
+      }
+    })
+  );
+};
+```
+
+<CodeChallenge
+  id="interceptor-order"
+  difficulty="intermediate"
+  description="You register three interceptors: [loggingInterceptor, authInterceptor, retryInterceptor]. The logging interceptor logs the request URL. In what order do they process an outgoing request?"
+  options={[
+    "retryInterceptor → authInterceptor → loggingInterceptor (reverse of registration)",
+    "loggingInterceptor → authInterceptor → retryInterceptor (same as registration order)",
+    "All three run simultaneously in parallel",
+    "Order is non-deterministic — Angular doesn't guarantee interceptor order"
+  ]}
+  correctAnswer={1}
+  explanation="Interceptors are applied in the order they're registered in withInterceptors([]). For outgoing requests, loggingInterceptor runs first (sees the request before auth headers are added), then authInterceptor (adds Bearer token), then retryInterceptor (wraps the final request with retry logic). For incoming responses, the order reverses — retryInterceptor sees the response first, then authInterceptor, then loggingInterceptor. This ordering matters: put logging first (to log every request as-is), auth before retry (so retries include the token), error handling last (so it catches errors from all previous interceptors)."
+/>
+
+## Interceptor Context: HttpContext
+
+Angular 15+ `HttpContext` lets you pass flags to interceptors without modifying headers:
+
+```typescript
+// Define context tokens
+const SKIP_AUTH = new HttpContextToken<boolean>(() => false);
+const RETRY_COUNT = new HttpContextToken<number>(() => 3);
+
+// Use in requests
+this.http.get('/api/public', {
+  context: new HttpContext()
+    .set(SKIP_AUTH, true)
+    .set(RETRY_COUNT, 0)
+});
+
+// Read in interceptor
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  if (req.context.get(SKIP_AUTH)) {
+    return next(req); // Skip auth for this request
+  }
+  // ... add auth header
+};
+```
+
+## Senior Insight: Class-Based vs Functional Interceptors
+
+```typescript
+// Legacy class-based interceptor (Angular < 15, still works)
+@Injectable()
+export class AuthInterceptor implements HttpInterceptor {
+  constructor(private authService: AuthService) {}
+
+  intercept(req: HttpRequest<unknown>, next: HttpHandler): Observable<HttpEvent<unknown>> {
+    const token = this.authService.getToken();
+    return next.handle(
+      req.clone({ setHeaders: { Authorization: `Bearer ${token}` } })
+    );
+  }
+}
+
+// Register in providers
+{ provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true }
+```
+
+For Angular 15+ greenfield projects, always prefer functional interceptors — they're cleaner, tree-shakeable, and work with the modern `provideHttpClient()` API. Class-based interceptors are still valid in legacy codebases.

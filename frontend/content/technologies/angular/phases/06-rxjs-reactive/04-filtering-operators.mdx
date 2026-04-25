@@ -1,0 +1,190 @@
+---
+title: "Filtering Operators"
+slug: "filtering-operators"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["RxJS", "filter", "debounceTime", "distinctUntilChanged", "take", "throttleTime"]
+summary: "Filtering operators control which values pass through and when. debounceTime and distinctUntilChanged are the foundation of every typeahead search — understanding them is expected in interviews."
+docsLinks:
+  - label: "RxJS Filtering Operators"
+    url: "https://rxjs.dev/guide/operators#filtering-operators"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## `filter()` — Conditional Pass-Through
+
+```typescript
+import { filter } from 'rxjs/operators';
+
+// Only emit values that satisfy the predicate
+of(1, 2, 3, 4, 5).pipe(
+  filter(n => n % 2 === 0)
+).subscribe(console.log); // 2, 4
+
+// Filter Angular Router events
+this.router.events.pipe(
+  filter(event => event instanceof NavigationEnd)
+).subscribe(event => this.trackPageView(event as NavigationEnd));
+
+// Filter with type narrowing (using type predicate)
+this.events$.pipe(
+  filter((e): e is SuccessEvent => e.type === 'success')
+).subscribe(e => this.handleSuccess(e.data)); // e is SuccessEvent here
+```
+
+## `debounceTime()` — Wait for Quiet Period
+
+Waits N milliseconds after the last emission before passing through. Resets the timer on each new emission:
+
+```typescript
+// Search input — only search after user stops typing for 300ms
+this.searchControl.valueChanges.pipe(
+  debounceTime(300),
+  // If user types 'a', 'an', 'ang', 'angu' within 300ms:
+  // Only 'angu' passes through (the last one after 300ms of silence)
+  switchMap(query => this.search(query))
+).subscribe(results => this.results = results);
+
+// Use cases:
+// - Search inputs (don't search on every keystroke)
+// - Resize handlers (don't recalculate on every px change)
+// - Scroll handlers (don't update on every scroll pixel)
+```
+
+<Callout type="tip">
+300ms is the commonly used debounce time for search inputs — it's long enough to avoid excessive requests but short enough to feel responsive. 500ms feels sluggish; 100ms is too aggressive for slow typists.
+</Callout>
+
+## `distinctUntilChanged()` — Skip Duplicates
+
+Skips consecutive duplicate emissions. Compares by reference by default, or by a custom comparator:
+
+```typescript
+// Skip if value hasn't actually changed
+this.searchControl.valueChanges.pipe(
+  debounceTime(300),
+  distinctUntilChanged(), // Skip if user typed then deleted to the same text
+  switchMap(query => this.search(query))
+)
+
+// Without it: typing 'angular', deleting 'r', retyping 'r' = 'angular' again
+// Would trigger a new search even though the query is the same
+
+// Custom comparator for objects
+productUpdates$.pipe(
+  distinctUntilChanged((prev, curr) => prev.price === curr.price)
+  // Only emit when the price actually changes
+)
+
+// Deep equality
+productUpdates$.pipe(
+  distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b))
+  // Warning: JSON.stringify is expensive — use for small objects only
+)
+```
+
+## `take()` and `takeWhile()` — Limit Emissions
+
+```typescript
+import { take, takeWhile, first, last } from 'rxjs/operators';
+
+// Take exactly N values, then complete
+interval(1000).pipe(
+  take(5) // 0, 1, 2, 3, 4 then completes
+).subscribe(console.log);
+
+// Take values while condition is true
+timer(0, 1000).pipe(
+  takeWhile(n => n < 10) // Takes 0-9, stops when n reaches 10
+).subscribe(console.log);
+
+// first() — take only the first value (equivalent to take(1))
+users$.pipe(first()).subscribe(user => console.log('First user:', user));
+
+// first() with predicate
+users$.pipe(
+  first(user => user.role === 'admin')
+).subscribe(admin => console.log('First admin:', admin));
+
+// last() — emit only the last value before completion
+of(1, 2, 3, 4, 5).pipe(last()).subscribe(console.log); // 5
+```
+
+## `skip()` and `skipWhile()`
+
+```typescript
+import { skip, skipWhile } from 'rxjs/operators';
+
+// Skip first N emissions
+of(1, 2, 3, 4, 5).pipe(skip(2)).subscribe(console.log); // 3, 4, 5
+
+// Skip values while condition is true
+of(1, 2, 3, 4, 5).pipe(
+  skipWhile(n => n < 3)
+).subscribe(console.log); // 3, 4, 5
+
+// Common use: skip initial BehaviorSubject value
+this.someService.state$.pipe(
+  skip(1) // Skip the initial/default value
+).subscribe(state => this.handleStateChange(state));
+```
+
+## `throttleTime()` — Rate Limiting
+
+Emits the first value then ignores subsequent values for N milliseconds. Opposite of debounceTime:
+
+```typescript
+import { throttleTime } from 'rxjs/operators';
+
+// Scroll events — update UI at most every 100ms
+fromEvent(window, 'scroll').pipe(
+  throttleTime(100),
+  // throttleTime emits FIRST event immediately, then waits 100ms
+  // debounceTime would emit LAST event AFTER 100ms of silence
+).subscribe(() => this.updateScrollPosition());
+
+// Mouse move — limit to 60fps
+fromEvent(document, 'mousemove').pipe(
+  throttleTime(16) // ~60fps
+).subscribe(e => this.updateCursor(e));
+```
+
+## `auditTime()` — Emit Last During Window
+
+Like throttleTime but emits the LAST value in the window (not the first):
+
+```typescript
+// Emit the latest value every 500ms (not the first)
+rapidClicks$.pipe(
+  auditTime(500) // Every 500ms, emit the most recent click
+)
+// Similar to debounceTime but always emits on the interval, not after silence
+```
+
+<CodeChallenge
+  id="debounce-distinct"
+  difficulty="intermediate"
+  description="A search input has debounceTime(300) and distinctUntilChanged(). The user types 'ang', waits 400ms, sees results for 'ang', then types 'r' to make 'angr', then quickly deletes 'r' back to 'ang'. Does a new search trigger?"
+  options={[
+    "Yes — any change to the input triggers debounceTime",
+    "No — distinctUntilChanged sees 'ang' again after the delete and blocks it",
+    "Yes — debounceTime fires after 300ms of silence regardless",
+    "It depends on whether 'ang' results were cached"
+  ]}
+  correctAnswer={1}
+  explanation="After deleting 'r', the input returns to 'ang'. When 300ms passes after the last keypress, debounceTime emits 'ang'. Then distinctUntilChanged compares 'ang' to the previous emission — which was also 'ang' (the search that loaded). Since they're the same, distinctUntilChanged blocks the emission. No new search is triggered. This is exactly the behavior you want — avoiding a redundant HTTP request for a query that's already been searched."
+/>
+
+## Senior Insight: Choosing Debounce vs Throttle
+
+| Use `debounceTime` when... | Use `throttleTime` when... |
+|---------------------------|---------------------------|
+| You only care about the final value after activity stops | You want regular updates during continuous activity |
+| Search input — wait for user to stop typing | Scroll/resize — update position at a rate |
+| Validation — check after user finishes | Game loop — process input at 60fps |
+| Form autosave — save after edit finishes | Analytics events — send at most once per second |
+
+The memory trick: `debounce` = "wait for silence"; `throttle` = "let one through, then wait".

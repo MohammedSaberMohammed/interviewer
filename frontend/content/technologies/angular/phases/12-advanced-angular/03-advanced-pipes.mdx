@@ -1,0 +1,295 @@
+---
+title: "Advanced Pipes"
+slug: "advanced-pipes"
+order: 3
+difficulty: "intermediate"
+readingTime: 8
+status: "published"
+tags: ["Angular", "advanced", "pipes", "custom pipes", "pure pipes", "impure pipes", "PipeTransform", "memoization"]
+summary: "Angular pipes transform display values in templates. Pure pipes memoize based on input reference — they're efficient but don't detect object mutations. Impure pipes re-run on every change detection cycle. Understanding this distinction is critical for both correctness and performance."
+docsLinks:
+  - label: "Pipes"
+    url: "https://angular.dev/guide/templates/pipes"
+  - label: "PipeTransform"
+    url: "https://angular.dev/api/core/PipeTransform"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## How Pure Pipes Work (Memoization)
+
+A pure pipe only re-runs when its input **reference** changes:
+
+```typescript
+@Pipe({
+  name: 'multiply',
+  standalone: true,
+  pure: true, // Default — only recalculates when input changes
+})
+export class MultiplyPipe implements PipeTransform {
+  transform(value: number, factor: number): number {
+    console.log('MultiplyPipe called'); // Watch when this fires
+    return value * factor;
+  }
+}
+```
+
+```typescript
+@Component({
+  template: `
+    {{ price | multiply: 2 }}   <!-- Recalculates only when price changes -->
+    {{ otherData }}             <!-- Changing this does NOT retrigger the pipe -->
+  `
+})
+class Component {
+  price = 10;
+  otherData = 'anything';
+}
+```
+
+This memoization is why pure pipes outperform method calls in templates:
+
+```html
+<!-- ❌ Method called on every CD cycle -->
+{{ formatCurrency(price) }}
+
+<!-- ✅ Pure pipe only called when price changes (reference equality) -->
+{{ price | formatCurrency }}
+```
+
+## Pure Pipe Cannot See Object Mutations
+
+The trade-off: pure pipes use reference equality, so they won't detect internal mutations:
+
+```typescript
+@Component({
+  template: `{{ users | count }}`
+})
+class BadExampleComponent {
+  users = [{ name: 'Alice' }];
+
+  addUser() {
+    this.users.push({ name: 'Bob' }); // Mutates the array — reference unchanged!
+    // The pure pipe sees the same array reference → doesn't recalculate
+    // Template shows count as 1, but array has 2 items!
+  }
+
+  addUserCorrectly() {
+    this.users = [...this.users, { name: 'Bob' }]; // New reference!
+    // Pure pipe detects new reference → recalculates → shows 2
+  }
+}
+```
+
+## Building Custom Pure Pipes
+
+### Format Bytes Pipe
+
+```typescript
+@Pipe({
+  name: 'formatBytes',
+  standalone: true,
+})
+export class FormatBytesPipe implements PipeTransform {
+  transform(bytes: number, decimals = 2): string {
+    if (bytes === 0) return '0 Bytes';
+
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(decimals))} ${sizes[i]}`;
+  }
+}
+```
+
+```html
+{{ fileSize | formatBytes }}          <!-- "1.5 MB" -->
+{{ fileSize | formatBytes: 0 }}       <!-- "2 MB" (0 decimal places) -->
+```
+
+### Time Ago Pipe (Impure)
+
+```typescript
+@Pipe({
+  name: 'timeAgo',
+  standalone: true,
+  pure: false, // Impure — runs on every CD cycle to show live "2 minutes ago"
+})
+export class TimeAgoPipe implements PipeTransform {
+  transform(date: Date | string): string {
+    const now = new Date();
+    const past = typeof date === 'string' ? new Date(date) : date;
+    const seconds = Math.floor((now.getTime() - past.getTime()) / 1000);
+
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    return `${Math.floor(seconds / 86400)} days ago`;
+  }
+}
+```
+
+<Callout type="warning">
+Impure pipes run on EVERY change detection cycle — even when unrelated parts of the component update. Use impure pipes sparingly. For "time ago" functionality, consider updating a signal or computed value on a timer interval instead of an impure pipe.
+</Callout>
+
+### Filter Pipe (Impure — Collection Filtering)
+
+```typescript
+@Pipe({
+  name: 'filter',
+  standalone: true,
+  pure: false, // Impure because it needs to react to array mutations
+              // Pure alternative: always use new array reference
+})
+export class FilterPipe implements PipeTransform {
+  transform<T>(items: T[], predicate: (item: T) => boolean): T[] {
+    if (!items) return [];
+    return items.filter(predicate);
+  }
+}
+```
+
+```html
+{{ users | filter: isActive }}
+
+<!-- Better: use computed signal instead of impure pipe -->
+```
+
+## Pipe with Multiple Arguments
+
+```typescript
+@Pipe({
+  name: 'slice',
+  standalone: true,
+})
+export class SlicePipe implements PipeTransform {
+  transform<T>(value: T[], start: number, end?: number): T[] {
+    return value.slice(start, end);
+  }
+}
+```
+
+```html
+{{ items | slice: 0 : 5 }}         <!-- First 5 items -->
+{{ items | slice: -3 }}            <!-- Last 3 items -->
+```
+
+## Pipe Chaining
+
+```html
+<!-- Pipes can be chained — output of each is input to next -->
+{{ text | uppercase | slice: 0 : 10 }}
+
+{{ price | currency: 'EUR' | replace: ',': '.' }}
+
+{{ user.createdAt | date: 'mediumDate' | uppercase }}
+```
+
+## Async Pipe Deep Dive
+
+```typescript
+@Component({
+  template: `
+    <!-- Async pipe subscribes and unsubscribes automatically -->
+    {{ data$ | async }}
+
+    <!-- With null-safe access -->
+    {{ (user$ | async)?.name }}
+
+    <!-- Assign to local variable (avoids multiple subscriptions) -->
+    @if (user$ | async; as user) {
+      <h1>{{ user.name }}</h1>
+      <p>{{ user.email }}</p>
+    }
+
+    <!-- In @for -->
+    @for (item of items$ | async ?? []; track item.id) {
+      <li>{{ item.name }}</li>
+    }
+  `
+})
+class AsyncExampleComponent {
+  user$ = this.userService.getUser();
+  items$ = this.itemService.getAll();
+}
+```
+
+The async pipe:
+- Subscribes on init
+- Unsubscribes on destroy (no memory leak!)
+- Calls `markForCheck()` when Observable emits (works with OnPush)
+- Returns `null` before the first emission
+
+## Building a Memoized Pipe
+
+For expensive transformations, implement manual memoization:
+
+```typescript
+@Pipe({
+  name: 'processData',
+  standalone: true,
+})
+export class ProcessDataPipe implements PipeTransform {
+  private cache = new Map<unknown, unknown>();
+
+  transform(data: unknown): ProcessedData {
+    if (this.cache.has(data)) {
+      return this.cache.get(data) as ProcessedData; // Cache hit
+    }
+
+    // Expensive transformation
+    const result = this.expensiveProcess(data);
+    this.cache.set(data, result);
+    return result;
+  }
+
+  private expensiveProcess(data: unknown): ProcessedData {
+    // Simulated expensive computation
+    return data as ProcessedData;
+  }
+}
+```
+
+<CodeChallenge
+  id="pure-pipe-mutation"
+  difficulty="intermediate"
+  description="A pure pipe transforms an array of users. The component adds a user with users.push(newUser). The template still shows the old count from the pipe. Why?"
+  options={[
+    "Pure pipes have a bug with arrays — use impure pipes for all array operations",
+    "Pure pipes compare by reference — pushing to an array doesn't change the reference, so the pipe sees the same array and returns its cached result",
+    "Angular doesn't detect array changes in any binding, not just pipes",
+    "push() doesn't trigger change detection"
+  ]}
+  correctAnswer={1}
+  explanation="Pure pipes use strict reference equality (===) to decide whether to recalculate. When you call users.push(newUser), the array reference doesn't change — it's still the same array object in memory, just with one more element. The pure pipe compares the current reference to the cached reference, sees they're identical, and returns the memoized result without recalculating. The fix: always create a new array reference when adding items: users = [...users, newUser]. This immutable update pattern is required for correct behavior with both pure pipes and OnPush change detection."
+/>
+
+## Senior Insight: Pipes vs Computed Signals vs Methods
+
+Three ways to transform data in Angular templates — each has its place:
+
+```typescript
+// 1. Method call — avoid in templates (runs on every CD cycle)
+getUserDisplayName(user: User): string {
+  return `${user.firstName} ${user.lastName}`;
+}
+// Template: {{ getUserDisplayName(user) }}  ← Runs EVERY CD cycle
+
+// 2. Pure Pipe — good for reusable transformations, memoized
+// {{ user | displayName }}  ← Only recalculates when user reference changes
+
+// 3. Computed Signal — best for component-local derived state
+userDisplayName = computed(() => {
+  const user = this.user();
+  return `${user.firstName} ${user.lastName}`;
+});
+// Template: {{ userDisplayName() }}  ← Only recalculates when user signal changes
+```
+
+**Use pipes when**: the transformation is reusable across multiple components (currency, date, bytes formatting)
+**Use computed signals when**: the transformation is component-specific and involves signals
+**Avoid template method calls**: for anything that runs more than once per lifecycle
+
+This distinction shows deep understanding of Angular's rendering model.

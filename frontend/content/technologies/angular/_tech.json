@@ -1,0 +1,14 @@
+{
+  "slug": "angular",
+  "title": "Angular",
+  "subtitle": "Angular & TypeScript Interview Prep",
+  "description": "Deep dive into Angular architecture, RxJS, dependency injection, state management, performance optimization, and testing. 13 phases from TypeScript fundamentals to advanced interview patterns.",
+  "icon": "Triangle",
+  "color": "red",
+  "status": "active",
+  "order": 2,
+  "defaultLanguage": "typescript",
+  "docsBaseUrl": "https://angular.dev",
+  "keywords": ["Angular", "TypeScript", "RxJS", "NgRx", "frontend", "Angular 17"],
+  "estimatedTotalHours": 100
+}

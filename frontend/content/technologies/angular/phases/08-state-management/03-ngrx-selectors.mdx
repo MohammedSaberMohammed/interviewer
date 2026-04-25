@@ -1,0 +1,224 @@
+---
+title: "NgRx Selectors"
+slug: "ngrx-selectors"
+order: 3
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["NgRx", "selectors", "createSelector", "memoization", "state derivation"]
+summary: "Selectors are memoized functions that derive data from NgRx state. They prevent unnecessary component re-renders and keep state derivation logic outside components."
+docsLinks:
+  - label: "NgRx Selectors"
+    url: "https://ngrx.io/guide/store/selectors"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Are Selectors?
+
+Selectors are pure functions that extract and derive data from NgRx state. They're memoized — if the input state hasn't changed, they return the cached result without recomputing.
+
+```typescript
+import { createSelector, createFeatureSelector } from '@ngrx/store';
+import { UserState } from './user.state';
+
+// Feature selector — extracts the 'users' slice from AppState
+const selectUserState = createFeatureSelector<UserState>('users');
+
+// Simple selector — extract a property
+export const selectAllUsers = createSelector(
+  selectUserState,
+  (state: UserState) => state.users
+);
+
+export const selectUsersLoading = createSelector(
+  selectUserState,
+  (state) => state.loading
+);
+
+export const selectUsersError = createSelector(
+  selectUserState,
+  (state) => state.error
+);
+
+export const selectSelectedUserId = createSelector(
+  selectUserState,
+  (state) => state.selectedUserId
+);
+```
+
+## Composed Selectors
+
+Selectors can compose other selectors — the memoization chain means if neither input changes, the composed selector doesn't recompute:
+
+```typescript
+// Derived data — composed from multiple selectors
+export const selectSelectedUser = createSelector(
+  selectAllUsers,
+  selectSelectedUserId,
+  (users, selectedId) => {
+    if (!selectedId) return null;
+    return users.find(u => u.id === selectedId) ?? null;
+  }
+);
+
+// Filter active users
+export const selectActiveUsers = createSelector(
+  selectAllUsers,
+  (users) => users.filter(u => u.active)
+);
+
+// Count
+export const selectUserCount = createSelector(
+  selectAllUsers,
+  (users) => users.length
+);
+
+// Complex derived data
+export const selectAdminDashboard = createSelector(
+  selectAllUsers,
+  selectActiveUsers,
+  (all, active) => ({
+    total: all.length,
+    activeCount: active.length,
+    inactiveCount: all.length - active.length,
+    adminCount: all.filter(u => u.role === 'admin').length,
+  })
+);
+```
+
+<Callout type="tip">
+Selectors with multiple input selectors use those as "projectors" — the final function receives the outputs of all input selectors. Memoization works on ALL inputs: if `selectAllUsers` and `selectSelectedUserId` both return the same values as last time, `selectSelectedUser` returns its cached result without running the find() again.
+</Callout>
+
+## Parameterized Selectors
+
+For selectors that need runtime arguments, use factory functions:
+
+```typescript
+// Factory selector — returns a selector for a specific ID
+export const selectUserById = (id: string) => createSelector(
+  selectAllUsers,
+  (users) => users.find(u => u.id === id) ?? null
+);
+
+// Usage in component
+@Component({ selector: 'app-user-detail' })
+class UserDetailComponent {
+  @Input() userId!: string;
+
+  user$ = this.store.select(selectUserById(this.userId));
+  // Note: this creates a new selector per component instance
+}
+```
+
+For frequently used parameterized selectors, cache them:
+
+```typescript
+// Cache selectors by ID to avoid creating new functions on each render
+const selectorCache = new Map<string, MemoizedSelector<any, User | null>>();
+
+export const selectUserById = (id: string) => {
+  if (!selectorCache.has(id)) {
+    selectorCache.set(id, createSelector(
+      selectAllUsers,
+      users => users.find(u => u.id === id) ?? null
+    ));
+  }
+  return selectorCache.get(id)!;
+};
+```
+
+## Using Selectors in Components
+
+```typescript
+@Component({
+  selector: 'app-user-dashboard',
+  standalone: true,
+  imports: [AsyncPipe],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (dashboard$ | async; as dashboard) {
+      <p>Total users: {{ dashboard.total }}</p>
+      <p>Active: {{ dashboard.activeCount }}</p>
+      <p>Admins: {{ dashboard.adminCount }}</p>
+    }
+  `
+})
+class UserDashboardComponent {
+  private store = inject(Store);
+
+  // Selector returns Observable — use async pipe
+  dashboard$ = this.store.select(selectAdminDashboard);
+
+  // Or use toSignal for signal-based approach
+  dashboard = toSignal(this.store.select(selectAdminDashboard));
+}
+```
+
+## Memoization in Detail
+
+```typescript
+// Setup
+let callCount = 0;
+const selectExpensiveData = createSelector(
+  selectAllUsers,
+  (users) => {
+    callCount++;
+    return users.filter(u => u.active).sort((a, b) => a.name.localeCompare(b.name));
+  }
+);
+
+// First select — selector runs (callCount: 1)
+store.select(selectExpensiveData).subscribe();
+
+// Dispatch unrelated action (doesn't change users state)
+store.dispatch(someOtherAction());
+
+// Selector NOT called again (callCount still: 1) — memoized!
+// selectAllUsers returns same reference, so the projector is skipped
+
+// Add a user — users reference changes
+store.dispatch(addUser({ user: newUser }));
+// Selector DOES run again (callCount: 2) — input changed
+```
+
+<CodeChallenge
+  id="ngrx-selectors-memoization"
+  difficulty="advanced"
+  description="selectExpensiveDerived composes selectA and selectB. State updates dispatch an action that changes only selectC (an unrelated selector). Does selectExpensiveDerived recompute?"
+  options={[
+    "Yes — any state change triggers all selectors to recompute",
+    "No — memoization checks if selectA and selectB outputs changed; they didn't",
+    "Yes — the NgRx store doesn't know which selectors depend on which state slices",
+    "It depends on whether the component is using ChangeDetectionStrategy.OnPush"
+  ]}
+  correctAnswer={1}
+  explanation="createSelector memoizes based on input selector outputs. selectExpensiveDerived uses selectA and selectB. If an action only changes the state slice that selectC reads, then selectA and selectB return the same values as before (same references). The memoization check passes — the projector function is NOT called. This is how selectors prevent unnecessary computation in large NgRx stores."
+/>
+
+## Senior Insight: Selector Composition Patterns
+
+```typescript
+// Pattern: one selector per UI need (not one per state property)
+// Group related data for a component
+
+// ❌ Many small selectors — component assembles the view model
+users$ = store.select(selectAllUsers);
+loading$ = store.select(selectLoading);
+error$ = store.select(selectError);
+// Template: @if (loading$ | async) / @if (error$ | async) / @for users$ async
+
+// ✅ ViewModel selector — all data for this component pre-assembled
+export const selectUserListViewModel = createSelector(
+  selectAllUsers,
+  selectUsersLoading,
+  selectUsersError,
+  (users, loading, error) => ({ users, loading, error })
+);
+
+viewModel$ = store.select(selectUserListViewModel);
+// Template: @if (vm.loading) / @if (vm.error) / @for vm.users
+```
+
+The ViewModel selector pattern reduces the number of subscriptions, makes templates cleaner, and encapsulates data assembly in a testable, reusable selector.

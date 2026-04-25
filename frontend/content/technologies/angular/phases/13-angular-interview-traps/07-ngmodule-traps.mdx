@@ -1,0 +1,265 @@
+---
+title: "NgModule Traps"
+slug: "ngmodule-traps"
+order: 7
+difficulty: "advanced"
+readingTime: 8
+status: "published"
+tags: ["Angular", "traps", "NgModule", "imports", "exports", "declarations", "forRoot", "CUSTOM_ELEMENTS_SCHEMA"]
+summary: "NgModule is the legacy module system with numerous gotchas: components that aren't declared (or declared twice), shared modules that are imported but not exported, forRoot/forChild confusion, and providers being registered multiple times. Essential knowledge for maintaining legacy Angular codebases."
+docsLinks:
+  - label: "NgModule"
+    url: "https://angular.dev/guide/ngmodules"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## NgModule in the Standalone Era
+
+<Callout type="tip">
+Angular 17+ defaults to standalone components — NgModule is the legacy system. However, most production Angular apps still use NgModule, and understanding these traps is essential for maintaining existing codebases and migrating to standalone. Interviewers at companies with Angular 2-16 codebases will ask about NgModule gotchas extensively.
+</Callout>
+
+## Trap 1: Component Not Declared
+
+```
+Error: 'app-user-card' is not a known element
+
+1. If 'app-user-card' is an Angular component, then verify that it is part of this module
+2. If 'app-user-card' is a Web Component, then add 'CUSTOM_ELEMENTS_SCHEMA' to the...
+```
+
+```typescript
+// ❌ Cause: UserCardComponent not declared in the module
+@NgModule({
+  declarations: [AppComponent], // UserCardComponent missing!
+  imports: [BrowserModule],
+})
+class AppModule { }
+
+// ✅ Fix: Declare in the module using the component
+@NgModule({
+  declarations: [AppComponent, UserCardComponent], // ← Add it!
+  imports: [BrowserModule],
+})
+class AppModule { }
+```
+
+## Trap 2: Declared but Not Exported (SharedModule)
+
+```typescript
+// ❌ Declared but not exported from SharedModule
+@NgModule({
+  declarations: [ButtonComponent, InputComponent, CardComponent],
+  // Missing exports! Other modules can't use these components
+})
+class SharedModule { }
+
+// Another module imports SharedModule but can't use its components:
+@NgModule({
+  imports: [SharedModule],
+})
+class FeatureModule { }
+// Error: ButtonComponent is not a known element!
+
+// ✅ Fix: Export everything that should be publicly accessible
+@NgModule({
+  declarations: [ButtonComponent, InputComponent, CardComponent],
+  exports: [ButtonComponent, InputComponent, CardComponent], // ← Must export!
+})
+class SharedModule { }
+```
+
+The rule: **declarations make components available within the module; exports make them available to importing modules**.
+
+## Trap 3: Importing Module That Doesn't Reexport Dependencies
+
+```typescript
+// ❌ SharedModule imports FormsModule but doesn't reexport it
+@NgModule({
+  imports: [FormsModule], // For SharedModule's own components
+  declarations: [...],
+  exports: [...], // FormsModule NOT exported!
+})
+class SharedModule { }
+
+// FeatureModule imports SharedModule
+// FeatureModule components can't use ngModel — FormsModule not available!
+@NgModule({
+  imports: [SharedModule], // FormsModule NOT included
+})
+class FeatureModule { }
+```
+
+```typescript
+// ✅ Export dependencies that feature modules need
+@NgModule({
+  imports: [CommonModule, FormsModule, ReactiveFormsModule],
+  declarations: [ButtonComponent, InputComponent],
+  exports: [
+    CommonModule,        // NgIf, NgFor, etc.
+    FormsModule,         // ngModel
+    ReactiveFormsModule, // FormControl, etc.
+    ButtonComponent,
+    InputComponent,
+  ]
+})
+class SharedModule { }
+```
+
+## Trap 4: Declaring a Component in Multiple Modules
+
+```typescript
+// ❌ Cannot declare component in two modules
+@NgModule({
+  declarations: [SharedButtonComponent],
+})
+class Module1 { }
+
+@NgModule({
+  declarations: [SharedButtonComponent], // ← Declared here too!
+})
+class Module2 { }
+
+// Error: Type SharedButtonComponent is part of the declarations of 2 modules:
+// Module1 and Module2. Please consider moving SharedButtonComponent to a
+// higher module that imports both Module1 and Module2.
+```
+
+```typescript
+// ✅ Fix: Declare in a shared module, import that module everywhere
+@NgModule({
+  declarations: [SharedButtonComponent],
+  exports: [SharedButtonComponent],
+})
+class SharedModule { }
+
+@NgModule({ imports: [SharedModule] })
+class Module1 { }
+
+@NgModule({ imports: [SharedModule] })
+class Module2 { }
+```
+
+## Trap 5: forRoot() vs forChild() — Providers Registered Twice
+
+```typescript
+// The classic forRoot/forChild pattern:
+@NgModule({
+  imports: [RouterModule.forRoot(routes)] // Root — providers + directives
+})
+class AppModule { }
+
+// ❌ forRoot() imported in a lazy module creates duplicate providers!
+@NgModule({
+  imports: [RouterModule.forRoot(routes)] // ← Should be forChild()!
+})
+class LazyModule { }
+
+// RouterModule.forRoot() registers router services (like Router, RouterLink)
+// Calling it twice creates duplicate instances, breaking routing!
+
+// ✅ Lazy loaded modules use forChild()
+@NgModule({
+  imports: [RouterModule.forChild(lazyRoutes)] // Only directives, no providers
+})
+class LazyModule { }
+```
+
+The pattern applies to any library with state (NgRx Store, etc.):
+- `forRoot()` → used once in AppModule: provides services + declares directives
+- `forChild()` → used in feature modules: declares directives only, no services
+
+## Trap 6: CUSTOM_ELEMENTS_SCHEMA — The Lazy Fix
+
+```typescript
+// ❌ Using CUSTOM_ELEMENTS_SCHEMA to silence unknown element errors
+@NgModule({
+  schemas: [CUSTOM_ELEMENTS_SCHEMA] // Suppresses ALL unknown element errors!
+})
+class AppModule { }
+```
+
+This "fix" silences the error but also silences legitimate errors:
+- Typos in component selectors: `<app-usr-card>` instead of `<app-user-card>` → no error
+- Missing imports/declarations → no error
+- Real missing components → no error
+
+Use `CUSTOM_ELEMENTS_SCHEMA` only for:
+- Web Components (native custom elements)
+- Stencil.js components
+- Third-party web components not wrapped in Angular
+
+## Trap 7: BrowserModule Imported Multiple Times
+
+```typescript
+// ❌ BrowserModule in feature modules causes error
+@NgModule({
+  imports: [BrowserModule] // Only for root module!
+})
+class FeatureModule { }
+
+// Error: BrowserModule has already been loaded. If you need access to common
+// directives such as NgIf and NgFor from a feature module, import CommonModule instead.
+
+// ✅ Feature modules use CommonModule
+@NgModule({
+  imports: [CommonModule] // Provides NgIf, NgFor, AsyncPipe, etc.
+})
+class FeatureModule { }
+```
+
+`BrowserModule` = `CommonModule` + browser bootstrap providers. Only the root module needs bootstrap providers.
+
+<CodeChallenge
+  id="ngmodule-exports"
+  difficulty="intermediate"
+  description="Module A declares ComponentA and imports Module B. Module B declares ComponentB and does NOT export it. Can ComponentA's template use ComponentB?"
+  options={[
+    "Yes — importing a module gives access to all its declarations",
+    "No — ComponentB must be exported from Module B for Module A to use it in templates",
+    "Yes — but only if ComponentA is in Module A's exports",
+    "It depends on whether Module A is lazy-loaded"
+  ]}
+  correctAnswer={1}
+  explanation="NgModule's declarations array makes components available WITHIN that module only. The exports array makes declarations available to IMPORTING modules. When Module A imports Module B, Module A can only use what Module B explicitly exports. ComponentB is declared in Module B but not exported — so it's only available in Module B's own components. Module A imports Module B but cannot use ComponentB in Module A's templates. The fix: add ComponentB to Module B's exports array. This is the most common NgModule confusion — declarations ≠ exported API."
+/>
+
+## Migration Note: NgModule → Standalone
+
+The standalone migration resolves many NgModule traps:
+
+```typescript
+// Before (NgModule):
+@NgModule({
+  declarations: [UserCardComponent],
+  imports: [CommonModule, FormsModule],
+  exports: [UserCardComponent],
+})
+class UserCardModule { }
+
+// After (Standalone):
+@Component({
+  selector: 'app-user-card',
+  standalone: true,
+  imports: [CommonModule, FormsModule], // Component declares its own deps
+})
+class UserCardComponent { }
+
+// No module needed!
+// No declarations/exports to forget
+// No forRoot/forChild confusion
+// Component is self-contained
+```
+
+## Senior Insight: NgModule Mental Model
+
+The NgModule system has three concepts that must be understood together:
+
+1. **declarations**: "This module owns these components" — they're available within the module
+2. **imports**: "This module needs these modules" — their exports become available here
+3. **exports**: "This module provides these to others" — components/modules that importing modules can use
+
+The common mistake: thinking that `imports` automatically makes everything in the imported module available. It only makes the **exported** items available. Internal (non-exported) components remain private to their module.
+
+For interviews, knowing why the Angular team introduced standalone components (to solve exactly these NgModule complexity issues) demonstrates architectural understanding that goes beyond just "how to use Angular".

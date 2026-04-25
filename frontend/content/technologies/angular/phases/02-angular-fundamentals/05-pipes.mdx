@@ -1,0 +1,250 @@
+---
+title: "Pipes"
+slug: "pipes"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "pipes", "custom pipes", "pure pipes", "impure pipes", "async pipe"]
+summary: "Pipes transform values in templates. Understanding pure vs impure pipes and the async pipe is critical for building performant Angular applications."
+docsLinks:
+  - label: "Angular Pipes"
+    url: "https://angular.dev/guide/pipes"
+  - label: "AsyncPipe"
+    url: "https://angular.dev/api/common/AsyncPipe"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## What Pipes Do
+
+Pipes transform values in Angular templates — formatting dates, numbers, strings, filtering arrays, or handling observables. The pipe operator `|` applies the transformation inline:
+
+```html
+<!-- Built-in pipes -->
+<p>{{ user.name | uppercase }}</p>
+<p>{{ product.price | currency:'USD':'symbol':'1.2-2' }}</p>
+<p>{{ event.date | date:'MMMM d, y' }}</p>
+<p>{{ description | slice:0:100 }}...</p>
+<p>{{ data | json }}</p>
+<p>{{ ratio | percent:'1.1-1' }}</p>
+<p>{{ value | number:'1.0-2' }}</p>
+
+<!-- Chaining pipes -->
+<p>{{ title | slice:0:50 | uppercase }}</p>
+
+<!-- Async pipe — the most important one -->
+<p>{{ user$ | async | json }}</p>
+```
+
+## The `async` Pipe — The Most Important Pipe
+
+The `async` pipe subscribes to an Observable or Promise and returns its latest value. When the component is destroyed, it **automatically unsubscribes**:
+
+```typescript
+@Component({
+  standalone: true,
+  imports: [AsyncPipe, NgIf],
+  template: `
+    <!-- Subscribes, renders, and auto-unsubscribes -->
+    @if (user$ | async; as user) {
+      <h1>Hello, {{ user.name }}</h1>
+      <p>Email: {{ user.email }}</p>
+    }
+
+    <!-- Multiple async pipes = multiple subscriptions! -->
+    <!-- Prefer the 'as' pattern above to subscribe once -->
+    <p>{{ (user$ | async)?.name }}</p>
+    <p>{{ (user$ | async)?.email }}</p>
+  `
+})
+class UserComponent {
+  user$ = this.userService.getCurrentUser(); // Observable<User>
+
+  constructor(private userService: UserService) {}
+}
+```
+
+<Callout type="warning">
+Using `async` pipe multiple times with the same observable creates multiple subscriptions. Use the `as` pattern (`@if (user$ | async; as user)`) or `ng-container` with `*ngIf="user$ | async as user"` to subscribe once and share the value. Each `async` pipe subscription independently hits your service.
+</Callout>
+
+## Pure vs Impure Pipes
+
+This is one of the most common Angular interview questions about pipes:
+
+### Pure Pipes (default)
+
+A pure pipe is called **only when the input reference changes**. Angular uses memoization:
+
+```typescript
+@Pipe({
+  name: 'formatPrice',
+  standalone: true,
+  pure: true, // Default — can omit this
+})
+export class FormatPricePipe implements PipeTransform {
+  transform(price: number, currency = 'USD'): string {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency
+    }).format(price);
+  }
+}
+```
+
+Pure pipes are **performant** — Angular skips the transform if the primitive value or object reference hasn't changed.
+
+**The gotcha**: If you mutate an array and pass it to a pure pipe, the pipe won't re-run because the reference is the same:
+
+```typescript
+// ❌ Pure pipe won't see this change — same array reference
+this.users.push(newUser);
+
+// ✅ New array reference — pure pipe re-runs
+this.users = [...this.users, newUser];
+```
+
+### Impure Pipes
+
+An impure pipe runs on **every change detection cycle** regardless of input changes:
+
+```typescript
+@Pipe({
+  name: 'filterByRole',
+  standalone: true,
+  pure: false, // IMPURE — runs every CD cycle
+})
+export class FilterByRolePipe implements PipeTransform {
+  transform(users: User[], role: string): User[] {
+    return users.filter(u => u.role === role);
+  }
+}
+```
+
+Use impure pipes when:
+- Input is a mutable object/array that changes internally
+- The result depends on external state (e.g., current date)
+
+But be careful: impure pipes running on every CD cycle can tank performance.
+
+## Creating a Custom Pipe
+
+```typescript
+import { Pipe, PipeTransform } from '@angular/core';
+
+@Pipe({
+  name: 'truncate',
+  standalone: true,
+})
+export class TruncatePipe implements PipeTransform {
+  transform(value: string, limit = 50, ellipsis = '...'): string {
+    if (!value) return '';
+    if (value.length <= limit) return value;
+    return value.substring(0, limit).trimEnd() + ellipsis;
+  }
+}
+```
+
+```html
+{{ article.body | truncate }}              <!-- Default: 50 chars -->
+{{ article.body | truncate:100 }}          <!-- Custom limit -->
+{{ article.body | truncate:100:'…' }}     <!-- Custom ellipsis -->
+```
+
+## A More Complex Custom Pipe: Time Ago
+
+```typescript
+@Pipe({
+  name: 'timeAgo',
+  standalone: true,
+  pure: false, // Impure because result depends on current time
+})
+export class TimeAgoPipe implements PipeTransform {
+  transform(value: Date | string): string {
+    const date = typeof value === 'string' ? new Date(value) : value;
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+
+    const intervals: [number, string][] = [
+      [31536000, 'year'],
+      [2592000, 'month'],
+      [86400, 'day'],
+      [3600, 'hour'],
+      [60, 'minute'],
+    ];
+
+    for (const [secs, label] of intervals) {
+      const count = Math.floor(seconds / secs);
+      if (count >= 1) {
+        return `${count} ${label}${count > 1 ? 's' : ''} ago`;
+      }
+    }
+    return 'just now';
+  }
+}
+```
+
+## Built-in Pipes Reference
+
+```html
+<!-- Date pipe with format tokens -->
+{{ date | date }}                    <!-- 'Jan 1, 2024' -->
+{{ date | date:'shortDate' }}        <!-- '1/1/24' -->
+{{ date | date:'yyyy-MM-dd' }}       <!-- '2024-01-01' -->
+
+<!-- Number pipe -->
+{{ 1234.56 | number:'1.2-2' }}       <!-- '1,234.56' -->
+{{ 0.75 | percent }}                 <!-- '75%' -->
+{{ 42.5 | currency }}                <!-- '$42.50' -->
+
+<!-- String pipes -->
+{{ 'hello' | uppercase }}            <!-- 'HELLO' -->
+{{ 'HELLO' | lowercase }}            <!-- 'hello' -->
+{{ 'hello world' | titlecase }}      <!-- 'Hello World' -->
+
+<!-- Array/string slicing -->
+{{ [1,2,3,4,5] | slice:1:3 }}       <!-- [2, 3] -->
+{{ 'Angular' | slice:0:3 }}          <!-- 'Ang' -->
+
+<!-- Debug -->
+{{ object | json }}                  <!-- Pretty-printed JSON -->
+
+<!-- Key-value pairs -->
+<div *ngFor="let entry of config | keyvalue">
+  {{ entry.key }}: {{ entry.value }}
+</div>
+```
+
+<CodeChallenge
+  id="pure-vs-impure-pipe"
+  difficulty="intermediate"
+  description="You have a pure pipe that filters an array. Your component mutates the array with push(). The pipe output doesn't update. What's happening?"
+  options={[
+    "Pipes don't work with arrays — use a method instead",
+    "The pure pipe sees the same array reference and skips re-running the transform",
+    "Angular's change detection doesn't track array changes",
+    "The pipe needs to be imported in the NgModule to work"
+  ]}
+  correctAnswer={1}
+  explanation="Pure pipes use reference equality checks. When you push() to an array, the array reference stays the same — so the pure pipe concludes 'nothing changed' and returns the cached result. The fix: replace the array reference (this.items = [...this.items, newItem]) to trigger the pipe. Or use an impure pipe (pure: false), but be aware of the performance cost."
+/>
+
+## Senior Insight: Pipes vs Component Methods vs Signals
+
+Three ways to transform data for display:
+
+```typescript
+// 1. Pipe — best for stateless, reusable transformations used in templates
+<p>{{ price | formatCurrency:'EUR' }}</p>
+
+// 2. Getter — convenient but runs on every CD cycle (like an impure pipe)
+get formattedPrice() { return formatCurrency(this.price, 'EUR'); }
+<p>{{ formattedPrice }}</p>
+
+// 3. Signal/computed — best for reactive derived state
+price = signal(9.99);
+formattedPrice = computed(() => formatCurrency(this.price(), 'EUR'));
+<p>{{ formattedPrice() }}</p>
+```
+
+Signals with `computed()` are increasingly preferred over pipes and getters in Angular 17+ because they're lazy, memoized, and only recompute when dependencies change.

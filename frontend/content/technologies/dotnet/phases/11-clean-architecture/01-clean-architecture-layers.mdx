@@ -1,0 +1,292 @@
+---
+title: "Clean Architecture: The 4 Layers & the Dependency Rule"
+slug: "clean-architecture-layers"
+order: 1
+difficulty: "advanced"
+readingTime: 15
+status: "published"
+tags: ["clean architecture", "layers", "dependency rule", "domain", "application", "infrastructure", "presentation"]
+summary: "Clean Architecture organizes code into four concentric layers where dependencies always point inward — keeping your domain pure and your infrastructure swappable."
+docsLinks:
+  - label: "Architect modern web applications with ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/"
+  - label: "eShopOnContainers reference application"
+    url: "https://github.com/dotnet-architecture/eShopOnContainers"
+  - label: ".NET Application Architecture Guides"
+    url: "https://learn.microsoft.com/en-us/dotnet/architecture/"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer, ArchDiagram } from '@/components/lesson'
+
+## The Core Idea
+
+Clean Architecture (Robert C. Martin, 2012) is not a framework or a library — it is a **set of constraints** about which code is allowed to depend on which other code. The fundamental constraint is the **Dependency Rule**:
+
+> Source code dependencies must point inward. Nothing in an inner layer can know anything about an outer layer.
+
+This single rule, rigorously enforced, gives you a codebase where:
+- Business logic can be tested without a database, web server, or message broker
+- Infrastructure (DB engine, ORMs, cloud APIs) can be swapped without touching the domain
+- The "important stuff" (your domain model) lives at the center, isolated from churn
+
+<ArchDiagram
+  title="Clean Architecture: Inward-Only Dependency Rule"
+  layers={[
+    { label: 'Outermost — can depend on all inner layers', nodes: [
+      { id: 'ui', label: 'Presentation', sublabel: 'Controllers, Razor Pages, Blazor', type: 'client' },
+      { id: 'infra', label: 'Infrastructure', sublabel: 'EF Core, Redis, HTTP clients, email', type: 'server' },
+    ]},
+    { label: '', nodes: [{ id: 'app', label: 'Application', sublabel: 'Use cases, Commands, Queries, DTOs', type: 'service' }] },
+    { label: 'Innermost — no dependencies on outer layers', nodes: [{ id: 'domain', label: 'Domain', sublabel: 'Entities, Value Objects, Domain Events', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: 'depends on →', dashed: true },
+    { label: 'depends on →', dashed: true },
+  ]}
+  caption="Dependencies always point inward. Domain knows nothing about Application, Infrastructure, or Presentation. Application knows only Domain. Infrastructure and Presentation depend on Application interfaces — never the reverse."
+/>
+
+---
+
+## The Four Layers
+
+```
+┌─────────────────────────────────────────┐
+│         Presentation / UI               │  ← outer (knows everything below)
+│  ┌───────────────────────────────────┐  │
+│  │       Infrastructure              │  │  ← knows Application + Domain
+│  │  ┌─────────────────────────────┐  │  │
+│  │  │       Application           │  │  │  ← knows Domain only
+│  │  │  ┌───────────────────────┐  │  │  │
+│  │  │  │        Domain         │  │  │  │  ← knows nothing outward
+│  │  │  └───────────────────────┘  │  │  │
+│  │  └─────────────────────────────┘  │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
+
+### Layer 1: Domain (Enterprise Business Rules)
+
+The innermost layer. Contains entities, value objects, domain events, aggregates, and domain services. **Zero dependencies** on frameworks, databases, or other layers.
+
+```csharp
+// Domain/Entities/Order.cs
+// No EF Core attributes, no ASP.NET references, no MediatR — pure C#
+public class Order
+{
+    private readonly List<OrderLine> _lines = new();
+
+    public OrderId Id { get; private set; }
+    public CustomerId CustomerId { get; private set; }
+    public OrderStatus Status { get; private set; }
+    public IReadOnlyList<OrderLine> Lines => _lines.AsReadOnly();
+    public Money Total => _lines.Aggregate(Money.Zero, (sum, l) => sum + l.Subtotal);
+
+    private Order() { } // EF Core constructor — no public parameterless ctor
+
+    public static Order Create(CustomerId customerId)
+    {
+        var order = new Order
+        {
+            Id = OrderId.New(),
+            CustomerId = customerId,
+            Status = OrderStatus.Draft
+        };
+        order.AddDomainEvent(new OrderCreatedEvent(order.Id, customerId));
+        return order;
+    }
+
+    public void AddLine(Product product, int quantity)
+    {
+        if (Status != OrderStatus.Draft)
+            throw new DomainException("Cannot add lines to a confirmed order.");
+
+        var existingLine = _lines.FirstOrDefault(l => l.ProductId == product.Id);
+        if (existingLine is not null)
+            existingLine.IncreaseQuantity(quantity);
+        else
+            _lines.Add(OrderLine.Create(product, quantity));
+    }
+
+    public void Confirm()
+    {
+        if (!_lines.Any())
+            throw new DomainException("Cannot confirm an order with no lines.");
+        Status = OrderStatus.Confirmed;
+        AddDomainEvent(new OrderConfirmedEvent(Id));
+    }
+}
+```
+
+### Layer 2: Application (Application Business Rules)
+
+Orchestrates the domain to fulfill use cases. Contains commands, queries, handlers, and application services. **Depends only on Domain**. References interfaces (ports) for infrastructure needs — never implementations.
+
+```csharp
+// Application/Orders/Commands/ConfirmOrder/ConfirmOrderCommand.cs
+public record ConfirmOrderCommand(Guid OrderId) : IRequest<Result>;
+
+// Application/Orders/Commands/ConfirmOrder/ConfirmOrderHandler.cs
+public class ConfirmOrderHandler : IRequestHandler<ConfirmOrderCommand, Result>
+{
+    private readonly IOrderRepository _orders;     // interface defined HERE in Application
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IEventDispatcher _events;
+
+    public ConfirmOrderHandler(
+        IOrderRepository orders,
+        IUnitOfWork unitOfWork,
+        IEventDispatcher events)
+    {
+        _orders = orders;
+        _unitOfWork = unitOfWork;
+        _events = events;
+    }
+
+    public async Task<Result> Handle(ConfirmOrderCommand command, CancellationToken ct)
+    {
+        var order = await _orders.GetByIdAsync(new OrderId(command.OrderId), ct);
+        if (order is null)
+            return Result.Failure("Order not found.");
+
+        order.Confirm(); // domain logic — handler doesn't know HOW this works
+
+        await _unitOfWork.SaveChangesAsync(ct);
+        await _events.DispatchAsync(order.DomainEvents, ct);
+
+        return Result.Success();
+    }
+}
+
+// Application/Interfaces/IOrderRepository.cs
+// Lives in Application, implemented in Infrastructure
+public interface IOrderRepository
+{
+    Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default);
+    Task AddAsync(Order order, CancellationToken ct = default);
+}
+```
+
+### Layer 3: Infrastructure (Frameworks & Drivers)
+
+Contains implementations of application interfaces. EF Core DbContexts, HTTP clients, email senders, file storage. **Depends on Application and Domain** — it implements their contracts.
+
+```csharp
+// Infrastructure/Persistence/Repositories/OrderRepository.cs
+public class OrderRepository : IOrderRepository  // implements Application interface
+{
+    private readonly AppDbContext _db;
+
+    public OrderRepository(AppDbContext db) => _db = db;
+
+    public async Task<Order?> GetByIdAsync(OrderId id, CancellationToken ct = default)
+        => await _db.Orders
+            .Include(o => o.Lines)
+            .FirstOrDefaultAsync(o => o.Id == id, ct);
+
+    public async Task AddAsync(Order order, CancellationToken ct = default)
+        => await _db.Orders.AddAsync(order, ct);
+}
+
+// Infrastructure/Persistence/AppDbContext.cs
+public class AppDbContext : DbContext
+{
+    public DbSet<Order> Orders => Set<Order>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    }
+}
+```
+
+### Layer 4: Presentation (Interface Adapters)
+
+Web API controllers, Razor Pages, gRPC services, SignalR hubs, CLI commands. **Depends on Application** (sends commands/queries). Can also depend on Infrastructure for DI setup.
+
+```csharp
+// Presentation/Controllers/OrdersController.cs
+[ApiController]
+[Route("api/orders")]
+public class OrdersController : ControllerBase
+{
+    private readonly ISender _sender; // MediatR
+
+    public OrdersController(ISender sender) => _sender = sender;
+
+    [HttpPost("{id:guid}/confirm")]
+    public async Task<IActionResult> Confirm(Guid id, CancellationToken ct)
+    {
+        var result = await _sender.Send(new ConfirmOrderCommand(id), ct);
+        return result.IsSuccess ? NoContent() : BadRequest(result.Error);
+    }
+}
+```
+
+---
+
+## What Each Layer Owns
+
+<ComparisonTable
+  headers={["Layer", "What lives here", "Allowed dependencies"]}
+  rows={[
+    ["Domain", "Entities, Value Objects, Aggregates, Domain Events, Domain Services, Domain Exceptions", "None (pure C#)"],
+    ["Application", "Commands, Queries, Handlers, DTOs, Application Services, Interface definitions (ports)", "Domain only"],
+    ["Infrastructure", "Repository implementations, DbContext, external API clients, email/SMS providers", "Application + Domain"],
+    ["Presentation", "Controllers, Minimal API endpoints, gRPC services, SignalR hubs", "Application (+ Infrastructure for DI)"],
+  ]}
+/>
+
+---
+
+<Callout type="senior">
+**The Real Payoff Is in Testing Velocity**
+
+Most teams adopt Clean Architecture for "separation of concerns" but the real payoff shows up six months in when you can run 500 unit tests against your domain and application layers in under two seconds — no database spin-up, no HTTP stack, no mocks for external APIs. The application handler tests use in-memory fakes for repositories. The domain tests need nothing at all.
+
+Compare: a codebase where controllers call EF Core directly needs an integration test harness (Testcontainers, WebApplicationFactory) just to test a calculation. With Clean Architecture, the calculation lives in the domain entity and is a pure function test.
+
+The flip side: it adds boilerplate. For a CRUD microservice with no real domain logic, Clean Architecture is over-engineering. Use it when the domain is the point of the application.
+</Callout>
+
+---
+
+## MythBuster
+
+<MythBuster
+  myth="Clean Architecture means you must have exactly 4 projects in your solution"
+  reality="The 4 layers are logical, not physical. You can start with 2 projects (Domain+Application in one, Infrastructure+Presentation in another) and split later. Some teams ship with 6+ projects splitting Application into Features. The constraint is dependency direction — not project count."
+/>
+
+<MythBuster
+  myth="Clean Architecture requires MediatR"
+  reality="MediatR is a popular implementation detail for the Application layer, not a requirement. The pattern works fine with direct service injection. MediatR buys you pipeline behaviors (logging, validation, transactions) — valuable, but optional. Jason Taylor's Clean Architecture template uses MediatR; others don't."
+/>
+
+---
+
+## Quiz
+
+<Quiz
+  id="11-clean-architecture/clean-architecture-layers/quiz-1"
+  question="An Application layer handler needs to send an email after an order is confirmed. Where should the IEmailService interface be defined?"
+  options={[
+    "Infrastructure — that's where email implementations live",
+    "Application — it defines what it needs; Infrastructure provides the implementation",
+    "Domain — emails are a business concern",
+    "Presentation — the controller decides when to send emails"
+  ]}
+  correctAnswer={1}
+  explanation="The Application layer defines the interfaces (ports) it needs — IEmailService, IOrderRepository, IUnitOfWork. The Infrastructure layer provides concrete implementations. This keeps the Application layer dependency-free from frameworks, and lets you inject a fake/stub IEmailService in tests."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Architect modern web applications with ASP.NET Core", url: "https://learn.microsoft.com/en-us/dotnet/architecture/modern-web-apps-azure/" },
+    { label: "eShopOnContainers reference application", url: "https://github.com/dotnet-architecture/eShopOnContainers" },
+    { label: ".NET Application Architecture Guides", url: "https://learn.microsoft.com/en-us/dotnet/architecture/" },
+    { label: "Clean Architecture Template (Jason Taylor)", url: "https://github.com/jasontaylordev/CleanArchitecture" },
+  ]}
+/>

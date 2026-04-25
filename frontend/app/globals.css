@@ -1,0 +1,290 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ─── Font faces (self-hosted) ─────────────────────────────────────────── */
+/* Inter & JetBrains Mono are loaded via next/font in layout.tsx */
+
+/* ─── Theme tokens ──────────────────────────────────────────────────────── */
+@theme inline {
+  /* Fonts */
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+  --font-heading: var(--font-inter);
+
+  /* Colors — mapped from CSS vars */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Brand */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+
+  /* Semantic status */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  /* Callout semantic colors */
+  --color-callout-info: var(--callout-info);
+  --color-callout-tip: var(--callout-tip);
+  --color-callout-warning: var(--callout-warning);
+  --color-callout-critical: var(--callout-critical);
+  --color-callout-trap: var(--callout-trap);
+  --color-callout-senior: var(--callout-senior);
+
+  /* Difficulty colors */
+  --color-difficulty-foundation: var(--difficulty-foundation);
+  --color-difficulty-intermediate: var(--difficulty-intermediate);
+  --color-difficulty-advanced: var(--difficulty-advanced);
+  --color-difficulty-expert: var(--difficulty-expert);
+
+  /* Shadows */
+  --shadow-soft: 0 1px 2px oklch(0 0 0 / 0.05);
+  --shadow-card: 0 8px 24px oklch(0 0 0 / 0.06);
+  --shadow-hover: 0 12px 32px oklch(0 0 0 / 0.08);
+  --shadow-dark: 0 8px 24px oklch(0 0 0 / 0.40);
+
+  /* Radius — 12px base, 8px grid steps */
+  --radius-sm: calc(var(--radius) * 0.6);    /* ~7px  */
+  --radius-md: calc(var(--radius) * 0.85);   /* ~10px */
+  --radius-lg: var(--radius);                /* 12px  */
+  --radius-xl: calc(var(--radius) * 1.35);   /* ~16px */
+  --radius-2xl: calc(var(--radius) * 1.67);  /* ~20px */
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* ─── Light mode ────────────────────────────────────────────────────────── */
+:root {
+  /* Base */
+  --background: oklch(0.985 0.003 247);           /* #F8FAFC */
+  --foreground: oklch(0.129 0.02 264);            /* #0F172A */
+
+  /* Card */
+  --card: oklch(1 0 0);                           /* #FFFFFF */
+  --card-foreground: oklch(0.129 0.02 264);
+
+  /* Popover */
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.129 0.02 264);
+
+  /* Primary — Indigo #6366F1 */
+  --primary: oklch(0.585 0.22 264);
+  --primary-foreground: oklch(1 0 0);
+
+  /* Secondary — Slate-100 #F1F5F9 */
+  --secondary: oklch(0.965 0.006 247);
+  --secondary-foreground: oklch(0.44 0.03 261);   /* #475569 */
+
+  /* Muted */
+  --muted: oklch(0.965 0.006 247);                /* #F1F5F9 */
+  --muted-foreground: oklch(0.67 0.02 261);       /* #94A3B8 */
+
+  /* Accent — indigo light tint */
+  --accent: oklch(0.94 0.04 264);
+  --accent-foreground: oklch(0.585 0.22 264);
+
+  /* Destructive — Red #EF4444 */
+  --destructive: oklch(0.63 0.22 27);
+
+  /* Border / Input / Ring */
+  --border: oklch(0.93 0.01 247);                 /* #E2E8F0 */
+  --input: oklch(0.93 0.01 247);
+  --ring: oklch(0.585 0.22 264);
+
+  /* Brand — Indigo/Violet gradient identity */
+  --brand: oklch(0.585 0.22 264);                 /* #6366F1 */
+  --brand-foreground: oklch(1 0 0);
+  --gradient-brand: linear-gradient(135deg, #6366F1, #8B5CF6);
+
+  /* Semantic status */
+  --success: oklch(0.72 0.20 145);                /* #22C55E */
+  --warning: oklch(0.78 0.17 72);                 /* #F59E0B */
+  --danger: oklch(0.63 0.22 27);                  /* #EF4444 */
+
+  /* Callout backgrounds */
+  --callout-info: oklch(0.95 0.03 240);
+  --callout-tip: oklch(0.95 0.05 150);
+  --callout-warning: oklch(0.97 0.06 80);
+  --callout-critical: oklch(0.96 0.05 20);
+  --callout-trap: oklch(0.95 0.04 290);
+  --callout-senior: oklch(0.95 0.04 264);
+
+  /* Difficulty — Junior=green, Mid=blue, Senior=purple, Expert=red */
+  --difficulty-foundation: oklch(0.60 0.17 145);
+  --difficulty-intermediate: oklch(0.55 0.18 250);
+  --difficulty-advanced: oklch(0.55 0.22 290);
+  --difficulty-expert: oklch(0.58 0.22 27);
+
+  /* Radius — 12px base */
+  --radius: 0.75rem;
+}
+
+/* ─── Dark mode ─────────────────────────────────────────────────────────── */
+.dark {
+  /* Base */
+  --background: oklch(0.10 0.025 265);            /* #0B1220 */
+  --foreground: oklch(0.926 0.003 264);           /* #E5E7EB */
+
+  /* Card */
+  --card: oklch(0.145 0.015 265);                 /* #111827 */
+  --card-foreground: oklch(0.926 0.003 264);
+
+  /* Popover */
+  --popover: oklch(0.145 0.015 265);
+  --popover-foreground: oklch(0.926 0.003 264);
+
+  /* Primary — lighter indigo #818CF8 */
+  --primary: oklch(0.71 0.18 264);
+  --primary-foreground: oklch(0.10 0.025 265);
+
+  /* Secondary */
+  --secondary: oklch(0.21 0.01 265);              /* #1F2937 */
+  --secondary-foreground: oklch(0.926 0.003 264);
+
+  /* Muted */
+  --muted: oklch(0.21 0.01 265);                  /* #1F2937 */
+  --muted-foreground: oklch(0.52 0.008 264);      /* #6B7280 */
+
+  /* Accent — dark indigo tint */
+  --accent: oklch(0.25 0.04 264);
+  --accent-foreground: oklch(0.71 0.18 264);
+
+  /* Destructive */
+  --destructive: oklch(0.63 0.22 27);             /* #EF4444 */
+
+  /* Border / Input / Ring */
+  --border: oklch(0.21 0.01 265);                 /* #1F2937 */
+  --input: oklch(0.25 0.01 265);
+  --ring: oklch(0.71 0.18 264);
+
+  /* Brand */
+  --brand: oklch(0.71 0.18 264);                  /* #818CF8 */
+  --brand-foreground: oklch(0.10 0.025 265);
+  --gradient-brand: linear-gradient(135deg, #6366F1, #8B5CF6);
+
+  /* Semantic status */
+  --success: oklch(0.72 0.20 145);
+  --warning: oklch(0.78 0.17 72);
+  --danger: oklch(0.63 0.22 27);
+
+  /* Callout backgrounds — deep tints */
+  --callout-info: oklch(0.18 0.04 240);
+  --callout-tip: oklch(0.18 0.05 150);
+  --callout-warning: oklch(0.18 0.04 80);
+  --callout-critical: oklch(0.18 0.05 20);
+  --callout-trap: oklch(0.18 0.04 290);
+  --callout-senior: oklch(0.18 0.04 264);
+
+  /* Difficulty */
+  --difficulty-foundation: oklch(0.72 0.20 145);
+  --difficulty-intermediate: oklch(0.62 0.19 250);
+  --difficulty-advanced: oklch(0.62 0.24 290);
+  --difficulty-expert: oklch(0.63 0.22 27);
+}
+
+/* ─── Base layer ────────────────────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html {
+    @apply font-sans;
+    scroll-behavior: smooth;
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Typography */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading font-semibold tracking-tight;
+  }
+
+  code:not([class]) {
+    @apply font-mono bg-muted text-foreground rounded px-1.5 py-0.5 text-sm;
+  }
+
+  /* Focus visible for keyboard nav */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+
+  /* Skip to content */
+  .skip-to-content {
+    @apply absolute -top-full left-4 z-50 rounded-md bg-primary px-4 py-2 text-primary-foreground;
+    @apply focus:top-4 transition-all;
+  }
+}
+
+/* ─── Code block scrollbar ──────────────────────────────────────────────── */
+.code-block::-webkit-scrollbar        { height: 5px; }
+.code-block::-webkit-scrollbar-track  { background: transparent; }
+.code-block::-webkit-scrollbar-thumb  { background: oklch(0.5 0 0 / 18%); border-radius: 9999px; }
+.code-block::-webkit-scrollbar-thumb:hover { background: oklch(0.5 0 0 / 35%); }
+
+/* ─── Premium card hover ────────────────────────────────────────────────── */
+@layer components {
+  .card-interactive {
+    @apply rounded-xl border border-border bg-card transition-all duration-200;
+    @apply hover:border-primary/20 hover:shadow-[0_8px_24px_oklch(0_0_0/0.06)] hover:-translate-y-0.5;
+    @apply dark:hover:border-primary/30 dark:hover:shadow-[0_8px_24px_oklch(0_0_0/0.35)];
+  }
+
+  /* Gradient primary button (standalone, outside Button component) */
+  .btn-brand {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#6366F1];
+    background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  }
+}
+
+/* ─── Prose (MDX lesson content) ────────────────────────────────────────── */
+@layer components {
+  .prose-lesson {
+    @apply max-w-prose;
+    @apply prose prose-slate dark:prose-invert;
+    @apply prose-headings:font-semibold prose-headings:tracking-tight;
+    @apply prose-code:font-mono prose-code:text-sm;
+    @apply prose-pre:bg-transparent prose-pre:p-0;
+    @apply prose-a:text-primary prose-a:no-underline hover:prose-a:underline;
+    @apply prose-strong:text-foreground;
+    @apply prose-lead:text-muted-foreground;
+  }
+}

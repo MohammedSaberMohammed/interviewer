@@ -1,0 +1,246 @@
+---
+title: "Child Routes & Named Outlets"
+slug: "child-routes"
+order: 7
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "child routes", "nested routing", "named outlets", "auxiliary routes"]
+summary: "Child routes create nested navigation within feature areas. Named router outlets enable side-by-side content panels and auxiliary navigation that's independent of the primary route."
+docsLinks:
+  - label: "Child Routes"
+    url: "https://angular.dev/guide/routing/common-router-tasks#nesting-routes"
+  - label: "Named Outlets"
+    url: "https://angular.dev/guide/routing/common-router-tasks#displaying-multiple-routes-in-named-outlets"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Nested Route Structures
+
+Child routes model hierarchical navigation — a layout with persistent navigation that renders different content based on the current child route:
+
+```typescript
+const routes: Routes = [
+  {
+    path: 'users',
+    component: UserLayoutComponent, // Parent with <router-outlet>
+    children: [
+      { path: '', component: UserListComponent },        // /users
+      { path: ':id', component: UserDetailComponent },   // /users/42
+      {
+        path: ':id/edit',
+        component: UserEditComponent,                    // /users/42/edit
+        canDeactivate: [unsavedChangesGuard]
+      }
+    ]
+  }
+];
+```
+
+The parent `UserLayoutComponent` must have a `<router-outlet>` where children render:
+
+```typescript
+@Component({
+  selector: 'app-user-layout',
+  standalone: true,
+  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  template: `
+    <!-- Persistent parent layout -->
+    <div class="user-layout">
+      <nav class="user-sidebar">
+        <a routerLink="." routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">
+          All Users
+        </a>
+      </nav>
+      <!-- Child route component renders here -->
+      <main>
+        <router-outlet></router-outlet>
+      </main>
+    </div>
+  `
+})
+class UserLayoutComponent {}
+```
+
+## Redirects in Child Routes
+
+```typescript
+const routes: Routes = [
+  {
+    path: 'settings',
+    component: SettingsLayoutComponent,
+    children: [
+      // Redirect /settings to /settings/profile
+      { path: '', redirectTo: 'profile', pathMatch: 'full' },
+      { path: 'profile', component: ProfileSettingsComponent },
+      { path: 'security', component: SecuritySettingsComponent },
+      { path: 'notifications', component: NotificationsSettingsComponent },
+    ]
+  }
+];
+```
+
+## Deeply Nested Routes
+
+```typescript
+const routes: Routes = [
+  {
+    path: 'workspace',
+    component: WorkspaceComponent,
+    children: [
+      {
+        path: 'projects',
+        component: ProjectsComponent,
+        children: [
+          { path: '', component: ProjectListComponent },
+          {
+            path: ':projectId',
+            component: ProjectDetailComponent,
+            children: [
+              { path: 'overview', component: ProjectOverviewComponent },
+              { path: 'issues', component: IssueListComponent },
+              {
+                path: 'issues/:issueId',
+                component: IssueDetailComponent
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+];
+```
+
+URLs: `/workspace/projects` → `/workspace/projects/123` → `/workspace/projects/123/issues/456`
+
+## Named Router Outlets
+
+Named outlets allow multiple independent router-outlet elements on the same page:
+
+```typescript
+@Component({
+  template: `
+    <!-- Primary outlet -->
+    <main>
+      <router-outlet></router-outlet>
+    </main>
+
+    <!-- Named outlet — secondary panel -->
+    <aside>
+      <router-outlet name="panel"></router-outlet>
+    </aside>
+  `
+})
+class AppComponent {}
+```
+
+Routes targeting named outlets:
+
+```typescript
+const routes: Routes = [
+  // Primary outlet routes
+  { path: 'users', component: UserListComponent },
+
+  // Named outlet route — renders in outlet named 'panel'
+  { path: 'help', component: HelpComponent, outlet: 'panel' },
+  { path: 'preview/:id', component: PreviewComponent, outlet: 'panel' },
+];
+
+// Navigate to activate the named outlet
+// URL becomes: /users(panel:preview/42)
+this.router.navigate([
+  '/users',              // Primary outlet
+  { outlets: { panel: ['preview', '42'] } } // Named outlet
+]);
+
+// Close the named outlet
+this.router.navigate([{ outlets: { panel: null } }]);
+```
+
+<Callout type="tip">
+Named outlets create auxiliary navigation that doesn't affect the primary route — perfect for side panels, help overlays, or detail previews that can be opened/closed independently of the main navigation flow. The URL encodes both outlet states simultaneously.
+</Callout>
+
+## Accessing Parent Route Data from Children
+
+```typescript
+// Parent route has :userId in path, child needs it
+const routes: Routes = [
+  {
+    path: 'users/:userId',
+    component: UserShellComponent,
+    children: [
+      { path: 'posts/:postId', component: PostDetailComponent }
+    ]
+  }
+];
+
+// In PostDetailComponent — accessing parent's :userId
+@Component({ selector: 'app-post-detail' })
+class PostDetailComponent {
+  private route = inject(ActivatedRoute);
+
+  ngOnInit() {
+    // Without paramsInheritanceStrategy:
+    const postId = this.route.snapshot.params['postId']; // ✅ own param
+    const userId = this.route.snapshot.params['userId'];  // ❌ undefined
+
+    // Access parent params explicitly:
+    const userId2 = this.route.parent?.snapshot.params['userId']; // ✅
+
+    // With provideRouter(routes, withRouterConfig({ paramsInheritanceStrategy: 'always' })):
+    const userId3 = this.route.snapshot.params['userId']; // ✅ inherited
+  }
+}
+```
+
+## RouterLink Relative Navigation
+
+```html
+<!-- In UserDetailComponent at /users/42 -->
+
+<!-- Absolute link — starts from root -->
+<a routerLink="/users">Back to list</a>
+
+<!-- Relative link — starts from current route -->
+<a routerLink="..">Up one level (/users)</a>
+
+<!-- Sibling route — navigate to /users/43 -->
+<a [routerLink]="['..', nextUser.id]">Next User</a>
+
+<!-- Child route — navigate to /users/42/edit -->
+<a routerLink="edit">Edit</a>
+```
+
+<CodeChallenge
+  id="child-routes-outlet"
+  difficulty="intermediate"
+  description="A parent route component does NOT have a <router-outlet>. What happens when the user navigates to a child route?"
+  options={[
+    "Angular creates a default outlet in the parent component",
+    "The child component renders in the nearest ancestor's router-outlet",
+    "Angular throws a runtime error about missing outlet",
+    "The child component is rendered, but overlaps the parent content"
+  ]}
+  correctAnswer={2}
+  explanation="Child routes REQUIRE their parent component to have a <router-outlet>. Without it, Angular throws an error: 'Cannot find primary outlet to load <ComponentName>'. Every parent route that has children must include <router-outlet> in its template. This is a common mistake when refactoring route structures."
+/>
+
+## Senior Insight: Route Hierarchy Design
+
+Model your routes to match your information architecture:
+
+```
+/admin                    → AdminLayoutComponent (sidebar + outlet)
+/admin/dashboard          → DashboardComponent
+/admin/users              → UserManagementComponent
+/admin/users/:id          → UserDetailComponent
+/admin/users/:id/logs     → UserAuditLogComponent
+/admin/settings           → SettingsComponent (has its own outlet)
+/admin/settings/profile   → ProfileSettings
+/admin/settings/billing   → BillingSettings
+```
+
+Each level provides its own layout and navigation context. The `AdminLayoutComponent` provides the app shell; `UserManagementComponent` might provide user-specific tabs; `SettingsComponent` might provide a settings sidebar. This nesting lets each level be responsible for its own UX without bleeding into siblings.

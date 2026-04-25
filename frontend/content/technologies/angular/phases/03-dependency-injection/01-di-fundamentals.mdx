@@ -1,0 +1,227 @@
+---
+title: "DI Fundamentals"
+slug: "di-fundamentals"
+order: 1
+difficulty: "intermediate"
+readingTime: 13
+status: "published"
+tags: ["Angular", "dependency injection", "injector", "provider", "injectable"]
+summary: "Angular's dependency injection system automatically provides services to components and other services. Understanding how the injector tree works is essential for any Angular interview."
+docsLinks:
+  - label: "Angular Dependency Injection"
+    url: "https://angular.dev/guide/di"
+  - label: "Understanding Dependency Injection"
+    url: "https://angular.dev/guide/di/dependency-injection"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Is Dependency Injection?
+
+Dependency Injection is a design pattern where a class declares its dependencies and a framework provides them, rather than the class creating them. Angular's DI system is one of the most sophisticated in the frontend ecosystem — understanding it is what separates intermediate from senior Angular developers.
+
+```typescript
+// Without DI — the class is tightly coupled to its dependencies
+class UserComponent {
+  private userService = new UserService(new HttpClient(/* complex setup */));
+  // Hard to test, hard to swap implementations
+}
+
+// With DI — Angular provides the dependency
+@Component({ selector: 'app-user' })
+class UserComponent {
+  constructor(private userService: UserService) {
+    // Angular provides the UserService — we just declare we need it
+  }
+}
+```
+
+## How Angular's DI Works
+
+When Angular creates a component, it reads the constructor's parameter types (via TypeScript's `emitDecoratorMetadata`) and asks the **injector** to provide them.
+
+The injector is a registry: it maps **tokens** (usually class types) to **providers** (instructions for creating the dependency). When a token is requested, the injector follows its **provider** to create or retrieve the instance.
+
+```typescript
+// 1. Mark the service as injectable (allows it to have its own dependencies)
+@Injectable({
+  providedIn: 'root' // Register it in the root injector automatically
+})
+export class UserService {
+  constructor(private http: HttpClient) {} // HttpClient is also injected!
+
+  getUser(id: number) {
+    return this.http.get<User>(`/api/users/${id}`);
+  }
+}
+
+// 2. Inject it — Angular reads the TypeScript type and looks it up in the injector
+@Component({ selector: 'app-user' })
+class UserComponent {
+  constructor(private userService: UserService) {}
+  // Or with the inject() function:
+  // private userService = inject(UserService);
+}
+```
+
+## The Injector Tree
+
+Angular doesn't have one global injector — it has a **tree of injectors** that mirrors the component tree:
+
+```
+Platform Injector (created by Angular itself)
+  └── Root Injector (created by bootstrapApplication / AppModule)
+        └── Element Injector (one per component/directive in the tree)
+              └── Element Injector
+                    └── Element Injector
+```
+
+When a component requests a dependency, Angular starts at the **component's own injector** and walks **up the tree** until it finds a provider or reaches the root. This is called **injector resolution**.
+
+```
+AppComponent (Root Injector has UserService)
+  └── ProductListComponent (no UserService provider)
+        └── ProductCardComponent (requests UserService)
+```
+
+`ProductCardComponent` requests `UserService` → not found locally → checks parent → not found → checks Root Injector → **found!** → returns the singleton instance.
+
+<Callout type="tip">
+All components and directives share the **same Root Injector** by default. This is why services with `providedIn: 'root'` are singletons — there's only one instance, shared by everything. If you register a service in a **component's providers** array, that component and its children get their **own separate instance**.
+</Callout>
+
+## `@Injectable` Decorator
+
+The `@Injectable` decorator is required for any class that:
+1. Wants to have dependencies injected into it
+2. Needs to be provided somewhere
+
+```typescript
+// Required even if the service has no dependencies —
+// because Angular needs metadata to configure the provider
+@Injectable({
+  providedIn: 'root', // Tree-shakeable root registration
+})
+export class AnalyticsService {
+  track(event: string, data?: Record<string, unknown>) {
+    // implementation
+  }
+}
+
+// Without @Injectable — works only if no dependencies needed AND never injected
+// into another service. In practice: always add @Injectable.
+export class SimpleUtil {
+  formatName(first: string, last: string) {
+    return `${first} ${last}`;
+  }
+}
+```
+
+## Tree-Shaking with `providedIn: 'root'`
+
+The `providedIn: 'root'` syntax makes services **tree-shakeable** — if nothing injects the service, it's excluded from the production bundle:
+
+```typescript
+// Modern approach — tree-shakeable
+@Injectable({ providedIn: 'root' })
+class FeatureFlagService {}
+
+// Old approach — NOT tree-shakeable (the NgModule always includes it)
+@NgModule({
+  providers: [FeatureFlagService] // Always bundled, even if unused
+})
+class AppModule {}
+```
+
+## Providing Dependencies: The Three Scenarios
+
+```typescript
+// 1. Root-level singleton (most common)
+@Injectable({ providedIn: 'root' })
+class UserService {}
+
+// 2. Module-scoped (legacy pattern)
+@NgModule({
+  providers: [OrderService] // Singleton within this module
+})
+class OrderModule {}
+
+// 3. Component-scoped (new instance per component)
+@Component({
+  selector: 'app-form',
+  providers: [FormStateService] // Each FormComponent gets its own instance
+})
+class FormComponent {}
+```
+
+<CodeChallenge
+  id="di-resolution-order"
+  difficulty="intermediate"
+  description="A component has providers: [LogService] in its @Component decorator. Its parent also has providers: [LogService]. When the component requests LogService, which instance does it receive?"
+  options={[
+    "The root injector's instance (always the singleton)",
+    "The parent component's instance",
+    "Its own instance (component-level provider takes priority)",
+    "An error — can't have the same service in two places"
+  ]}
+  correctAnswer={2}
+  explanation="Angular's injector resolution starts at the requesting component's own element injector. If a provider is found there, it's used immediately without going further up the tree. The component's own providers: [LogService] creates a new instance specifically for that component and its descendants, shadowing any parent or root instances."
+/>
+
+## The `inject()` Function (Angular 14+)
+
+The `inject()` function is a modern alternative to constructor injection:
+
+```typescript
+// Constructor injection (traditional)
+@Component({ selector: 'app-user' })
+class UserComponent {
+  constructor(
+    private userService: UserService,
+    private router: Router,
+    private activatedRoute: ActivatedRoute
+  ) {}
+}
+
+// inject() function (modern)
+@Component({ selector: 'app-user' })
+class UserComponent {
+  private userService = inject(UserService);
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+}
+```
+
+`inject()` must be called in an **injection context** — during class property initialization, in a constructor, or in a function passed to `runInInjectionContext()`.
+
+## Senior Insight: DI as Architecture
+
+Angular's DI system enables powerful architectural patterns:
+
+```typescript
+// Abstract base service — define the contract
+abstract class PaymentGateway {
+  abstract processPayment(amount: number): Observable<PaymentResult>;
+}
+
+// Concrete implementation
+@Injectable()
+class StripeGateway extends PaymentGateway {
+  processPayment(amount: number) { /* Stripe implementation */ }
+}
+
+// Mock for testing
+class MockPaymentGateway extends PaymentGateway {
+  processPayment(amount: number) {
+    return of({ success: true, transactionId: 'mock-123' });
+  }
+}
+
+// In production providers
+providers: [{ provide: PaymentGateway, useClass: StripeGateway }]
+
+// In tests
+providers: [{ provide: PaymentGateway, useClass: MockPaymentGateway }]
+```
+
+This pattern — providing abstractions via DI — is the foundation of testable Angular architecture.

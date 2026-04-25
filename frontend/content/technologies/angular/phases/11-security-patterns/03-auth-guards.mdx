@@ -1,0 +1,322 @@
+---
+title: "Authentication Guards"
+slug: "auth-guards"
+order: 3
+difficulty: "intermediate"
+readingTime: 9
+status: "published"
+tags: ["Angular", "security", "guards", "authentication", "authorization", "CanActivateFn", "CanMatchFn", "roles"]
+summary: "Route guards enforce authentication and authorization at the routing level. Functional guards (CanActivateFn, CanMatchFn, CanDeactivateFn) are the modern pattern — they're composable, easy to test, and integrate naturally with Angular's signals-based auth services."
+docsLinks:
+  - label: "Route Guards"
+    url: "https://angular.dev/guide/routing/common-router-tasks#preventing-unauthorized-access"
+  - label: "CanActivateFn"
+    url: "https://angular.dev/api/router/CanActivateFn"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Auth Guard Architecture
+
+A complete auth system needs multiple guard types:
+
+```
+User navigates to /admin/settings
+
+1. CanMatchFn — should this route even be loaded (code-splitting)?
+   → User must be authenticated AND have admin role
+   → If no: route doesn't load (not found, or redirect)
+
+2. CanActivateFn — can user activate this route?
+   → Check auth state again (in case it changed)
+   → If no: redirect to /login or /forbidden
+
+3. CanDeactivateFn — can user leave this route?
+   → Check for unsaved changes
+   → If no: show confirmation dialog
+```
+
+## Basic Auth Guard
+
+```typescript
+// auth.guard.ts
+import { CanActivateFn } from '@angular/router';
+import { inject } from '@angular/core';
+
+export const authGuard: CanActivateFn = (route, state) => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated()) {
+    return true;
+  }
+
+  // Redirect to login, preserve intended destination
+  return router.createUrlTree(['/login'], {
+    queryParams: { returnUrl: state.url }
+  });
+};
+```
+
+```typescript
+// app.routes.ts
+export const routes: Routes = [
+  { path: 'login', component: LoginComponent },
+  {
+    path: 'dashboard',
+    component: DashboardComponent,
+    canActivate: [authGuard] // Applied here
+  },
+  {
+    path: 'admin',
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+    canActivate: [authGuard] // All child routes protected
+  }
+];
+```
+
+## Role-Based Authorization Guard
+
+```typescript
+// role.guard.ts
+import { CanActivateFn } from '@angular/router';
+
+export const roleGuard = (requiredRole: string): CanActivateFn => {
+  return (route, state) => {
+    const authService = inject(AuthService);
+    const router = inject(Router);
+
+    if (!authService.isAuthenticated()) {
+      return router.createUrlTree(['/login'], {
+        queryParams: { returnUrl: state.url }
+      });
+    }
+
+    if (authService.hasRole(requiredRole)) {
+      return true;
+    }
+
+    // Authenticated but wrong role
+    return router.createUrlTree(['/forbidden']);
+  };
+};
+
+// Usage in routes
+const routes: Routes = [
+  {
+    path: 'admin/users',
+    component: UserManagementComponent,
+    canActivate: [roleGuard('admin')]
+  },
+  {
+    path: 'reports',
+    component: ReportsComponent,
+    canActivate: [roleGuard('analyst')]
+  }
+];
+```
+
+## Guard Composition
+
+Compose multiple guards for complex requirements:
+
+```typescript
+// Permission-based guard factory
+export const permissionGuard = (permissions: string[]): CanActivateFn => {
+  return () => {
+    const authService = inject(AuthService);
+    const router = inject(Router);
+
+    const userPermissions = authService.permissions();
+
+    const hasAll = permissions.every(p => userPermissions.includes(p));
+
+    if (hasAll) return true;
+
+    return router.createUrlTree(['/unauthorized']);
+  };
+};
+
+// Compose with array — ALL guards must pass
+const routes: Routes = [
+  {
+    path: 'sensitive-data',
+    component: SensitiveComponent,
+    canActivate: [
+      authGuard,                          // Must be authenticated
+      roleGuard('manager'),               // Must be a manager
+      permissionGuard(['read:data', 'export:data']), // Must have both permissions
+    ]
+  }
+];
+```
+
+## CanMatchFn — Guards for Code Splitting
+
+`CanMatch` is evaluated BEFORE the route is loaded. If it returns false, Angular doesn't even download the lazy chunk:
+
+```typescript
+export const adminCanMatchGuard: CanMatchFn = () => {
+  const authService = inject(AuthService);
+
+  if (!authService.isAuthenticated()) return false;
+  if (!authService.hasRole('admin')) return false;
+
+  return true; // Only then: download and activate the admin chunk
+};
+
+const routes: Routes = [
+  {
+    path: 'admin',
+    loadChildren: () => import('./admin/admin.routes').then(m => m.ADMIN_ROUTES),
+    canMatch: [adminCanMatchGuard] // Guards code-splitting — bundle not downloaded for non-admins
+  }
+];
+```
+
+<Callout type="tip">
+`canMatch` is more secure than `canActivate` for lazy-loaded routes. With `canActivate`, the JavaScript bundle is still downloaded (users could inspect it). With `canMatch`, the bundle is never downloaded if the guard returns false.
+</Callout>
+
+## CanDeactivate Guard
+
+Prevent users from accidentally leaving with unsaved changes:
+
+```typescript
+// unsaved-changes.guard.ts
+import { CanDeactivateFn } from '@angular/router';
+
+export interface HasUnsavedChanges {
+  hasUnsavedChanges(): boolean;
+}
+
+export const unsavedChangesGuard: CanDeactivateFn<HasUnsavedChanges> = (component) => {
+  if (!component.hasUnsavedChanges()) {
+    return true;
+  }
+
+  // Show dialog using Angular's Dialog service instead of browser confirm()
+  // for better UX and testability
+  const dialogService = inject(DialogService);
+  return dialogService.confirm({
+    title: 'Unsaved Changes',
+    message: 'You have unsaved changes. Leave anyway?',
+    confirmLabel: 'Leave',
+    cancelLabel: 'Stay'
+  });
+};
+
+// Component must implement the interface
+@Component({...})
+class EditProfileComponent implements HasUnsavedChanges {
+  form = this.fb.group({ name: '', email: '' });
+  initialValues = this.form.value;
+
+  hasUnsavedChanges(): boolean {
+    return !this.form.pristine &&
+           JSON.stringify(this.form.value) !== JSON.stringify(this.initialValues);
+  }
+}
+
+// Route configuration
+{
+  path: 'profile/edit',
+  component: EditProfileComponent,
+  canDeactivate: [unsavedChangesGuard]
+}
+```
+
+## Signal-Based Auth Service Integration
+
+Guards work seamlessly with signal-based auth services:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class AuthService {
+  private currentUser = signal<User | null>(null);
+
+  readonly isAuthenticated = computed(() => this.currentUser() !== null);
+  readonly userRoles = computed(() => this.currentUser()?.roles ?? []);
+
+  hasRole(role: string): boolean {
+    return this.userRoles().includes(role);
+  }
+
+  hasPermission(permission: string): boolean {
+    return this.currentUser()?.permissions.includes(permission) ?? false;
+  }
+}
+
+// Guard reads signals synchronously — no Observable needed for simple cases
+export const authGuard: CanActivateFn = (route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  return auth.isAuthenticated() || router.createUrlTree(['/login'], {
+    queryParams: { returnUrl: state.url }
+  });
+};
+```
+
+<CodeChallenge
+  id="guard-canmatch-vs-canactivate"
+  difficulty="advanced"
+  description="A route uses canActivate: [adminGuard] on a lazy-loaded admin module. A non-admin user navigates to /admin. What happens to the JavaScript bundle for the admin module?"
+  options={[
+    "The bundle is never downloaded — canActivate prevents it",
+    "The bundle IS downloaded (to load and check), but the component doesn't render",
+    "The bundle is downloaded only if the user had admin privileges in a previous session",
+    "Angular determines at build time who can access routes and creates separate builds"
+  ]}
+  correctAnswer={1}
+  explanation="canActivate guards run AFTER the lazy chunk is downloaded and parsed. Angular needs to load the route's component and module configuration to determine which guards to run. So the admin bundle is downloaded to the browser, parsed, and then the guard runs — only then does Angular redirect the unauthorized user. This is a security (and performance) consideration: non-admin users still download admin code. Use canMatch instead: it evaluates BEFORE downloading, so the lazy chunk is never loaded for unauthorized users — the route simply doesn't match."
+/>
+
+## Redirecting After Login
+
+```typescript
+@Component({})
+class LoginComponent {
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+
+  login(credentials: LoginCredentials) {
+    this.authService.login(credentials).subscribe(() => {
+      // Retrieve the intended destination
+      const returnUrl = this.route.snapshot.queryParams['returnUrl'] ?? '/dashboard';
+
+      // Navigate to the original destination
+      this.router.navigateByUrl(returnUrl);
+    });
+  }
+}
+```
+
+## Senior Insight: What Guards Don't Do
+
+Guards protect the UI routing — they are NOT a substitute for server-side authorization:
+
+```typescript
+// ❌ Wrong mental model: "guard protects the data"
+// A guard prevents navigation to /admin
+// But nothing stops a savvy user from:
+// 1. Calling /api/admin/users directly (no guard on API)
+// 2. Opening browser console and calling services directly
+// 3. Removing the guard with browser developer tools
+
+// ✅ Correct model: guards improve UX, backend enforces security
+// Every API endpoint MUST check authorization server-side
+// Guards just prevent users from seeing unauthorized screens
+
+// The guard:
+export const authGuard: CanActivateFn = () => {
+  return inject(AuthService).isAuthenticated();
+};
+
+// The API (server-side — not Angular, but the mental model):
+// app.get('/api/admin/users', requireAdmin, (req, res) => {
+//   // requireAdmin middleware checks JWT and role
+// });
+```
+
+Guards and server-side authorization work together — guards for good UX, backend for actual security.

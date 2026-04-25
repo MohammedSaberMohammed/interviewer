@@ -1,0 +1,237 @@
+---
+title: "Strict Mode"
+slug: "strict-mode"
+order: 7
+difficulty: "foundation"
+readingTime: 9
+status: "published"
+tags: ["TypeScript", "strict mode", "strictNullChecks", "noImplicitAny"]
+summary: "TypeScript's strict mode catches an entire class of bugs at compile time. Understand what each flag does and why Angular CLI enables them by default."
+docsLinks:
+  - label: "TypeScript: Strict Mode"
+    url: "https://www.typescriptlang.org/tsconfig#strict"
+  - label: "Angular: TypeScript Configuration"
+    url: "https://angular.dev/reference/configs/angular-compiler-options"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Angular Enables Strict Mode by Default
+
+When you run `ng new my-app`, Angular CLI generates a `tsconfig.json` with `"strict": true`. This isn't arbitrary — Angular's template compiler, change detection, and typed forms all work better and catch more bugs when strict mode is enabled. Understanding what strict mode does explains why certain TypeScript errors appear in Angular and how to fix them correctly.
+
+## The `strict` Flag Is a Bundle
+
+Setting `"strict": true` enables multiple sub-flags:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    // Equivalent to enabling all of:
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
+    "alwaysStrict": true
+  }
+}
+```
+
+## `strictNullChecks` — The Most Important Flag
+
+Without `strictNullChecks`, `null` and `undefined` can be assigned to any type. This is the source of millions of runtime `TypeError: Cannot read property of null` errors:
+
+```typescript
+// Without strictNullChecks
+let user: User = null; // Allowed — TypeScript doesn't catch this
+user.name; // Runtime crash: Cannot read properties of null
+
+// With strictNullChecks
+let user: User = null;       // Error: Type 'null' is not assignable to type 'User'
+let maybeUser: User | null = null; // OK — you're explicit
+maybeUser.name;              // Error: Object is possibly 'null'
+maybeUser?.name;             // OK — optional chaining handles null
+```
+
+In Angular, this causes the common `!` (non-null assertion) pattern:
+
+```typescript
+// Angular with strictNullChecks
+@Component({ template: `{{ user.name }}` })
+class UserComponent {
+  @ViewChild('name') nameEl!: ElementRef; // The ! tells TypeScript: "I know this will be set"
+
+  user: User | undefined;
+
+  ngOnInit() {
+    this.loadUser().subscribe(user => this.user = user);
+  }
+}
+```
+
+The `!` after `nameEl` is the non-null assertion operator — use it sparingly and only when you're certain the value won't be null/undefined.
+
+<Callout type="warning">
+The non-null assertion operator (`!`) is a TypeScript escape hatch that disables null checking for that expression. Overusing it defeats the purpose of `strictNullChecks`. Before using `!`, ask: "Can I restructure to avoid null here?" Often the answer is yes.
+</Callout>
+
+## `noImplicitAny` — No Accidental Any
+
+Without this flag, TypeScript silently infers `any` when it can't determine a type:
+
+```typescript
+// Without noImplicitAny — TypeScript silently makes param 'any'
+function process(data) {
+  return data.value * 2; // No type checking — could crash at runtime
+}
+
+// With noImplicitAny
+function process(data) { // Error: Parameter 'data' implicitly has an 'any' type
+  return data.value * 2;
+}
+
+// Fix — add explicit types
+function process(data: { value: number }): number {
+  return data.value * 2;
+}
+// OR use explicit any when you really mean it
+function process(data: any): any {
+  return data.value * 2;
+}
+```
+
+## `strictPropertyInitialization` — Class Properties Must Be Initialized
+
+This catches uninitialized Angular component properties:
+
+```typescript
+// Without flag — TypeScript allows this (but it's undefined at runtime)
+class UserComponent {
+  user: User; // Never assigned — accessing user.name crashes
+}
+
+// With flag — TypeScript errors
+class UserComponent {
+  user: User; // Error: Property 'user' has no initializer and is not definitely assigned
+
+  // Solutions:
+  user1: User | undefined;                 // Explicit undefined in type
+  user2: User = { id: 0, name: '' };       // Default value
+  user3!: User;                            // Non-null assertion (use carefully)
+  user4 = signal<User | null>(null);       // Signal approach
+}
+```
+
+## `strictFunctionTypes` — Correct Function Variance
+
+This catches a subtle bug in function type compatibility:
+
+```typescript
+// strictFunctionTypes catches unsafe function assignments
+type Animal = { name: string };
+type Dog = { name: string; breed: string };
+
+type AnimalHandler = (animal: Animal) => void;
+type DogHandler = (dog: Dog) => void;
+
+// Without strictFunctionTypes — this was allowed (but wrong!)
+let handler: AnimalHandler;
+let dogHandler: DogHandler = (dog) => console.log(dog.breed);
+
+handler = dogHandler; // Error with strictFunctionTypes!
+// If handler is called with any Animal (not a Dog), accessing .breed crashes
+```
+
+## `useUnknownInCatchVariables` — Safe Error Handling
+
+In TypeScript 4.4+, caught errors are `unknown` instead of `any`:
+
+```typescript
+// Before (error was 'any' — unsafe)
+try {
+  riskyOperation();
+} catch (error) {
+  console.log(error.message); // No type error, but could crash if error is a string
+}
+
+// With useUnknownInCatchVariables (default in strict mode)
+try {
+  riskyOperation();
+} catch (error) {
+  // error is 'unknown' — must check type before accessing properties
+  if (error instanceof Error) {
+    console.log(error.message); // Safe
+  } else if (typeof error === 'string') {
+    console.log(error);
+  } else {
+    console.log('Unknown error occurred');
+  }
+}
+```
+
+## Angular's Additional Compiler Checks
+
+Angular adds its own strict checks beyond TypeScript's:
+
+```json
+{
+  "angularCompilerOptions": {
+    "strictTemplates": true,    // Type-checks component templates
+    "strictInjectionParameters": true  // Validates DI parameters
+  }
+}
+```
+
+With `strictTemplates`, Angular's template compiler catches type errors in HTML:
+
+```html
+<!-- Error: Property 'nme' does not exist on type 'User' -->
+<p>{{ user.nme }}</p>
+
+<!-- Error: Argument of type 'string' is not assignable to parameter of type 'number' -->
+<button (click)="loadUser('not-a-number')">Load</button>
+```
+
+<CodeChallenge
+  id="strict-null-check"
+  difficulty="foundation"
+  description={'With strictNullChecks enabled, what does TypeScript infer for \'const el = document.getElementById("root")\'?'}
+  options={[
+    "HTMLElement — getElementById always finds the element",
+    "HTMLElement | null — the element might not exist in the DOM",
+    "Element — the general DOM element type",
+    "any — TypeScript can't know DOM types"
+  ]}
+  correctAnswer={1}
+  explanation="document.getElementById() returns HTMLElement | null because the element might not exist in the DOM. Without strictNullChecks, this silently typed as HTMLElement, causing runtime crashes when the element is missing. With strictNullChecks, you must handle the null case: el?.textContent or if (el) { el.textContent = ... }."
+/>
+
+## Enabling Strict Mode Incrementally
+
+If you're working on a legacy project without strict mode:
+
+```json
+{
+  "compilerOptions": {
+    // Enable flags one at a time
+    "strictNullChecks": true,     // Start here — biggest impact
+    "noImplicitAny": true,         // Second priority
+    "strictPropertyInitialization": true
+    // Add others gradually
+  }
+}
+```
+
+## Senior Insight: Strict Mode Is Non-Negotiable for New Projects
+
+Every Angular project started after 2020 should have strict mode enabled. The short-term pain of adding type annotations is far outweighed by:
+1. Catching null/undefined errors at compile time (not production)
+2. Enabling better IDE autocomplete and refactoring
+3. Making Angular's template type checking fully effective
+4. Better code as documentation — types communicate intent
+
+The developers who argue against strict mode typically haven't experienced a production `TypeError: Cannot read property 'x' of undefined` that strict mode would have prevented.

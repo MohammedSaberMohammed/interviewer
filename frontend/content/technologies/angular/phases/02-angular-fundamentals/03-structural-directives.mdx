@@ -1,0 +1,237 @@
+---
+title: "Structural Directives"
+slug: "structural-directives"
+order: 3
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["Angular", "directives", "ngIf", "ngFor", "control flow", "@if", "@for", "@switch"]
+summary: "Structural directives and Angular 17's new built-in control flow (@if, @for, @switch) control what gets rendered in the DOM. Know both syntaxes — you'll encounter both in real codebases."
+docsLinks:
+  - label: "Angular Control Flow"
+    url: "https://angular.dev/guide/templates/control-flow"
+  - label: "Built-in Structural Directives"
+    url: "https://angular.dev/guide/directives/structural-directives"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## Two Eras of Angular Templates
+
+Angular 17 introduced a new built-in control flow syntax (`@if`, `@for`, `@switch`) that replaces structural directives (`*ngIf`, `*ngFor`, `*ngSwitch`). Both syntaxes work in current Angular — but the new syntax is the future, offers better performance, and is what you should write in new code. You still need to know both since most existing codebases use the old syntax.
+
+## Conditional Rendering
+
+### Old syntax: `*ngIf`
+
+```html
+<!-- Basic conditional -->
+<div *ngIf="isLoggedIn">Welcome back!</div>
+
+<!-- With else -->
+<div *ngIf="isLoggedIn; else loginPrompt">
+  Welcome, {{ user.name }}!
+</div>
+<ng-template #loginPrompt>
+  <button routerLink="/login">Log In</button>
+</ng-template>
+
+<!-- With then and else -->
+<ng-container *ngIf="status === 'loaded'; then content; else loading"></ng-container>
+<ng-template #content><app-data /></ng-template>
+<ng-template #loading><app-spinner /></ng-template>
+```
+
+### New syntax: `@if` (Angular 17+)
+
+```html
+<!-- Basic conditional — cleaner, no ng-template needed -->
+@if (isLoggedIn) {
+  <div>Welcome back!</div>
+}
+
+<!-- With else -->
+@if (isLoggedIn) {
+  <div>Welcome, {{ user.name }}!</div>
+} @else {
+  <button routerLink="/login">Log In</button>
+}
+
+<!-- With else if — previously impossible without nesting -->
+@if (status === 'loading') {
+  <app-spinner />
+} @else if (status === 'error') {
+  <app-error [message]="errorMessage" />
+} @else if (status === 'empty') {
+  <app-empty-state />
+} @else {
+  <app-data-list [items]="items" />
+}
+```
+
+<Callout type="tip">
+The `@if` block can expose the checked value as a local variable: `@if (user$ | async; as user) { {{ user.name }} }`. This is equivalent to the `*ngIf="user$ | async as user"` pattern — store the async pipe result to avoid multiple subscriptions.
+</Callout>
+
+## List Rendering
+
+### Old syntax: `*ngFor`
+
+```html
+<ul>
+  <li *ngFor="let user of users; index as i; trackBy: trackById">
+    {{ i + 1 }}. {{ user.name }}
+  </li>
+</ul>
+
+<!-- Available context variables -->
+<div *ngFor="let item of items;
+             index as i;
+             first as isFirst;
+             last as isLast;
+             even as isEven;
+             odd as isOdd;
+             count as total;
+             trackBy: trackByFn">
+</div>
+```
+
+### New syntax: `@for` (Angular 17+)
+
+```html
+<!-- track is REQUIRED in @for — forces best practices -->
+@for (user of users; track user.id) {
+  <li>{{ user.name }}</li>
+}
+
+<!-- Access to contextual variables -->
+@for (item of items; track item.id; let i = $index, isFirst = $first, isLast = $last) {
+  <div [class.first]="isFirst" [class.last]="isLast">
+    {{ i + 1 }}. {{ item.name }}
+  </div>
+}
+
+<!-- @empty block — replaces the *ngIf !items.length pattern -->
+@for (product of products; track product.id) {
+  <app-product-card [product]="product" />
+} @empty {
+  <p>No products found.</p>
+}
+```
+
+The `track` expression in `@for` is **required** (unlike `trackBy` in `*ngFor` which was optional). Angular uses it to efficiently update the DOM when the list changes — it identifies items by their unique value.
+
+## Switch-Case Rendering
+
+### Old syntax: `*ngSwitch`
+
+```html
+<div [ngSwitch]="userRole">
+  <app-admin-panel *ngSwitchCase="'admin'"></app-admin-panel>
+  <app-editor-panel *ngSwitchCase="'editor'"></app-editor-panel>
+  <app-viewer-panel *ngSwitchDefault></app-viewer-panel>
+</div>
+```
+
+### New syntax: `@switch` (Angular 17+)
+
+```html
+@switch (userRole) {
+  @case ('admin') {
+    <app-admin-panel />
+  }
+  @case ('editor') {
+    <app-editor-panel />
+  }
+  @default {
+    <app-viewer-panel />
+  }
+}
+```
+
+## `ng-container` — Grouping Without DOM Elements
+
+`ng-container` is a logical grouping element that Angular removes from the DOM — useful when you need to apply a structural directive to a group without adding an extra `<div>`:
+
+```html
+<!-- Without ng-container — adds unwanted <div> to DOM -->
+<div *ngIf="showHeader">
+  <h1>Title</h1>
+  <p>Subtitle</p>
+</div>
+
+<!-- With ng-container — no extra DOM element -->
+<ng-container *ngIf="showHeader">
+  <h1>Title</h1>
+  <p>Subtitle</p>
+</ng-container>
+
+<!-- Applying multiple directives — you can't use *ngIf and *ngFor on the same element -->
+<!-- This is WRONG: -->
+<li *ngFor="let user of users" *ngIf="user.active">...</li>
+
+<!-- This is correct: -->
+<ng-container *ngFor="let user of users">
+  <li *ngIf="user.active">{{ user.name }}</li>
+</ng-container>
+
+<!-- Or with new syntax (no problem — separate blocks): -->
+@for (user of users; track user.id) {
+  @if (user.active) {
+    <li>{{ user.name }}</li>
+  }
+}
+```
+
+<ComparisonTable
+  headers={["Feature", "*ngIf / *ngFor", "@if / @for"]}
+  rows={[
+    ["Requires import", "CommonModule or NgIf/NgFor", "Built-in — no import needed"],
+    ["else block", "Requires ng-template", "Inline @else block"],
+    ["else-if", "Requires nesting", "Native @else if"],
+    ["trackBy", "Optional (but should use)", "Required (track expression)"],
+    ["@empty for lists", "Separate *ngIf", "Built-in @empty block"],
+    ["Bundle size", "Directive overhead", "Smaller (compiler built-in)"],
+    ["Performance", "Good", "Better (optimized by compiler)"]
+  ]}
+/>
+
+<CodeChallenge
+  id="structural-directives-ng-container"
+  difficulty="foundation"
+  description="Why can't you put both *ngFor and *ngIf on the same HTML element?"
+  options={[
+    "Angular limits one directive per element for performance",
+    "Each structural directive desugars to a template, and you can't nest templates on one element",
+    "It's a CSS limitation — two directives conflict on styling",
+    "You can — it works fine in Angular 17+"
+  ]}
+  correctAnswer={1}
+  explanation="Structural directives like *ngFor desugars to <ng-template [ngFor]...> — it wraps the element in a template. If you put *ngIf on the same element, you'd have two wrappers competing. The syntax doesn't support nesting structural directives on one element. Solution: use ng-container as an outer wrapper with one directive, and the element itself with the other."
+/>
+
+## The `*` Micro-Syntax Desugaring
+
+Understanding what `*ngFor` really does explains many Angular behaviors:
+
+```html
+<!-- What you write -->
+<li *ngFor="let user of users; trackBy: trackById">{{ user.name }}</li>
+
+<!-- What Angular compiles it to -->
+<ng-template ngFor let-user [ngForOf]="users" [ngForTrackBy]="trackById">
+  <li>{{ user.name }}</li>
+</ng-template>
+```
+
+The `*` prefix is syntactic sugar that wraps the element in `<ng-template>` and converts the micro-syntax into property bindings. This is why structural directives create `<ng-template>` elements and why only one can apply per element.
+
+## Senior Insight: Migrate Gradually
+
+When working on codebases that use `*ngIf`/`*ngFor`, you don't need to migrate everything at once. The Angular team provides a migration schematic:
+
+```bash
+ng generate @angular/core:control-flow
+```
+
+This automatically converts `*ngIf` → `@if`, `*ngFor` → `@for`, etc. Run it file by file or on the whole project. New code should use the `@` syntax exclusively — it's smaller, faster, and more readable.

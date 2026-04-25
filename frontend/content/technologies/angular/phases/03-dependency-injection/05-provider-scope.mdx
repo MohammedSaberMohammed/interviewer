@@ -1,0 +1,180 @@
+---
+title: "Provider Scope & Singleton Guarantees"
+slug: "provider-scope"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["Angular", "providedIn", "singleton", "scope", "provider"]
+summary: "Where you register a provider determines its scope and lifetime. providedIn: 'root', 'component', lazy-loaded routes, and 'any' each give different singleton guarantees with real consequences."
+docsLinks:
+  - label: "Singleton Services"
+    url: "https://angular.dev/guide/di/singleton-services"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## Scope = Lifetime = Instance Count
+
+The most important thing to understand about Angular providers: **scope determines how many instances exist and how long they live**. Getting scope wrong causes subtle bugs — multiple instances when you need one shared state, or one global instance when you need per-component isolation.
+
+## `providedIn: 'root'` — App Singleton
+
+The most common and recommended option. Creates exactly **one instance** shared across the entire application:
+
+```typescript
+@Injectable({
+  providedIn: 'root'
+})
+export class AuthService {
+  private currentUser = signal<User | null>(null);
+
+  login(credentials: Credentials): Observable<User> {
+    return this.http.post<User>('/api/login', credentials).pipe(
+      tap(user => this.currentUser.set(user))
+    );
+  }
+}
+// One AuthService instance. Everyone sharing the same signal state.
+// ✅ Perfect for: auth, user preferences, global cart, app config
+```
+
+Benefits:
+- **Tree-shakeable**: If nothing injects it, it's excluded from the bundle
+- **No NgModule required**: Works with standalone and NgModule apps
+- **Singleton guaranteed**: Unless you also add it to a component/module providers (don't do that)
+
+<Callout type="warning">
+The "broken singleton" trap: if you put `AuthService` in both `providedIn: 'root'` AND in an NgModule's `providers: [AuthService]`, you'll have two instances — one from root, one from the module. State changes to one won't be reflected in the other. Avoid duplicate registration.
+</Callout>
+
+## Component-Level Providers — Instance Per Component
+
+Add to a component's `providers` array to get a fresh instance for each component:
+
+```typescript
+@Component({
+  selector: 'app-data-grid',
+  providers: [GridStateService], // New instance for every DataGridComponent
+  template: `...`
+})
+class DataGridComponent {
+  private state = inject(GridStateService);
+  // This state is isolated — two DataGridComponents have independent state
+}
+```
+
+The instance is created when the component is created and destroyed when the component is destroyed — automatic cleanup.
+
+## `providedIn: 'any'` — Lazy-Module Singletons
+
+**Deprecated in newer Angular versions** but you'll see it in existing code. With `providedIn: 'any'`, each lazy-loaded module gets its **own instance**, while all eagerly-loaded parts share the root instance:
+
+```typescript
+@Injectable({
+  providedIn: 'any' // One per lazy-loaded module + one for eager
+})
+class FeatureSpecificService {}
+```
+
+This was intended for lazy-loaded feature services that shouldn't share state with other lazy modules, but it created confusing behavior and is rarely needed.
+
+## Route-Level Providers (Modern Approach)
+
+The recommended modern alternative to module-scoped providers:
+
+```typescript
+// app.routes.ts
+const routes: Routes = [
+  {
+    path: 'orders',
+    loadComponent: () => import('./orders/orders.component'),
+    providers: [
+      OrderService, // Scoped to the entire /orders route and its children
+      { provide: PAGE_SIZE, useValue: 50 }
+    ]
+  },
+  {
+    path: 'products',
+    loadComponent: () => import('./products/products.component'),
+    providers: [
+      ProductService // Different instance from OrderService — scoped to /products
+    ]
+  }
+];
+```
+
+Route-level providers are created when the route activates and destroyed when you navigate away — clean, automatic lifetime management.
+
+## The `providedIn: 'platform'` Edge Case
+
+For multi-Angular-app scenarios (multiple Angular apps on one page):
+
+```typescript
+@Injectable({
+  providedIn: 'platform' // Shared across ALL Angular apps on the page
+})
+class SharedPlatformService {}
+```
+
+Rarely needed in standard applications — used in micro-frontend architectures.
+
+<ComparisonTable
+  headers={["Scope", "Instance Count", "Lifetime", "Best For"]}
+  rows={[
+    ["providedIn: 'root'", "1 (app singleton)", "App lifetime", "Auth, config, global state"],
+    ["Component providers", "1 per component instance", "Component lifetime", "Component-scoped state, form state"],
+    ["Route providers", "1 per route activation", "Route lifetime", "Feature state, page-level data"],
+    ["NgModule providers", "1 per module (legacy)", "Module lifetime", "Legacy feature modules"],
+    ["providedIn: 'any'", "1 per lazy module", "Module lifetime", "Deprecated — use route providers"]
+  ]}
+/>
+
+<CodeChallenge
+  id="provider-scope-singleton"
+  difficulty="intermediate"
+  description="UserPreferencesService has providedIn: 'root'. A lazy-loaded module also has UserPreferencesService in its NgModule providers. How many instances exist?"
+  options={[
+    "One — providedIn: 'root' always wins and deduplicates",
+    "Two — one root instance and one module-scoped instance",
+    "Angular throws an error — conflicting registrations",
+    "Zero — lazy modules override root providers and reset them"
+  ]}
+  correctAnswer={1}
+  explanation="This is the 'broken singleton' trap. When a lazy NgModule has the service in its providers array, it creates a second instance for anything injected within that module. Components outside the module use the root instance; components inside use the module instance. State changes don't propagate between them. Solution: remove it from the NgModule providers and rely solely on providedIn: 'root'."
+/>
+
+## Debugging Scope Issues
+
+When you suspect multiple instances:
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class DebugService {
+  private static instanceCount = 0;
+  readonly instanceId: number;
+
+  constructor() {
+    DebugService.instanceCount++;
+    this.instanceId = DebugService.instanceCount;
+    console.log(`DebugService instance #${this.instanceId} created`);
+  }
+}
+
+// If you see "DebugService instance #2 created", you have a scope issue
+```
+
+## Senior Insight: Design for the Lifetime
+
+The correct scope to choose follows from the lifetime of the data:
+
+| Data | Lifetime | Scope |
+|------|----------|-------|
+| Logged-in user | App session | `providedIn: 'root'` |
+| Shopping cart | App session | `providedIn: 'root'` |
+| Product list filters | Current page | Route-level providers |
+| Form validation state | One form | Component-level providers |
+| Tooltip hover state | One tooltip instance | Component-level providers |
+| Active dialog | Dialog open → close | Dialog component providers |
+
+Matching scope to lifetime avoids both memory leaks (keeping state alive too long) and initialization bugs (creating new state when you expected shared state).

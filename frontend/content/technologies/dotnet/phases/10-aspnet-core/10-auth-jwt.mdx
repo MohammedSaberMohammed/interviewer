@@ -1,0 +1,368 @@
+---
+title: "JWT Authentication: Bearer Tokens & Claims"
+slug: "auth-jwt"
+order: 10
+difficulty: "advanced"
+readingTime: 16
+status: "published"
+tags: ["JWT", "authentication", "bearer tokens", "claims", "JwtBearer", "refresh tokens", "security", "asp.net core"]
+summary: "JWT bearer authentication is the standard for stateless API security. Understand token structure, claims, signing algorithms, and the refresh token pattern before your security interview."
+docsLinks:
+  - label: "JWT bearer authentication in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/jwt-authn"
+  - label: "Authentication in ASP.NET Core"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/"
+  - label: "Claims-based identity"
+    url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/claims"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, ArchDiagram } from '@/components/lesson'
+
+## JWT Structure
+
+A JSON Web Token is three Base64Url-encoded parts separated by dots:
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.       <- Header
+eyJzdWIiOiJ1c2VyLTEyMyIsIm5hbWUiOiJBbGljZSIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTcwMDAwMDAwMH0.  <- Payload (claims)
+SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c   <- Signature
+```
+
+**Header:** `{ "alg": "HS256", "typ": "JWT" }`
+
+**Payload (claims):**
+```json
+{
+  "sub": "user-123",
+  "name": "Alice",
+  "role": "admin",
+  "exp": 1700000000,
+  "iat": 1699996400,
+  "jti": "unique-token-id"
+}
+```
+
+**Signature:** `HMACSHA256(base64url(header) + "." + base64url(payload), secret)`
+
+The signature verifies that the token hasn't been tampered with. The payload is **not encrypted** — it is only Base64-encoded. Never put sensitive data (passwords, PII) in JWT claims.
+
+<ArchDiagram
+  title="JWT Authentication Flow"
+  layers={[
+    { nodes: [{ id: 'client', label: 'Client App', sublabel: 'browser / mobile / API consumer', type: 'browser' }] },
+    { nodes: [{ id: 'auth', label: 'Auth Server / Identity Provider', sublabel: 'issues signed JWT tokens', type: 'gateway' }] },
+    { nodes: [{ id: 'api', label: 'Protected API', sublabel: 'validates signature + claims locally', type: 'server' }] },
+    { nodes: [{ id: 'resource', label: 'Protected Resource', sublabel: 'orders, profile, admin data', type: 'database' }] },
+  ]}
+  connectors={[
+    { label: '1. POST /login → receives JWT', step: 1 },
+    { label: '2. Bearer {token} on every request', step: 2 },
+    { label: '3. claims authorize access', step: 3 },
+  ]}
+  caption="The API validates the JWT signature using the auth server's public key — no round-trip to the auth server per request. Stateless: any API instance can validate any token without shared session state."
+/>
+
+---
+
+## Configuring JWT Bearer in ASP.NET Core 8
+
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],     // e.g., "https://auth.myapp.com"
+
+            ValidateAudience = true,
+            ValidAudience = builder.Configuration["Jwt:Audience"], // e.g., "myapp-api"
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(1), // Allow 1 min clock drift (default is 5 min)
+
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"]!))
+            // For production: use RSA key (asymmetric) — see Senior Insight below
+        };
+
+        // Events for debugging and custom behavior
+        options.Events = new JwtBearerEvents
+        {
+            OnAuthenticationFailed = context =>
+            {
+                if (context.Exception is SecurityTokenExpiredException)
+                    context.Response.Headers["Token-Expired"] = "true";
+                return Task.CompletedTask;
+            },
+            OnTokenValidated = context =>
+            {
+                // Additional validation after token is verified
+                var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                // Could check a revocation list here
+                return Task.CompletedTask;
+            }
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+app.UseAuthentication(); // Populates HttpContext.User from JWT
+app.UseAuthorization();  // Enforces [Authorize] policies
+app.MapControllers();
+```
+
+---
+
+## Generating JWT Tokens
+
+```csharp
+public class JwtTokenService : IJwtTokenService
+{
+    private readonly IConfiguration _config;
+
+    public JwtTokenService(IConfiguration config) => _config = config;
+
+    public string GenerateAccessToken(AppUser user, IList<string> roles)
+    {
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Email, user.Email!),
+            new(JwtRegisteredClaimNames.Name, user.UserName!),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()), // Unique token ID
+            new(JwtRegisteredClaimNames.Iat,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64),
+        };
+
+        // Add roles as claims
+        claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+
+        // Add custom claims
+        claims.Add(new Claim("tenant_id", user.TenantId.ToString()));
+
+        var key = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(_config["Jwt:Secret"]!));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: _config["Jwt:Issuer"],
+            audience: _config["Jwt:Audience"],
+            claims: claims,
+            notBefore: DateTime.UtcNow,
+            expires: DateTime.UtcNow.AddMinutes(15), // Short-lived access token
+            signingCredentials: credentials);
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    public string GenerateRefreshToken()
+    {
+        // Refresh token is an opaque random value — NOT a JWT
+        var bytes = new byte[64];
+        using var rng = RandomNumberGenerator.Create();
+        rng.GetBytes(bytes);
+        return Convert.ToBase64String(bytes);
+    }
+}
+```
+
+---
+
+## The Refresh Token Pattern
+
+Access tokens should be short-lived (15 min) to limit exposure if stolen. Refresh tokens enable getting new access tokens without re-authenticating:
+
+```csharp
+[ApiController]
+[Route("api/auth")]
+public class AuthController : ControllerBase
+{
+    private readonly IJwtTokenService _tokenService;
+    private readonly IRefreshTokenRepository _refreshTokens;
+    private readonly UserManager<AppUser> _userManager;
+
+    public AuthController(IJwtTokenService tokenService,
+        IRefreshTokenRepository refreshTokens,
+        UserManager<AppUser> userManager)
+    {
+        _tokenService = tokenService;
+        _refreshTokens = refreshTokens;
+        _userManager = userManager;
+    }
+
+    [HttpPost("login")]
+    public async Task<IActionResult> Login(LoginRequest request)
+    {
+        var user = await _userManager.FindByEmailAsync(request.Email);
+        if (user is null || !await _userManager.CheckPasswordAsync(user, request.Password))
+            return Unauthorized(new { error = "Invalid credentials" });
+
+        var roles = await _userManager.GetRolesAsync(user);
+        var accessToken = _tokenService.GenerateAccessToken(user, roles);
+        var refreshToken = _tokenService.GenerateRefreshToken();
+
+        // Store refresh token in DB with expiry and user association
+        await _refreshTokens.SaveAsync(new RefreshToken
+        {
+            Token = refreshToken,
+            UserId = user.Id,
+            ExpiresAt = DateTime.UtcNow.AddDays(30),
+            IsRevoked = false
+        });
+
+        return Ok(new TokenResponse
+        {
+            AccessToken = accessToken,
+            RefreshToken = refreshToken, // Send in HttpOnly cookie in production
+            ExpiresIn = 900             // 15 minutes
+        });
+    }
+
+    [HttpPost("refresh")]
+    public async Task<IActionResult> Refresh(RefreshRequest request)
+    {
+        var stored = await _refreshTokens.GetByTokenAsync(request.RefreshToken);
+
+        if (stored is null || stored.IsRevoked || stored.ExpiresAt < DateTime.UtcNow)
+            return Unauthorized(new { error = "Invalid or expired refresh token" });
+
+        var user = await _userManager.FindByIdAsync(stored.UserId.ToString());
+        if (user is null)
+            return Unauthorized();
+
+        // Rotate refresh token — invalidate old one, issue new one
+        stored.IsRevoked = true;
+        await _refreshTokens.UpdateAsync(stored);
+
+        var roles = await _userManager.GetRolesAsync(user);
+        var newAccessToken = _tokenService.GenerateAccessToken(user, roles);
+        var newRefreshToken = _tokenService.GenerateRefreshToken();
+
+        await _refreshTokens.SaveAsync(new RefreshToken
+        {
+            Token = newRefreshToken,
+            UserId = user.Id,
+            ExpiresAt = DateTime.UtcNow.AddDays(30)
+        });
+
+        return Ok(new TokenResponse
+        {
+            AccessToken = newAccessToken,
+            RefreshToken = newRefreshToken
+        });
+    }
+}
+```
+
+<Callout type="trap">
+**Trap: JWT Tokens Cannot Be Revoked Before Expiry**
+
+JWTs are stateless — the server doesn't store them. Once issued, a JWT is valid until expiry. Logging out a user client-side (deleting the token from storage) does NOT invalidate it server-side. If the token is stolen, it remains valid.
+
+Mitigations:
+- Keep access tokens very short-lived (15 minutes)
+- Store revoked token JTI (JWT ID) in a fast cache (Redis) and check on each request — this is called a "deny list" and adds stateful overhead
+- Use opaque tokens (reference tokens) if you need immediate revocation — the server always validates against a database
+</Callout>
+
+---
+
+## Reading Claims in Controllers
+
+```csharp
+[ApiController]
+[Authorize]
+public class ProfileController : ControllerBase
+{
+    [HttpGet("me")]
+    public IActionResult GetProfile()
+    {
+        // Claims populated by UseAuthentication from the JWT
+        var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+        var email = User.FindFirstValue(JwtRegisteredClaimNames.Email);
+        var tenantId = User.FindFirstValue("tenant_id");
+        var roles = User.FindAll(ClaimTypes.Role).Select(c => c.Value);
+
+        return Ok(new
+        {
+            UserId = userId,
+            Email = email,
+            TenantId = tenantId,
+            Roles = roles
+        });
+    }
+}
+```
+
+---
+
+<Callout type="senior">
+**Senior Insight: HS256 vs RS256 — Symmetric vs Asymmetric Signing**
+
+`HS256` (HMAC-SHA256) uses a shared secret — both the issuer and validator use the same key. This means every service that needs to validate tokens must know the secret. A compromise of any service exposes the signing key.
+
+`RS256` (RSA-SHA256) uses a public/private key pair:
+- The **auth service** signs with the private key (kept secret)
+- Any **API service** validates with the public key (safe to distribute)
+
+```csharp
+// RS256 configuration — load public key from JWKS endpoint (recommended)
+options.TokenValidationParameters = new TokenValidationParameters
+{
+    ValidateIssuerSigningKey = true,
+    // Fetch public keys from the OIDC discovery endpoint automatically
+    IssuerSigningKeyResolver = (token, securityToken, kid, parameters) =>
+    {
+        // In production: use Microsoft.IdentityModel.Protocols.OpenIdConnect
+        // to auto-fetch from authority/.well-known/openid-configuration
+        var client = new HttpClient();
+        var jwks = client.GetStringAsync(
+            $"{parameters.ValidIssuer}/.well-known/jwks.json").Result;
+        return new JsonWebKeySet(jwks).Keys;
+    }
+};
+```
+
+For microservices, **always prefer RS256** — auth service holds private key, APIs only need public key. If one API is compromised, it cannot forge tokens.
+</Callout>
+
+---
+
+<Quiz
+  id="10-aspnet-core/auth-jwt/quiz-1"
+  question="A user reports they logged out but can still access protected endpoints for 10 more minutes. What is the most likely cause?"
+  options={[
+    "UseAuthentication middleware is not configured",
+    "JWT tokens are stateless — logout only removes the client-side token, and the server-side token remains valid until expiry",
+    "The token expiry is not being validated because ValidateLifetime is false",
+    "The ClockSkew is set to 10 minutes, extending the token lifetime"
+  ]}
+  correctAnswer={1}
+  explanation="JWT tokens are stateless — the server does not track issued tokens. Logging out by deleting the token from the client removes it from that client but doesn't invalidate it. If another party has the token, or if the client app cached it somewhere, it remains valid until its expiry time. This is a fundamental JWT tradeoff — keep access tokens very short-lived (5-15 minutes) to limit this window."
+/>
+
+---
+
+<MythBuster
+  myth="Storing JWTs in localStorage is fine because they're already Base64-encoded and not easily readable"
+  truth="Base64 is encoding, not encryption — any JavaScript can read localStorage, making tokens vulnerable to XSS attacks. Prefer HttpOnly cookies for refresh tokens (inaccessible to JavaScript) and short-lived in-memory access tokens. If you must use localStorage, accept the XSS risk and mitigate with a strict Content-Security-Policy."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "JWT bearer authentication in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/jwt-authn" },
+    { label: "Claims-based identity in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/claims" },
+    { label: "Safe storage of app secrets in development", url: "https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets" },
+    { label: "Authentication in ASP.NET Core", url: "https://learn.microsoft.com/en-us/aspnet/core/security/authentication/" },
+  ]}
+/>

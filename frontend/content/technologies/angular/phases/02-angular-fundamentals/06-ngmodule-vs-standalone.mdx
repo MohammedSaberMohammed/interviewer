@@ -1,0 +1,234 @@
+---
+title: "NgModule vs Standalone Components"
+slug: "ngmodule-vs-standalone"
+order: 6
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["Angular", "NgModule", "standalone", "module", "migration"]
+summary: "NgModules were Angular's organizational unit for years. Standalone components replace much of what NgModules did. Know both — the codebase you inherit almost certainly uses NgModules."
+docsLinks:
+  - label: "NgModules"
+    url: "https://angular.dev/guide/ngmodules"
+  - label: "Standalone Components"
+    url: "https://angular.dev/guide/components/importing"
+  - label: "Migrating to Standalone"
+    url: "https://angular.dev/reference/migrations/standalone"
+---
+
+import { Callout, CodeChallenge, Quiz, ComparisonTable } from '@/components/lesson'
+
+## The Problem NgModules Solved (and Created)
+
+NgModules were introduced in Angular 2 as a way to organize and scope Angular features. Every component, directive, and pipe had to be declared in exactly one NgModule. Modules would import other modules to share their declarations. This worked but created significant boilerplate and confusion — especially around understanding which module provides what.
+
+## The NgModule System
+
+A typical NgModule-based Angular feature:
+
+```typescript
+// feature/user.module.ts
+@NgModule({
+  declarations: [
+    // Components/directives/pipes DECLARED in this module
+    UserListComponent,
+    UserCardComponent,
+    UserFormComponent,
+    UserRolePipe,
+  ],
+  imports: [
+    // Other modules whose exports we want to use
+    CommonModule,       // Provides NgIf, NgFor, AsyncPipe, etc.
+    FormsModule,        // Provides NgModel
+    ReactiveFormsModule,
+    RouterModule,
+    SharedModule,       // Your shared components
+  ],
+  exports: [
+    // What this module makes available to importing modules
+    UserListComponent,
+    UserCardComponent,
+    UserRolePipe,
+  ],
+  providers: [
+    // Module-scoped providers (legacy — use providedIn: 'root' instead)
+    UserService,
+  ],
+})
+export class UserModule {}
+```
+
+### The Root AppModule
+
+Every NgModule app has a root module that bootstraps the app:
+
+```typescript
+// app.module.ts
+@NgModule({
+  declarations: [AppComponent],
+  imports: [
+    BrowserModule,  // Required for browser apps — includes CommonModule + browser-specific providers
+    RouterModule.forRoot(routes), // forRoot vs forChild is a common interview topic
+    UserModule,
+    ProductModule,
+    HttpClientModule,
+  ],
+  bootstrap: [AppComponent], // The root component to bootstrap
+})
+export class AppModule {}
+```
+
+## The NgModule Problems
+
+NgModules created several common pain points:
+
+1. **Dual-registration error**: Declaring a component in two modules causes a compile error
+2. **Deep imports**: To use one component, you might have to import an entire module
+3. **SCAM pattern**: People invented "Single Component Angular Module" to get around the sharing issue
+4. **forRoot/forChild confusion**: Router and other modules have different bootstrap behavior based on where they're imported
+
+## The Standalone Solution
+
+Standalone components declare their own dependencies — no module needed:
+
+```typescript
+// user-list.component.ts — completely self-contained
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  imports: [
+    NgFor,           // Just what this template needs
+    NgIf,
+    AsyncPipe,
+    UserCardComponent, // Direct component import
+    UserRolePipe,
+    RouterLink,
+  ],
+  template: `
+    @for (user of users$ | async; track user.id) {
+      <app-user-card [user]="user" />
+    }
+  `,
+})
+export class UserListComponent {
+  users$ = inject(UserService).getUsers();
+}
+```
+
+No module, no declarations, no exports. Import exactly what you need.
+
+## Bootstrapping: AppModule vs bootstrapApplication
+
+```typescript
+// OLD: main.ts with NgModule
+import { platformBrowserDynamic } from '@angular/platform-browser-dynamic';
+import { AppModule } from './app/app.module';
+
+platformBrowserDynamic().bootstrapModule(AppModule)
+  .catch(err => console.error(err));
+
+// NEW: main.ts with standalone
+import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { AppComponent } from './app/app.component';
+import { routes } from './app/app.routes';
+import { authInterceptor } from './auth.interceptor';
+
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient(withInterceptors([authInterceptor])),
+    provideAnimations(),
+  ]
+});
+```
+
+<Callout type="tip">
+The new `provide*()` functions (`provideRouter`, `provideHttpClient`, `provideAnimations`) are the standalone equivalents of importing `RouterModule.forRoot()`, `HttpClientModule`, `BrowserAnimationsModule`. They're tree-shakeable and composable.
+</Callout>
+
+## Using NgModule Components in Standalone Apps
+
+You can use NgModule-based third-party libraries in standalone components:
+
+```typescript
+@Component({
+  standalone: true,
+  imports: [
+    MatButtonModule,    // Material Design — still NgModule-based
+    MatTableModule,
+    MatPaginatorModule,
+  ],
+  template: `<mat-table [dataSource]="dataSource">...</mat-table>`
+})
+class ProductListComponent {}
+```
+
+Angular allows mixing: standalone components can import NgModule modules, and NgModule modules can declare standalone components with `imports`.
+
+## forRoot vs forChild — The Interview Classic
+
+This NgModule pattern trips up many developers:
+
+```typescript
+// In AppModule (root) — sets up services once
+RouterModule.forRoot(routes)
+
+// In feature modules — provides routes without re-creating services
+RouterModule.forChild(featureRoutes)
+```
+
+Why the distinction? Modules like `RouterModule` have singleton services (Router, ActivatedRoute). If you call `forRoot()` in a lazy-loaded feature module, a **second Router instance** is created, breaking the entire application.
+
+`forRoot()` = "configure and provide services" (only once, in root)
+`forChild()` = "add routes/features without duplicating services"
+
+<CodeChallenge
+  id="ngmodule-standalone-imports"
+  difficulty="intermediate"
+  description="In a standalone Angular component, you try to use the DatePipe in the template but get 'No pipe found with name date'. What's missing?"
+  options={[
+    "Import BrowserModule in AppModule",
+    "Add DatePipe to the standalone component's imports array",
+    "Add DatePipe to the standalone component's providers array",
+    "Standalone components can't use built-in pipes"
+  ]}
+  correctAnswer={1}
+  explanation="In standalone components, you explicitly import everything the template uses. DatePipe is an Angular built-in pipe that must be in the imports array: @Component({ standalone: true, imports: [DatePipe], ... }). In NgModule-based apps, DatePipe is provided by CommonModule which is imported in the NgModule — which is why you never had to think about it."
+/>
+
+<ComparisonTable
+  headers={["Aspect", "NgModule Approach", "Standalone Approach"]}
+  rows={[
+    ["Organization", "Module declares components", "Component self-declares imports"],
+    ["Boilerplate", "High (NgModule per feature)", "Minimal"],
+    ["Dependency clarity", "Implicit (via module)", "Explicit (per component)"],
+    ["Lazy loading", "loadChildren: () => import('...Module')", "loadComponent: () => import('...Component')"],
+    ["Testing", "Must import module or TestBed config", "Import directly in TestBed"],
+    ["Tree-shaking", "Module-level granularity", "Component-level granularity"],
+    ["New projects (2024)", "Discouraged", "Default and recommended"]
+  ]}
+/>
+
+## Migration Strategy
+
+For existing NgModule apps, migrate gradually:
+
+```bash
+# Angular's automatic migration schematic
+ng generate @angular/core:standalone
+# Offers three options:
+# 1. Convert all components to standalone
+# 2. Remove unnecessary NgModules
+# 3. Bootstrap with standalone APIs
+```
+
+## Senior Insight: You'll Deal with Both
+
+In 2024-2025, you will encounter:
+- **New projects**: Fully standalone (no NgModules)
+- **Existing large projects**: NgModule-based, gradually migrating
+- **Third-party libraries**: Some still NgModule-based (Angular Material was hybrid for a long time)
+
+The critical skill is understanding both systems deeply enough to work in either and migrate between them confidently.

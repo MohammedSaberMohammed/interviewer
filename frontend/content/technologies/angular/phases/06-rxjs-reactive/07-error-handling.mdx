@@ -1,0 +1,260 @@
+---
+title: "Error Handling"
+slug: "error-handling"
+order: 7
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["RxJS", "catchError", "retry", "retryWhen", "throwError", "error handling"]
+summary: "RxJS error handling is tricky because an unhandled error terminates the Observable stream. Learn catchError, retry, and how to keep streams alive after errors."
+docsLinks:
+  - label: "RxJS Error Handling"
+    url: "https://rxjs.dev/guide/observable#error-handling"
+  - label: "catchError"
+    url: "https://rxjs.dev/api/operators/catchError"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Error Problem in RxJS
+
+In RxJS, when an Observable errors, the stream **terminates**. No more values will be emitted. This is a fundamental difference from handling errors in Promise chains:
+
+```typescript
+// This stream terminates on error — no more values after the error
+interval(1000).pipe(
+  map(n => {
+    if (n === 3) throw new Error('Three is bad!');
+    return n;
+  })
+).subscribe({
+  next: n => console.log(n),  // 0, 1, 2
+  error: err => console.error(err), // Error at 3
+  // After error: NOTHING. Stream is dead.
+});
+```
+
+For long-lived streams (WebSocket, user-action streams), this is a critical bug — one error kills all future emissions.
+
+## `catchError()` — Handle and Recover
+
+`catchError` intercepts an error and returns a new Observable to continue with:
+
+```typescript
+import { catchError } from 'rxjs/operators';
+import { of, EMPTY, throwError } from 'rxjs';
+
+// Return fallback value on error
+this.http.get<User[]>('/api/users').pipe(
+  catchError(error => {
+    console.error('Failed to load users:', error);
+    return of([]); // Return empty array instead of error
+  })
+).subscribe(users => this.users = users); // Always gets an array
+
+// Rethrow with more context
+this.http.get<User>('/api/users/1').pipe(
+  catchError(error => {
+    if (error.status === 404) {
+      return EMPTY; // Silently complete — don't emit anything
+    }
+    return throwError(() => new Error(`Failed to load user: ${error.message}`));
+  })
+)
+
+// Transform error type
+this.userService.getUser(id).pipe(
+  catchError(err => {
+    // Convert HTTP error to domain error
+    if (err.status === 403) {
+      return throwError(() => new UnauthorizedError(err.message));
+    }
+    return throwError(() => err);
+  })
+)
+```
+
+<Callout type="warning">
+The function passed to `throwError()` should be a factory function (not the error directly): `throwError(() => new Error())`. Using `throwError(new Error())` creates the error immediately (at definition time), not at subscription time — which affects stack traces.
+</Callout>
+
+## `retry()` — Automatic Retry
+
+Automatically resubscribes (retries) when the source errors:
+
+```typescript
+import { retry, retryWhen, delay } from 'rxjs/operators';
+
+// Simple retry — 3 attempts, then propagate error
+this.http.get('/api/data').pipe(
+  retry(3)
+  // Attempts: 1 (fail), 2 (fail), 3 (fail), then error propagates
+).subscribe({
+  next: data => this.data = data,
+  error: err => this.showError(err)
+});
+
+// Retry with configuration (RxJS 7+)
+this.http.get('/api/data').pipe(
+  retry({
+    count: 3,
+    delay: 1000, // Wait 1 second between retries
+    resetOnSuccess: true, // Reset count if a later request succeeds
+  })
+)
+```
+
+## `retryWhen()` — Custom Retry Logic
+
+For sophisticated retry strategies (exponential backoff):
+
+```typescript
+import { retryWhen, delay, scan, tap, switchMap, timer } from 'rxjs/operators';
+
+// Exponential backoff: 1s, 2s, 4s, 8s...
+function exponentialBackoff(maxRetries: number = 3) {
+  return retryWhen(errors =>
+    errors.pipe(
+      scan((retryCount, error) => {
+        if (retryCount >= maxRetries) {
+          throw error; // Max retries reached — propagate
+        }
+        return retryCount + 1;
+      }, 0),
+      switchMap(retryCount => {
+        const waitTime = Math.pow(2, retryCount) * 1000;
+        console.log(`Retry #${retryCount} after ${waitTime}ms`);
+        return timer(waitTime);
+      })
+    )
+  );
+}
+
+// Usage
+this.http.get('/api/data').pipe(
+  exponentialBackoff(3) // Retries: 1s, 2s, 4s, then error
+).subscribe(data => this.data = data);
+```
+
+Modern alternative with `retry({ delay: ... })`:
+
+```typescript
+this.http.get('/api/data').pipe(
+  retry({
+    count: 3,
+    delay: (error, retryCount) => {
+      // Can return Observable<any> — retry when it emits
+      const waitMs = Math.pow(2, retryCount) * 1000;
+      return timer(waitMs);
+    }
+  })
+)
+```
+
+## Keeping Streams Alive After Errors
+
+For long-lived streams that must survive individual errors:
+
+```typescript
+// WebSocket that reconnects after errors
+const ws$ = webSocket('wss://api.example.com/events');
+
+ws$.pipe(
+  retryWhen(errors =>
+    errors.pipe(
+      tap(err => console.log('WebSocket error, reconnecting...', err)),
+      delay(5000) // Wait 5s before reconnecting
+    )
+  )
+).subscribe(event => this.handleEvent(event));
+
+// Alternative: catchError that re-subscribes
+function keepAlive<T>(source: Observable<T>): Observable<T> {
+  return source.pipe(
+    catchError((error, caught) => {
+      console.error('Stream error, restarting:', error);
+      return timer(1000).pipe(switchMap(() => caught)); // Delay then retry
+    })
+  );
+}
+
+keepAlive(this.ws.messages$).subscribe(msg => this.handleMessage(msg));
+```
+
+## Global HTTP Error Handling via Interceptor
+
+```typescript
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      const toastService = inject(ToastService);
+      const router = inject(Router);
+
+      if (error.status === 401) {
+        // Unauthorized — redirect to login
+        router.navigate(['/login']);
+        return EMPTY;
+      }
+
+      if (error.status === 403) {
+        toastService.error('You do not have permission for this action');
+        return EMPTY;
+      }
+
+      if (error.status >= 500) {
+        toastService.error('Server error. Please try again later.');
+      }
+
+      return throwError(() => error);
+    })
+  );
+};
+```
+
+<CodeChallenge
+  id="catch-error-stream"
+  difficulty="intermediate"
+  description="An Observable uses retry(3). The HTTP request fails. On which attempt does the error propagate to the subscriber's error handler?"
+  options={[
+    "After 1 failure — retry() doesn't help here",
+    "After 3 failures — retry(3) means 3 total retries (4 total attempts)",
+    "After 4 failures — retry(3) means 3 retries after the initial attempt",
+    "Never — retry() prevents errors from reaching the subscriber"
+  ]}
+  correctAnswer={2}
+  explanation="retry(3) means 3 RETRIES after the initial attempt — so 4 total attempts: original, retry 1, retry 2, retry 3. If all 4 fail, the error propagates to the subscriber. If any attempt succeeds, the Observable continues normally. The error handler is called after the final retry fails. Note: retry() resubscribes immediately with no delay — use retry({ delay: 1000 }) for delayed retries."
+/>
+
+## Senior Insight: Error Strategy Patterns
+
+```typescript
+// Pattern 1: Replace with fallback (for optional data)
+users$.pipe(catchError(() => of([])))
+
+// Pattern 2: Redirect on auth error (for protected resources)
+data$.pipe(
+  catchError(err => {
+    if (err.status === 401) router.navigate(['/login']);
+    return EMPTY; // Don't complete the component, redirect handles it
+  })
+)
+
+// Pattern 3: Retry then fail gracefully
+criticalData$.pipe(
+  retry({ count: 3, delay: 2000 }),
+  catchError(err => {
+    this.showErrorState(err.message);
+    return of(null); // Render null/error state
+  })
+)
+
+// Pattern 4: Notify and rethrow (for observability)
+data$.pipe(
+  catchError(err => {
+    this.analyticsService.trackError(err);
+    return throwError(() => err); // Pass to next handler
+  })
+)
+```
+
+The pattern you choose depends on whether the stream is optional (fallback is fine), required (error UI is needed), or recoverable (retry makes sense).

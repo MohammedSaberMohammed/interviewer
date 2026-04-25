@@ -1,0 +1,197 @@
+---
+title: "Lazy Loading"
+slug: "lazy-loading"
+order: 5
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "lazy loading", "code splitting", "loadComponent", "loadChildren"]
+summary: "Lazy loading splits your app into separate JavaScript bundles that load on demand. It's the single most impactful performance optimization for large Angular applications."
+docsLinks:
+  - label: "Lazy Loading Routes"
+    url: "https://angular.dev/guide/routing/lazy-loading-ngmodules"
+  - label: "loadComponent"
+    url: "https://angular.dev/api/router/Route"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Lazy Loading Matters
+
+Without lazy loading, Angular bundles ALL your application code into one large JavaScript file. The user must download and parse the entire app before seeing anything — even pages they'll never visit.
+
+Lazy loading splits your app into route-level chunks. The user downloads only what they need, when they need it:
+
+```
+Without lazy loading:
+Initial bundle: 2.5MB (entire app)
+Time to interactive: 8 seconds on 3G
+
+With lazy loading:
+Initial bundle: 400KB (core + eagerly loaded routes)
+On-demand bundles: 50-200KB each
+Time to interactive: 1.2 seconds on 3G
+```
+
+## `loadComponent` — Lazy Load a Single Standalone Component
+
+The modern approach for standalone components:
+
+```typescript
+// app.routes.ts
+const routes: Routes = [
+  // Eagerly loaded — included in initial bundle
+  { path: 'home', component: HomeComponent },
+
+  // Lazily loaded — separate bundle downloaded when user navigates to /products
+  {
+    path: 'products',
+    loadComponent: () => import('./products/products.component')
+      .then(m => m.ProductsComponent)
+  },
+
+  // With guards and resolvers on lazy routes
+  {
+    path: 'admin',
+    loadComponent: () => import('./admin/admin.component')
+      .then(m => m.AdminComponent),
+    canActivate: [authGuard, adminGuard],
+    resolve: { dashboardData: adminDataResolver }
+  }
+];
+```
+
+## `loadChildren` — Lazy Load a Route Module
+
+For feature areas with multiple child routes:
+
+```typescript
+// app.routes.ts
+const routes: Routes = [
+  {
+    path: 'orders',
+    loadChildren: () => import('./orders/orders.routes')
+      .then(m => m.ORDER_ROUTES) // Named export of a Routes array
+  }
+];
+
+// orders/orders.routes.ts — a standalone routes file (no NgModule needed)
+export const ORDER_ROUTES: Routes = [
+  { path: '', component: OrderListComponent },
+  { path: ':id', component: OrderDetailComponent },
+  {
+    path: ':id/edit',
+    component: OrderEditComponent,
+    canDeactivate: [unsavedChangesGuard]
+  }
+];
+```
+
+<Callout type="tip">
+With standalone components, `loadChildren` routes to a `Routes` array, not a `NgModule`. This is simpler and more tree-shakeable. The array pattern (`ORDER_ROUTES`) lets you co-locate route definitions with the feature without NgModule boilerplate.
+</Callout>
+
+## Legacy NgModule Lazy Loading
+
+You'll encounter this pattern in existing codebases:
+
+```typescript
+// app.routes.ts — old NgModule approach
+{
+  path: 'orders',
+  loadChildren: () => import('./orders/orders.module').then(m => m.OrdersModule)
+}
+
+// orders/orders.module.ts
+@NgModule({
+  imports: [
+    RouterModule.forChild([  // forChild — NOT forRoot!
+      { path: '', component: OrderListComponent },
+      { path: ':id', component: OrderDetailComponent },
+    ])
+  ],
+  declarations: [OrderListComponent, OrderDetailComponent]
+})
+export class OrdersModule {}
+```
+
+The critical rule: use `RouterModule.forChild()` in lazy-loaded modules, never `forRoot()`. Using `forRoot()` creates a second Router instance and breaks routing.
+
+## Bundle Analysis
+
+After building, analyze what's in each bundle:
+
+```bash
+# Build with bundle stats
+ng build --stats-json
+
+# Analyze with webpack-bundle-analyzer
+npx webpack-bundle-analyzer dist/my-app/stats.json
+
+# Or use Angular's built-in analyzer
+ng build --source-map
+# Then use Source Map Explorer
+npx source-map-explorer dist/my-app/main.js
+```
+
+## What Gets Bundle-Split
+
+Everything imported by the lazy route module/component:
+
+```typescript
+// This component and ALL its imports go into a separate bundle:
+@Component({
+  standalone: true,
+  imports: [
+    NgxChartsModule,   // ← This charting library goes in the lazy bundle
+    MatTableModule,    // ← Only downloaded when user visits this route
+    DataGridComponent  // ← Child components too
+  ]
+})
+class AdminDashboardComponent {}
+```
+
+If `NgxChartsModule` is 500KB, it only downloads when the user actually visits the admin route — not on initial page load.
+
+## Preloading Lazy Routes
+
+Lazy loading downloads on demand, but this means a slight delay on first navigation. Preloading downloads lazy bundles in the background after the initial page loads:
+
+```typescript
+import { PreloadAllModules, withPreloading } from '@angular/router';
+
+provideRouter(routes, withPreloading(PreloadAllModules))
+// Loads ALL lazy routes in the background after initial paint
+// Good for small apps; bad for very large ones
+```
+
+See the next lesson for custom preloading strategies.
+
+<CodeChallenge
+  id="lazy-loading-chunks"
+  difficulty="intermediate"
+  description="A lazy-loaded route imports an AdminChartsComponent. AdminChartsComponent imports a 2MB charting library. When does this 2MB library download?"
+  options={[
+    "At startup — all imports are resolved at build time",
+    "When the lazy route is first navigated to",
+    "When the component is first instantiated by Angular",
+    "Only if the user scrolls to see the chart"
+  ]}
+  correctAnswer={1}
+  explanation="Lazy loading works at the route level. Everything imported by the lazy-loaded component (and its imports) is bundled into the same lazy chunk. That chunk downloads when the user first navigates to the route. The 2MB charting library is included in the lazy chunk and downloads with it — not at startup, not on demand within the route. This is why lazy loading is so effective: that 2MB is simply not downloaded for users who never visit the admin section."
+/>
+
+## Senior Insight: What NOT to Lazy Load
+
+Don't lazy load:
+- Routes users visit immediately on landing (home, login)
+- Small components (overhead of separate HTTP request isn't worth it)
+- Core services and utilities — these should be in root providers
+
+Do lazy load:
+- Feature areas behind auth (admin, dashboard)
+- Heavy third-party dependencies (charting, PDF, video)
+- Rarely visited pages (settings, help, terms)
+- Routes that aren't part of the critical user path
+
+A good target: keep the initial bundle under 300KB (gzipped). If you're over that, lazy load more aggressively.

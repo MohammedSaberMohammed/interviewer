@@ -1,0 +1,240 @@
+---
+title: "Memory Leaks & Subscription Management"
+slug: "memory-leaks"
+order: 8
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["RxJS", "memory leaks", "takeUntil", "takeUntilDestroyed", "async pipe", "unsubscribe"]
+summary: "Unmanaged Observable subscriptions are Angular's most common source of memory leaks. Master takeUntilDestroyed, the async pipe, and the patterns that prevent component-destroy leaks."
+docsLinks:
+  - label: "RxJS Memory Leaks"
+    url: "https://angular.dev/guide/components/lifecycle#cleanup-on-destroy"
+  - label: "takeUntilDestroyed"
+    url: "https://angular.dev/api/core/rxjs-interop/takeUntilDestroyed"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Why Subscriptions Leak
+
+When an Angular component is destroyed (navigated away from), its subscriptions to long-lived Observables continue running in the background:
+
+```typescript
+// ❌ MEMORY LEAK — subscription lives forever
+@Component({ selector: 'app-realtime-price' })
+class RealtimePriceComponent implements OnInit {
+  price = 0;
+
+  ngOnInit() {
+    // This WebSocket stream never completes — subscription lives forever!
+    this.marketService.priceUpdates$.subscribe(price => {
+      this.price = price; // Updates destroyed component's property
+      // Triggers change detection on a destroyed component
+    });
+  }
+}
+// Navigate away → component destroyed, but subscription still active
+// Navigate back → second subscription created (now have two!)
+// Do this 10 times → 10 active subscriptions to the same stream
+```
+
+The consequences: memory grows over time, callbacks execute against destroyed components, and change detection runs unnecessarily.
+
+## Solution 1: `takeUntilDestroyed()` (Angular 16+ Recommended)
+
+The cleanest modern solution — automatically unsubscribes when the injection context is destroyed:
+
+```typescript
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+
+// Inside a class with an injection context (injection context required)
+@Component({ selector: 'app-realtime-price' })
+class RealtimePriceComponent implements OnInit {
+  price = 0;
+
+  // When used in a class field, destroyRef is captured automatically
+  // No need to inject DestroyRef manually
+  private prices$ = this.marketService.priceUpdates$.pipe(
+    takeUntilDestroyed() // Auto-unsubscribes when component destroys
+  );
+
+  ngOnInit() {
+    this.prices$.subscribe(price => this.price = price);
+  }
+}
+
+// Or with DestroyRef for use outside injection context
+@Component({ selector: 'app-realtime-price' })
+class RealtimePriceComponent implements OnInit {
+  private destroyRef = inject(DestroyRef);
+
+  ngOnInit() {
+    this.marketService.priceUpdates$.pipe(
+      takeUntilDestroyed(this.destroyRef) // Explicit DestroyRef
+    ).subscribe(price => this.price = price);
+  }
+}
+```
+
+## Solution 2: `async` Pipe (Templates)
+
+The `async` pipe subscribes and automatically unsubscribes when the component is destroyed:
+
+```typescript
+// ✅ No manual subscription — async pipe manages it
+@Component({
+  standalone: true,
+  imports: [AsyncPipe],
+  template: `
+    @if (price$ | async; as price) {
+      <p>Price: {{ price }}</p>
+    }
+  `
+})
+class RealtimePriceComponent {
+  price$ = this.marketService.priceUpdates$;
+  // Subscribe/unsubscribe handled by async pipe
+  constructor(private marketService: MarketService) {}
+}
+```
+
+The `async` pipe also calls `markForCheck()` on new values — perfect for OnPush components.
+
+## Solution 3: `takeUntil` with `destroy$` Subject (Classic Pattern)
+
+The traditional approach — you'll see this in existing code:
+
+```typescript
+import { Subject } from 'rxjs';
+import { takeUntil } from 'rxjs/operators';
+
+@Component({ selector: 'app-realtime-price' })
+class RealtimePriceComponent implements OnInit, OnDestroy {
+  private destroy$ = new Subject<void>();
+  price = 0;
+
+  ngOnInit() {
+    this.marketService.priceUpdates$.pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(price => this.price = price);
+
+    this.orderService.orderUpdates$.pipe(
+      takeUntil(this.destroy$)
+    ).subscribe(orders => this.orders = orders);
+
+    // All subscriptions with takeUntil(this.destroy$)
+    // are automatically cleaned up in ngOnDestroy
+  }
+
+  ngOnDestroy() {
+    this.destroy$.next();    // Complete all takeUntil operators
+    this.destroy$.complete(); // Clean up the subject itself
+  }
+}
+```
+
+<Callout type="tip">
+In Angular 16+ projects, prefer `takeUntilDestroyed()` over the `destroy$` Subject pattern. It's less boilerplate, harder to forget, and doesn't require implementing `OnDestroy` or managing the Subject lifecycle.
+</Callout>
+
+## Solution 4: Manual Unsubscribe (for single subscriptions)
+
+```typescript
+@Component({ selector: 'app-user' })
+class UserComponent implements OnInit, OnDestroy {
+  private subscription?: Subscription;
+
+  ngOnInit() {
+    this.subscription = this.userService.user$.subscribe(user => this.user = user);
+  }
+
+  ngOnDestroy() {
+    this.subscription?.unsubscribe();
+  }
+}
+
+// Or with multiple subscriptions
+@Component({ selector: 'app-dashboard' })
+class DashboardComponent implements OnInit, OnDestroy {
+  private subscriptions = new Subscription();
+
+  ngOnInit() {
+    // add() groups subscriptions — unsubscribing the parent unsubscribes all
+    this.subscriptions.add(
+      this.stream1$.subscribe(/* ... */)
+    );
+    this.subscriptions.add(
+      this.stream2$.subscribe(/* ... */)
+    );
+  }
+
+  ngOnDestroy() {
+    this.subscriptions.unsubscribe(); // Unsubscribes all children
+  }
+}
+```
+
+## Observables That Don't Need Unsubscribing
+
+Not all Observables leak — some complete naturally:
+
+```typescript
+// ✅ HTTP requests complete after emitting — no leak
+this.http.get('/api/users').subscribe(users => this.users = users);
+
+// ✅ of(), from() complete after emitting — no leak
+of(1, 2, 3).subscribe(n => console.log(n));
+
+// ✅ timer() with take(1) — completes after 1 emission
+timer(5000).pipe(take(1)).subscribe(() => this.timeout());
+
+// ❌ These never complete — always need cleanup
+interval(1000).subscribe(/* ... */);          // Ticks forever
+fromEvent(document, 'click').subscribe(/* ... */); // DOM events
+webSocket('wss://...').subscribe(/* ... */);   // WebSocket
+this.router.events.subscribe(/* ... */);       // Router events
+someService.updates$.subscribe(/* ... */);    // Service subject
+```
+
+<CodeChallenge
+  id="memory-leak-detection"
+  difficulty="intermediate"
+  description="A component subscribes to interval(1000) in ngOnInit() without any cleanup. The user navigates away and back 5 times. How many active interval subscriptions exist?"
+  options={[
+    "1 — Angular automatically cleans up subscriptions on navigation",
+    "5 — one new subscription created each time the component mounts",
+    "0 — interval() completes when the component is destroyed",
+    "6 — including the current one that just mounted"
+  ]}
+  correctAnswer={1}
+  explanation="Each time the component is created (navigation back), ngOnInit creates a new subscription. When the component is destroyed (navigation away), the subscription is NOT cleaned up — it continues running. After 5 round trips: 5 active interval subscriptions all running simultaneously, all trying to update the (potentially destroyed) component, all triggering change detection. This is a classic Angular memory leak."
+/>
+
+## Detecting Leaks with Angular DevTools
+
+Memory leaks aren't always obvious. Signs:
+- App slows down over time (especially after navigation)
+- Console logs appearing after navigating away from a page
+- Increasing memory usage in Chrome DevTools → Memory tab
+
+Profile with Chrome DevTools:
+1. Open Memory tab → Take heap snapshot
+2. Navigate around the app multiple times
+3. Take another snapshot
+4. Compare — look for component objects that should have been garbage collected
+
+## Senior Insight: The Decision Tree
+
+```
+Is the Observable finite (completes on its own)?
+├── Yes (HTTP, of, from) → No unsubscribe needed
+└── No (interval, subjects, events, router) →
+    Is it in a template?
+    ├── Yes → Use async pipe
+    └── No → Use takeUntilDestroyed() (Angular 16+)
+            Or takeUntil(this.destroy$) (legacy)
+            Or manual Subscription management (single subscriptions)
+```
+
+The `async` pipe is zero-boilerplate and the preferred choice for template bindings. `takeUntilDestroyed()` is the preferred choice for imperative subscriptions in class bodies.

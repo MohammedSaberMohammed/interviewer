@@ -1,0 +1,21 @@
+{
+  "slug": "08-state-management",
+  "number": 8,
+  "title": "State Management",
+  "subtitle": "Service-based state, NgRx store, effects, and the signals store",
+  "level": "senior",
+  "estimatedHours": 12,
+  "emoji": "🗄️",
+  "color": "purple",
+  "description": "State management is one of the most debated topics in Angular. Master service-based state with BehaviorSubject for simpler apps, NgRx for complex shared state, and the modern signals-based NgRx store — and know when each approach is appropriate.",
+  "prerequisites": ["06-rxjs-reactive", "04-component-architecture"],
+  "learningOutcomes": [
+    "Implement feature state with BehaviorSubject services without NgRx",
+    "Understand NgRx unidirectional data flow: store, actions, reducers, selectors",
+    "Write memoized selectors with createSelector and compose them",
+    "Build NgRx Effects for async operations with proper error handling",
+    "Normalize entity collections with NgRx Entity",
+    "Use NgRx Component Store for local/feature state",
+    "Implement modern state with @ngrx/signals signalStore"
+  ]
+}

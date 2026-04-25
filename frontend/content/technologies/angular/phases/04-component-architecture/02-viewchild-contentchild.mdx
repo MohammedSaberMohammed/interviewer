@@ -1,0 +1,266 @@
+---
+title: "@ViewChild & @ContentChild"
+slug: "viewchild-contentchild"
+order: 2
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["Angular", "@ViewChild", "@ContentChild", "@ViewChildren", "template reference", "DOM access"]
+summary: "@ViewChild and @ContentChild give you programmatic access to child components, directives, and DOM elements. Understanding when they're available and the difference between view and content children is a common interview topic."
+docsLinks:
+  - label: "ViewChild"
+    url: "https://angular.dev/api/core/ViewChild"
+  - label: "ContentChild"
+    url: "https://angular.dev/api/core/ContentChild"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## View Children vs Content Children
+
+Angular makes a critical distinction between two types of child elements:
+
+- **View children**: Elements in the component's own template (`template: ...`)
+- **Content children**: Elements projected into the component via `<ng-content>`
+
+This distinction determines which query decorator to use and when the query results become available.
+
+## `@ViewChild` — Querying Your Own Template
+
+```typescript
+@Component({
+  selector: 'app-chart',
+  template: `
+    <canvas #chartCanvas></canvas>
+    <app-legend #legend [data]="legendData"></app-legend>
+    <p #description>Chart description</p>
+  `
+})
+class ChartComponent implements AfterViewInit {
+  // Query by template reference variable (#chartCanvas)
+  @ViewChild('chartCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
+
+  // Query by component type
+  @ViewChild(LegendComponent) legend!: LegendComponent;
+
+  // Query by template ref + read option (get ElementRef of a component's host element)
+  @ViewChild(LegendComponent, { read: ElementRef }) legendEl!: ElementRef;
+
+  // static: true — resolved before ngOnInit (only for elements always in the DOM)
+  @ViewChild('description', { static: true }) descriptionEl!: ElementRef;
+
+  ngAfterViewInit() {
+    // ✅ View children are available here
+    const ctx = this.canvasRef.nativeElement.getContext('2d');
+    this.initChart(ctx!);
+
+    // ✅ Access child component's public methods
+    this.legend.refresh();
+  }
+}
+```
+
+### `static: true` vs `static: false`
+
+```typescript
+// static: false (default) — resolved after ngOnInit, in ngAfterViewInit
+// Required for elements inside @if/@for blocks (may not exist initially)
+@ViewChild('modal', { static: false }) modal?: ElementRef;
+
+// static: true — resolved before ngOnInit
+// Only for elements that are always in the template (never conditional)
+@ViewChild('header', { static: true }) header!: ElementRef;
+// Available in ngOnInit, not just ngAfterViewInit
+```
+
+<Callout type="warning">
+Using `{ static: true }` on an element inside an `@if` or `*ngIf` causes a compile error because the element might not exist. Use `static: false` (the default) for conditional elements, and always access them in `ngAfterViewInit` where the view has been fully initialized.
+</Callout>
+
+## `@ViewChildren` — Query Multiple Elements
+
+```typescript
+@Component({
+  template: `
+    @for (item of items; track item.id) {
+      <app-item [item]="item" #itemRef></app-item>
+    }
+  `
+})
+class ListComponent implements AfterViewInit {
+  @ViewChildren('itemRef') itemRefs!: QueryList<ItemComponent>;
+  @ViewChildren(ItemComponent) items!: QueryList<ItemComponent>;
+
+  ngAfterViewInit() {
+    // QueryList is iterable
+    this.items.forEach(item => item.highlight());
+
+    // React to list changes (added/removed items)
+    this.items.changes.subscribe((list: QueryList<ItemComponent>) => {
+      console.log('Item count changed:', list.length);
+    });
+  }
+}
+```
+
+`QueryList` is a live list that emits changes when items are added or removed due to structural directives.
+
+## `@ContentChild` — Querying Projected Content
+
+Content children are elements the parent passes into a component's `<ng-content>` slot:
+
+```typescript
+// Card component with ng-content slots
+@Component({
+  selector: 'app-card',
+  template: `
+    <div class="card-header">
+      <ng-content select="[card-title]"></ng-content>
+    </div>
+    <div class="card-body">
+      <ng-content></ng-content>
+    </div>
+    <div class="card-footer">
+      <ng-content select="[card-actions]"></ng-content>
+    </div>
+  `
+})
+class CardComponent implements AfterContentInit {
+  // Query projected content by directive or ref variable
+  @ContentChild('cardTitle') title?: ElementRef;
+  @ContentChild(CardActionsDirective) actions?: CardActionsDirective;
+
+  ngAfterContentInit() {
+    // ✅ Content children are available here
+    if (this.actions) {
+      this.actions.initialize();
+    }
+  }
+}
+
+// Parent using the card
+<app-card>
+  <h2 card-title #cardTitle>My Card</h2>
+  <p>Card content goes here</p>
+  <div card-actions appCardActions>
+    <button>Save</button>
+    <button>Cancel</button>
+  </div>
+</app-card>
+```
+
+## `@ContentChildren` — Multiple Projected Items
+
+```typescript
+@Component({
+  selector: 'app-tab-group',
+  template: `
+    <div class="tab-headers">
+      @for (tab of tabs; track tab.id) {
+        <button
+          (click)="selectTab(tab)"
+          [class.active]="tab === activeTab">
+          {{ tab.label }}
+        </button>
+      }
+    </div>
+    <ng-content></ng-content>
+  `
+})
+class TabGroupComponent implements AfterContentInit {
+  @ContentChildren(TabComponent) tabs!: QueryList<TabComponent>;
+  activeTab?: TabComponent;
+
+  ngAfterContentInit() {
+    // Set the first tab as active
+    this.activeTab = this.tabs.first;
+    this.activeTab?.show();
+
+    // Keep in sync when tabs are added/removed dynamically
+    this.tabs.changes.subscribe(() => {
+      if (!this.tabs.find(t => t === this.activeTab)) {
+        this.activeTab = this.tabs.first;
+      }
+    });
+  }
+
+  selectTab(tab: TabComponent) {
+    this.activeTab?.hide();
+    this.activeTab = tab;
+    this.activeTab.show();
+  }
+}
+```
+
+## Signal-Based Queries (Angular 17.2+)
+
+Angular 17.2 introduced signal-based query APIs:
+
+```typescript
+import { viewChild, viewChildren, contentChild, contentChildren } from '@angular/core';
+
+@Component({
+  template: `<canvas #chart></canvas>`
+})
+class ChartComponent {
+  // Signal-based viewChild — returns a Signal<ElementRef | undefined>
+  chart = viewChild<ElementRef>('chart');
+
+  // Required variant — returns Signal<ElementRef> (throws if not found)
+  chartRequired = viewChild.required<ElementRef>('chart');
+
+  // viewChildren — returns Signal<ReadonlyArray<...>>
+  items = viewChildren(ItemComponent);
+
+  // Content queries
+  cardTitle = contentChild<ElementRef>('cardTitle');
+  tabs = contentChildren(TabComponent);
+
+  // Access like any signal
+  ngAfterViewInit() {
+    const canvas = this.chart(); // ElementRef | undefined
+    const canvasRequired = this.chartRequired(); // ElementRef (never undefined)
+  }
+
+  // Use in computed/effect
+  tabCount = computed(() => this.tabs().length);
+}
+```
+
+<CodeChallenge
+  id="viewchild-timing"
+  difficulty="intermediate"
+  description="A component has @ViewChild('modal') modal!: ElementRef inside an *ngIf block. The developer accesses it in ngOnInit() and gets undefined. Why?"
+  options={[
+    "ViewChild requires static: true to work with *ngIf",
+    "ngOnInit runs before view initialization — ViewChild queries inside *ngIf are undefined until ngAfterViewInit",
+    "ElementRef doesn't work with *ngIf — use ViewContainerRef instead",
+    "The * prefix in *ngIf conflicts with the # prefix in template refs"
+  ]}
+  correctAnswer={1}
+  explanation="ViewChild queries for elements inside *ngIf (or @if) return undefined in ngOnInit for two reasons: (1) ngOnInit runs before the view is initialized — ViewChild is generally populated in ngAfterViewInit; (2) *ngIf may not have rendered the element yet if the condition is false. Access ViewChild results in ngAfterViewInit, and use optional chaining (this.modal?.nativeElement) since the element may be conditionally absent."
+/>
+
+## Senior Insight: Avoid Direct DOM Manipulation
+
+Having a `@ViewChild` reference doesn't mean you should manipulate the DOM directly through `ElementRef.nativeElement`. Always prefer:
+
+1. **Data binding** for most cases — let Angular update the DOM
+2. **Renderer2** for DOM manipulation that must work with SSR
+3. **Third-party library integration** — the primary valid use of `ElementRef`
+
+```typescript
+ngAfterViewInit() {
+  // ❌ Direct DOM manipulation — breaks SSR, security risk
+  this.canvasRef.nativeElement.style.display = 'block';
+
+  // ✅ Use Renderer2 for SSR compatibility
+  this.renderer.setStyle(this.canvasRef.nativeElement, 'display', 'block');
+
+  // ✅ Or better — use data binding instead
+  // [style.display]="isVisible ? 'block' : 'none'"
+
+  // ✅ Valid use: initialize third-party library
+  Chart.register(this.canvasRef.nativeElement, { type: 'bar', data: this.chartData });
+}
+```

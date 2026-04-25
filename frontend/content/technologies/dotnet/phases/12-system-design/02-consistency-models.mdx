@@ -1,0 +1,309 @@
+---
+title: "Consistency Models: Eventual, Strong, Causal, Session"
+slug: "consistency-models"
+order: 2
+difficulty: "advanced"
+readingTime: 17
+status: "published"
+tags: ["consistency models", "eventual consistency", "strong consistency", "causal consistency", "session consistency", "distributed systems"]
+summary: "Beyond CAP's binary, real systems choose from a spectrum of consistency models — understanding each one helps you reason about the guarantees your users will actually experience."
+docsLinks:
+  - label: "Azure Cosmos DB consistency levels"
+    url: "https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels"
+  - label: "Cosmos DB — configure consistency level"
+    url: "https://learn.microsoft.com/en-us/azure/cosmos-db/how-to-manage-consistency"
+  - label: "Azure SQL — read scale-out with read replicas"
+    url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/read-scale-out"
+---
+
+import { ArchDiagram, Callout, CodeChallenge, Quiz, ComparisonTable, MythBuster, DocsLink, DocsLinks, CodePlayground, MemoryVisualizer } from '@/components/lesson'
+
+## The Consistency Spectrum
+
+CAP Theorem gives you a binary: consistent or available. But real systems expose a **spectrum of consistency models**, each making different guarantees about the order and visibility of writes. Understanding these models lets you articulate *exactly* what guarantee your system provides — a mark of a senior engineer.
+
+From strongest to weakest:
+
+```
+Strongest ←────────────────────────────────→ Weakest
+  Linearizability → Sequential → Causal → Session → Eventual
+      (Strong)                                        (AP)
+```
+
+<ArchDiagram
+  title="Consistency Model Spectrum: Strongest to Weakest"
+  layers={[
+    { label: 'Strongest (highest coordination cost)', nodes: [{ id: 'strong', label: 'Strong / Linearizable', sublabel: 'SQL Server, etcd — any read sees the latest write', type: 'database' }] },
+    { nodes: [{ id: 'seq', label: 'Sequential', sublabel: 'Operations appear in per-process order', type: 'database' }] },
+    { nodes: [{ id: 'causal', label: 'Causal', sublabel: 'Causally linked ops ordered; concurrent may diverge', type: 'service' }] },
+    { nodes: [{ id: 'session', label: 'Session (Read-Your-Writes)', sublabel: 'You always see your own writes', type: 'cache' }] },
+    { label: 'Weakest (lowest latency, highest throughput)', nodes: [{ id: 'eventual', label: 'Eventual', sublabel: 'Cassandra, DynamoDB — replicas converge eventually', type: 'cache' }] },
+  ]}
+  connectors={[
+    { label: 'lower latency →' },
+    { label: 'higher availability →' },
+    { label: 'higher throughput →' },
+    {},
+  ]}
+  caption="Moving down the spectrum reduces cross-node coordination round-trips, enabling lower write latency and higher availability during partitions — at the cost of visibility guarantees."
+/>
+
+---
+
+## Strong Consistency (Linearizability)
+
+**Guarantee**: After a write completes, any subsequent read — from any node, anywhere — returns that value. The system appears to be a single machine.
+
+**How it works**: Every write must be acknowledged by a quorum of replicas before returning to the caller. Reads may also require quorum coordination.
+
+**Cost**: Higher write latency (must wait for quorum), reduced throughput, unavailability during partitions.
+
+```csharp
+// Azure Cosmos DB with Strong consistency
+CosmosClient client = new CosmosClientBuilder(connectionString)
+    .WithConsistencyLevel(ConsistencyLevel.Strong)
+    .Build();
+
+// Write to primary region
+await container.UpsertItemAsync(new { id = "user-1", balance = 1000 });
+
+// Read from ANY region — guaranteed to see balance = 1000
+var result = await container.ReadItemAsync<Account>(
+    "user-1",
+    new PartitionKey("user-1")
+);
+// result.Resource.balance is ALWAYS 1000, never stale
+```
+
+**Use for**: Financial balances, inventory counts, leader election, distributed locks.
+
+---
+
+## Sequential Consistency
+
+**Guarantee**: All operations appear to execute in some total order consistent across all nodes. Each node's operations appear in program order, but the global order across nodes need not reflect real time.
+
+**Difference from Strong**: In linearizable systems, the global order must respect wall-clock time. In sequential consistency, operation A could precede B globally even if A happened after B in real time — as long as each process's operations stay in order.
+
+**Practical impact**: Easier to achieve than linearizability (no synchronized clocks required) but harder to reason about because you cannot use timestamps to predict ordering.
+
+---
+
+## Causal Consistency
+
+**Guarantee**: Operations that are causally related are seen in causal order by all nodes. Concurrent (causally unrelated) operations may appear in different orders on different nodes.
+
+**Causality**: Operation B is causally dependent on A if B was triggered by observing A's result.
+
+```
+Write A: "user posted a message"
+Write B: "user liked their own message" ← causally depends on A
+
+Causal guarantee: All nodes that see B must have already seen A.
+Concurrent writes with no causal link can be reordered.
+```
+
+```csharp
+// Cosmos DB Consistent Prefix — related concept, weaker than full causal
+// Reads never see writes out of order, but may lag behind
+CosmosClient client = new CosmosClientBuilder(connectionString)
+    .WithConsistencyLevel(ConsistencyLevel.ConsistentPrefix)
+    .Build();
+
+// You will never see a delete before the create,
+// but you might see v1 of an item when v2 exists on the primary
+```
+
+**Use for**: Comment threads (reply must appear after the original post), social feeds, collaborative editing where logical ordering matters more than real-time accuracy.
+
+---
+
+## Session Consistency
+
+**Guarantee**: Within a single client session, reads always reflect that client's own writes. Between different clients and sessions, consistency may be weaker.
+
+This is the "read your own writes" guarantee — the most practically useful model for user-facing applications.
+
+```
+Session A writes: name = "Alice"
+Session A reads:  name = "Alice" ✓ (guaranteed)
+Session B reads:  name = "Bob"   ✓ or ✗ (may or may not see the update)
+```
+
+```csharp
+// Cosmos DB Session consistency — default and recommended for most apps
+CosmosClient client = new CosmosClientBuilder(connectionString)
+    .WithConsistencyLevel(ConsistencyLevel.Session)
+    .Build();
+
+// The SDK manages session tokens automatically.
+// After you write, subsequent reads in the same logical session
+// are guaranteed to see your write — even if served from a replica.
+
+// Manual session token management for cross-service scenarios:
+ItemResponse<Product> writeResponse = await container.UpsertItemAsync(product);
+string sessionToken = writeResponse.Headers.Session; // capture the token
+
+// Pass to a downstream service that must see this write
+var readOptions = new ItemRequestOptions { SessionToken = sessionToken };
+var readResponse = await container.ReadItemAsync<Product>(
+    product.Id,
+    new PartitionKey(product.CategoryId),
+    readOptions
+);
+```
+
+**Use for**: User profile updates (user always sees their own changes), shopping cart, settings pages. This is the Cosmos DB default and covers ~80% of real-world use cases.
+
+---
+
+## Eventual Consistency
+
+**Guarantee**: If no new updates are made, eventually all replicas will converge to the same value. No guarantee on when, and reads may return stale data indefinitely until convergence.
+
+**Conflict resolution**: When concurrent writes occur, the system must choose a winner:
+- **Last Write Wins (LWW)**: Use timestamps; higher timestamp wins. Simple but risks data loss.
+- **Vector clocks**: Track causality, surface conflicts to the application for resolution.
+- **CRDTs**: Conflict-free Replicated Data Types — data structures that merge automatically (counters, sets, maps).
+
+```csharp
+// Cosmos DB Eventual consistency — highest throughput, lowest latency
+CosmosClient client = new CosmosClientBuilder(connectionString)
+    .WithConsistencyLevel(ConsistencyLevel.Eventual)
+    .Build();
+
+// This read may return stale data — acceptable for view counts and analytics
+var viewCount = await container.ReadItemAsync<ViewCount>(
+    "post-123-views",
+    new PartitionKey("post-123")
+);
+// viewCount might show 1,000 when reality is 1,005 — fine for display purposes
+```
+
+**Use for**: View counts, like/reaction counts, product recommendation scores, DNS propagation, CDN cache invalidation.
+
+---
+
+## Bounded Staleness
+
+A model between strong and eventual that Cosmos DB explicitly exposes. Configure maximum staleness in two dimensions:
+- **K versions**: Reads lag behind by at most K write operations
+- **T time interval**: Reads lag behind by at most T seconds
+
+```csharp
+// Bounded Staleness — guarantee reads are at most 5 seconds behind
+CosmosClient client = new CosmosClientBuilder(connectionString)
+    .WithConsistencyLevel(ConsistencyLevel.BoundedStaleness)
+    .Build();
+// Configure K and T in Cosmos DB portal or via ARM template
+```
+
+---
+
+<ComparisonTable
+  headers={["Model", "Read Guarantee", "Write Cost", "Availability", "Best For"]}
+  rows={[
+    ["Strong (Linearizable)", "Always latest write", "High — quorum sync", "Low — blocks on partition", "Finance, inventory, locks"],
+    ["Sequential", "Ordered per process", "Medium", "Medium", "Coordination, ordering guarantees"],
+    ["Causal", "Causally ordered", "Low–Medium", "High", "Social feeds, comment threads"],
+    ["Session", "Own writes always visible", "Low", "High", "User profiles, carts, settings"],
+    ["Bounded Staleness", "Stale by at most K ops or T secs", "Low", "High", "Global reads with SLA on lag"],
+    ["Eventual", "No guarantee", "Minimal", "Highest", "Counters, analytics, DNS, CDN"],
+  ]}
+/>
+
+---
+
+<MythBuster
+  myth="Eventual consistency means the data will eventually be consistent — so it is fine for most use cases."
+  reality="'Eventually' has no time bound. In practice, convergence takes milliseconds under normal conditions, but can take minutes or longer during partitions or under heavy load. More critically, eventual consistency means ANY read MIGHT return stale data at any time. Using it for balance checks, inventory, or anything with a correctness invariant creates race conditions. The staleness window in production is routinely longer than engineers expect."
+/>
+
+---
+
+<Callout type="senior">
+**Senior Insight: Session Consistency Is the Pragmatic Default**
+
+For most business applications, Strong consistency is overkill and Eventual consistency is too loose. Session consistency hits the sweet spot:
+
+- Users always see their own changes — no "I just saved, why doesn't it show?" confusion
+- Reads from other users may lag slightly — usually acceptable
+- Write throughput is close to Eventual (no global quorum required)
+- Cosmos DB implements this via session tokens — the SDK handles it transparently
+
+The real interview-grade answer: "I would start with Session consistency across the board, then selectively upgrade specific operations to Strong where correctness is critical — payment processing, stock decrement — and downgrade to Eventual for high-volume aggregates like view counts and event logs."
+
+Also worth noting: **read-your-writes** is often what engineers actually mean when they say they want "strong consistency." Ask clarifying questions before reaching for the strongest and most expensive model.
+</Callout>
+
+---
+
+## Implementing Read-Your-Writes Without Cosmos DB
+
+If you use a relational database with read replicas, you can implement session consistency manually:
+
+```csharp
+public class SessionConsistentRepository
+{
+    private readonly AppDbContext _primary;   // write primary
+    private readonly AppDbContext _replica;   // read replica
+    private readonly IMemoryCache _cache;
+    private readonly IHttpContextAccessor _http;
+
+    public async Task<Product> GetProductAsync(Guid id)
+    {
+        // Check if this user recently wrote — if so, read from primary
+        var userId = _http.HttpContext?.User?.FindFirst("sub")?.Value;
+        var recentWriteKey = \$"recent-write-{userId}";
+        var hasRecentWrite = _cache.TryGetValue(recentWriteKey, out _);
+
+        if (hasRecentWrite)
+        {
+            // Route to primary — avoid stale read for this user's session
+            return await _primary.Products.FindAsync(id)
+                ?? throw new NotFoundException();
+        }
+
+        // Other users can use the replica (possibly slightly stale)
+        return await _replica.Products.FindAsync(id)
+            ?? throw new NotFoundException();
+    }
+
+    public async Task UpdateProductAsync(Product product)
+    {
+        _primary.Products.Update(product);
+        await _primary.SaveChangesAsync();
+
+        // Flag this user as having a recent write — route reads to primary for 5 seconds
+        var userId = _http.HttpContext?.User?.FindFirst("sub")?.Value;
+        var recentWriteKey = \$"recent-write-{userId}";
+        _cache.Set(recentWriteKey, true, TimeSpan.FromSeconds(5));
+    }
+}
+```
+
+---
+
+<Quiz
+  id="12-system-design/consistency-models/challenge-1"
+  question="A user updates their profile picture. Immediately after saving, they refresh the page and still see their old picture. Which consistency model is the system most likely using?"
+  options={[
+    "Strong consistency — the system is working as intended",
+    "Session consistency — but the session token was not propagated correctly",
+    "Eventual consistency — reads may return stale data with no guarantee on timing",
+    "Causal consistency — the write and read are causally linked so this should not happen"
+  ]}
+  correctAnswer={2}
+  explanation="Eventual consistency provides no guarantee that a subsequent read will see the latest write, even from the same client in the same session. The user refreshing immediately after saving is the classic eventual consistency problem. Session consistency would prevent this because reads within a session always see that session's writes. Causal consistency would also prevent it because the read is causally dependent on the write that preceded it."
+/>
+
+---
+
+<DocsLinks
+  links={[
+    { label: "Azure Cosmos DB — choose the right consistency level", url: "https://learn.microsoft.com/en-us/azure/cosmos-db/consistency-levels" },
+    { label: "Cosmos DB — configure default consistency level", url: "https://learn.microsoft.com/en-us/azure/cosmos-db/how-to-manage-consistency" },
+    { label: "Azure SQL — read scale-out (read replicas)", url: "https://learn.microsoft.com/en-us/azure/azure-sql/database/read-scale-out" },
+    { label: "Data consistency primer for distributed apps", url: "https://learn.microsoft.com/en-us/azure/architecture/best-practices/data-partitioning-strategies" },
+  ]}
+/>

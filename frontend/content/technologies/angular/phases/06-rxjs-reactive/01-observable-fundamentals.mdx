@@ -1,0 +1,227 @@
+---
+title: "Observable Fundamentals"
+slug: "observable-fundamentals"
+order: 1
+difficulty: "intermediate"
+readingTime: 15
+status: "published"
+tags: ["RxJS", "Observable", "Observer", "Subscription", "hot", "cold"]
+summary: "Understand what Observables are, how they differ from Promises, and the hot vs cold distinction that interviewers love to ask about."
+docsLinks:
+  - label: "RxJS Observable"
+    url: "https://rxjs.dev/guide/observable"
+  - label: "Angular Reactive Programming"
+    url: "https://angular.dev/guide/signals/rxjs-interop"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## What Is an Observable?
+
+An Observable is a lazy, cancellable stream of values over time. Unlike a Promise which resolves once, an Observable can emit zero, one, or many values before completing or erroring.
+
+```typescript
+import { Observable } from 'rxjs';
+
+// Creating an Observable manually
+const stream$ = new Observable<number>((subscriber) => {
+  subscriber.next(1);  // Emit value
+  subscriber.next(2);
+  subscriber.next(3);
+  subscriber.complete(); // Signal completion
+  // If an error occurs: subscriber.error(new Error('oops'))
+});
+
+// Nothing happens until you subscribe!
+const subscription = stream$.subscribe({
+  next: (value) => console.log('Value:', value),   // 1, 2, 3
+  error: (err) => console.error('Error:', err),
+  complete: () => console.log('Done!'),
+});
+
+// Unsubscribe to cancel
+subscription.unsubscribe();
+```
+
+The key difference from Promise: **Observables are lazy** — the producer function only runs when someone subscribes. A Promise starts executing immediately when created.
+
+## Observable vs Promise: Key Differences
+
+```typescript
+// Promise — eager, single value, not cancellable
+const promise = fetch('/api/users'); // Starts immediately
+const users = await promise; // Wait for single result
+// Can't cancel — request continues even if you don't use the result
+
+// Observable — lazy, multiple values, cancellable
+const users$ = this.http.get<User[]>('/api/users'); // Nothing happens yet!
+const sub = users$.subscribe(users => console.log(users)); // NOW it starts
+sub.unsubscribe(); // Cancels the HTTP request (Angular's HttpClient supports this)
+```
+
+| Feature | Promise | Observable |
+|---------|---------|------------|
+| Values | Single | Zero, one, or many |
+| Lazy | No (eager) | Yes |
+| Cancellable | No | Yes (unsubscribe) |
+| Operators | .then(), .catch() | Hundreds of operators |
+| Timing | Always async | Sync or async |
+| Angular HttpClient | ❌ | ✅ Native |
+
+## Hot vs Cold Observables
+
+This is one of the most common RxJS interview questions:
+
+### Cold Observables — Unicast, Producer Per Subscriber
+
+A cold observable creates a new producer for each subscriber. Each subscriber gets its own independent execution:
+
+```typescript
+// Cold Observable — each subscriber gets its own HTTP request
+const users$ = this.http.get<User[]>('/api/users');
+
+// Two subscriptions = two HTTP requests!
+users$.subscribe(users => console.log('Sub 1:', users));
+users$.subscribe(users => console.log('Sub 2:', users));
+
+// Other cold observable examples:
+// - HTTP requests (new request per subscribe)
+// - Timer/interval (starts fresh for each subscriber)
+// - Observable.create() producers
+```
+
+### Hot Observables — Multicast, Shared Producer
+
+A hot observable has a producer that exists independently of subscribers. All subscribers share the same execution:
+
+```typescript
+// Hot Observable — one event source, many subscribers
+const clicks$ = fromEvent(document, 'click'); // The click events exist regardless
+
+// All subscribers share the same click stream
+clicks$.subscribe(e => console.log('Handler 1:', e.target));
+clicks$.subscribe(e => console.log('Handler 2:', e.target));
+// One click → both handlers fire with the same event
+
+// Other hot examples:
+// - fromEvent() (DOM events)
+// - Subject and its variants
+// - WebSocket messages
+// - Anything with an external event source
+```
+
+<Callout type="tip">
+The "temperature" analogy: cold observables are like a recorded song — each listener gets their own copy playing from the start. Hot observables are like a live concert — everyone hears the same thing at the same time, and if you arrive late, you miss what already happened.
+</Callout>
+
+## Making Cold Observables Hot with `shareReplay`
+
+```typescript
+// Without shareReplay — two subscriptions = two HTTP requests
+const data$ = this.http.get('/api/expensive-data');
+data$.subscribe(/* uses data */);
+data$.subscribe(/* makes ANOTHER request! */);
+
+// With shareReplay — multicasts and caches the last value
+const data$ = this.http.get('/api/expensive-data').pipe(
+  shareReplay(1) // Buffer size 1 — replay last value to new subscribers
+);
+
+data$.subscribe(/* makes request */);
+data$.subscribe(/* uses CACHED result, no new request */);
+
+// Late subscriber gets the cached value immediately
+setTimeout(() => {
+  data$.subscribe(/* still gets the cached result */);
+}, 5000);
+```
+
+## The Observable Contract
+
+An Observable follows rules:
+1. Zero or more `next()` emissions
+2. Then EITHER `complete()` OR `error()` (never both)
+3. After complete/error, no more `next()` calls
+
+```typescript
+// Valid: emits values then completes
+subscriber.next(1);
+subscriber.next(2);
+subscriber.complete();
+
+// Valid: emits nothing then errors
+subscriber.error(new Error('Failed'));
+
+// Invalid: emit after complete (RxJS ignores this)
+subscriber.next(1);
+subscriber.complete();
+subscriber.next(2); // Ignored — observable is done
+```
+
+## Creating Observables
+
+```typescript
+import { Observable, of, from, EMPTY, NEVER, throwError } from 'rxjs';
+
+// of() — emit static values and complete
+of(1, 2, 3) // Emits 1, 2, 3 then completes
+
+// from() — convert promise/array/iterable to Observable
+from([1, 2, 3])         // Array
+from(fetch('/api/users')) // Promise → Observable
+from('hello')            // String characters: 'h', 'e', 'l', 'l', 'o'
+
+// EMPTY — completes immediately without emitting
+EMPTY // Useful as a no-op replacement in conditional streams
+
+// NEVER — never emits, never completes (infinite stream)
+NEVER // Useful in testing
+
+// throwError — emits an error immediately
+throwError(() => new Error('Something went wrong'))
+```
+
+<CodeChallenge
+  id="observable-cold-hot"
+  difficulty="intermediate"
+  description="What happens when you subscribe to the same cold Observable twice?"
+  options={[
+    "Both subscriptions receive the same sequence independently",
+    "The second subscription picks up where the first left off",
+    "Only the first subscription works; the second is ignored",
+    "Cold Observables can only have one subscriber"
+  ]}
+  correctAnswer={0}
+  explanation="Cold Observables are unicast — each subscription triggers the producer from scratch. Both get their own independent sequence. Hot Observables (like Subject, fromEvent) are multicast — they share a single execution. For HTTP requests, this means calling subscribe() twice makes two network requests. Use shareReplay(1) to make an HTTP observable multicast."
+/>
+
+## Subscriptions and Teardown Logic
+
+Every subscription can include teardown logic that runs on `unsubscribe()` or when the Observable completes:
+
+```typescript
+const countdown$ = new Observable<number>(subscriber => {
+  let count = 10;
+  const interval = setInterval(() => {
+    subscriber.next(count--);
+    if (count < 0) {
+      subscriber.complete();
+    }
+  }, 1000);
+
+  // Teardown logic — runs when unsubscribed or completed
+  return () => {
+    clearInterval(interval); // Clean up!
+    console.log('Countdown cancelled');
+  };
+});
+
+const sub = countdown$.subscribe(n => console.log(n));
+setTimeout(() => sub.unsubscribe(), 5000); // Cancel after 5 seconds
+```
+
+Angular's `HttpClient` uses teardown logic to abort HTTP requests when unsubscribed — which is why routing away from a page can cancel pending requests.
+
+## Senior Insight: Observables Are Just Functions
+
+At their core, Observables are lazy functions that accept a subscriber. The `subscribe()` call is what invokes the function. Every transformation operator (map, filter, switchMap) creates a new Observable that wraps the previous one, forming a pipeline. This functional, lazy evaluation is what makes RxJS so composable — and what makes subscription management so critical.

@@ -1,0 +1,244 @@
+---
+title: "Components"
+slug: "components"
+order: 1
+difficulty: "foundation"
+readingTime: 13
+status: "published"
+tags: ["Angular", "components", "standalone", "selector", "template"]
+summary: "Components are Angular's primary building block. Learn component anatomy, standalone vs NgModule components, and the patterns senior developers use for clean component design."
+docsLinks:
+  - label: "Angular Components"
+    url: "https://angular.dev/guide/components"
+  - label: "Standalone Components"
+    url: "https://angular.dev/guide/components/importing"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Everything in Angular Is a Component
+
+Angular applications are component trees. The root component (`AppComponent`) bootstraps the app, and every piece of UI is a component nested within another. Understanding component anatomy — the metadata, the class, and how they interact — is the foundation of Angular development.
+
+## Component Anatomy
+
+A component has three parts: the decorator (metadata), the class (logic), and the template (view):
+
+```typescript
+import { Component, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { UserService } from './user.service';
+import { User } from './user.model';
+
+@Component({
+  // CSS selector used to insert this component in templates
+  selector: 'app-user-profile',
+
+  // Standalone: true means no NgModule required (Angular 14+, default in 17+)
+  standalone: true,
+
+  // What to import for this component's template
+  imports: [CommonModule],
+
+  // Inline template (or use templateUrl: './user-profile.component.html')
+  template: `
+    <div class="profile-card">
+      <h2>{{ user?.name }}</h2>
+      <p>{{ user?.email }}</p>
+    </div>
+  `,
+
+  // Inline styles (or use styleUrl: './user-profile.component.scss')
+  styles: [`
+    .profile-card { border: 1px solid #ccc; padding: 1rem; }
+  `]
+})
+export class UserProfileComponent implements OnInit {
+  user: User | undefined;
+
+  // Services are injected through the constructor (or inject() function)
+  constructor(private userService: UserService) {}
+
+  ngOnInit(): void {
+    this.userService.getCurrentUser().subscribe(user => {
+      this.user = user;
+    });
+  }
+}
+```
+
+## Component Selectors
+
+Angular supports three selector types:
+
+```typescript
+// Element selector (most common — creates a new HTML element)
+@Component({ selector: 'app-button' })
+// Usage: <app-button></app-button>
+
+// Attribute selector (used for directives, but can be used for components)
+@Component({ selector: '[appHighlight]' })
+// Usage: <div appHighlight></div>
+
+// Class selector (rare — avoid; conflicts with CSS classes)
+@Component({ selector: '.app-card' })
+// Usage: <div class="app-card"></div>
+```
+
+<Callout type="tip">
+The `app-` prefix in selectors is a convention to avoid collisions with native HTML elements. You can configure this prefix in `angular.json` under `prefix`. For a company project, you might use your company or product abbreviation like `acme-` or `my-`.
+</Callout>
+
+## Standalone Components (Angular 14+, Default in Angular 17+)
+
+Before Angular 14, every component had to be declared in an NgModule. Standalone components remove this requirement:
+
+```typescript
+// Old approach — requires NgModule declaration
+@Component({ selector: 'app-hero' })
+export class HeroComponent {} // Must be in declarations: [HeroComponent] in some NgModule
+
+// New approach — completely self-contained
+@Component({
+  selector: 'app-hero',
+  standalone: true,  // This component manages its own imports
+  imports: [
+    RouterLink,          // Import individual directives/pipes
+    AsyncPipe,
+    NgClass,
+    HeroAvatarComponent, // Import child components directly
+  ],
+  template: `...`
+})
+export class HeroComponent {}
+```
+
+With standalone components, you import exactly what the template uses — no more NgModule barrel files.
+
+## Template References and View Encapsulation
+
+```typescript
+@Component({
+  selector: 'app-search',
+  standalone: true,
+  // ViewEncapsulation controls how styles are scoped
+  encapsulation: ViewEncapsulation.Emulated, // Default — adds attribute-based scoping
+  // encapsulation: ViewEncapsulation.None,    // Global CSS — use rarely
+  // encapsulation: ViewEncapsulation.ShadowDom, // True shadow DOM
+
+  template: `
+    <input #searchInput type="text" placeholder="Search...">
+    <button (click)="search(searchInput.value)">Search</button>
+  `
+})
+export class SearchComponent {
+  search(query: string) {
+    console.log('Searching for:', query);
+  }
+}
+```
+
+## Component Communication Overview
+
+Components communicate through:
+- **@Input()** — parent passes data down to child
+- **@Output()** — child emits events up to parent
+- **Services** — shared state between unrelated components
+- **Signals** — reactive state that automatically propagates changes
+
+```typescript
+// Parent component
+@Component({
+  template: `
+    <app-product-card
+      [product]="selectedProduct"
+      (addToCart)="handleAddToCart($event)">
+    </app-product-card>
+  `
+})
+class ProductPageComponent {
+  selectedProduct = signal<Product | null>(null);
+
+  handleAddToCart(product: Product) {
+    this.cartService.add(product);
+  }
+}
+
+// Child component
+@Component({ selector: 'app-product-card', standalone: true })
+class ProductCardComponent {
+  @Input({ required: true }) product!: Product;
+  @Output() addToCart = new EventEmitter<Product>();
+
+  onAddToCart() {
+    this.addToCart.emit(this.product);
+  }
+}
+```
+
+## Bootstrapping a Standalone Application
+
+In Angular 17+ applications, `main.ts` bootstraps the root component directly:
+
+```typescript
+// main.ts — no NgModule needed
+import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient } from '@angular/common/http';
+import { AppComponent } from './app/app.component';
+import { routes } from './app/app.routes';
+
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient(),
+  ]
+}).catch(err => console.error(err));
+```
+
+<CodeChallenge
+  id="component-standalone"
+  difficulty="foundation"
+  description="In a standalone Angular component, you need to use the DatePipe in the template. What must you add to the @Component decorator?"
+  options={[
+    "Add DatePipe to the declarations array",
+    "Add DatePipe to the imports array",
+    "Add DatePipe to the providers array",
+    "Nothing — DatePipe is automatically available in all templates"
+  ]}
+  correctAnswer={1}
+  explanation="In standalone components, you explicitly import everything the template uses — including built-in Angular pipes and directives. Add imports: [DatePipe] to the @Component decorator. In NgModule-based components, you'd import CommonModule (which re-exports DatePipe) in the NgModule's imports. DatePipe is not global — it must be declared/imported somewhere."
+/>
+
+## Senior Insight: Component Design Principles
+
+Good Angular components follow these principles:
+
+1. **Single responsibility** — a component should do one thing. Split complex components into smart containers + dumb presentational components.
+
+2. **Minimal template logic** — move complex expressions to the component class or use pipes. Templates should be declarative, not imperative.
+
+3. **Prefer signals over raw properties** — signals give Angular fine-grained change detection without requiring manual `markForCheck()`.
+
+4. **Use `OnPush` by default** — combined with signals or Observables via `async` pipe, this significantly improves performance.
+
+```typescript
+// Well-designed component
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [AsyncPipe, NgFor, UserCardComponent],
+  template: `
+    @for (user of users(); track user.id) {
+      <app-user-card [user]="user" />
+    }
+  `
+})
+class UserListComponent {
+  private userService = inject(UserService);
+  users = toSignal(this.userService.getUsers(), { initialValue: [] });
+}
+```
+
+This component is tiny, focused, uses signals for reactive state, and has OnPush change detection — it's essentially zero-overhead.

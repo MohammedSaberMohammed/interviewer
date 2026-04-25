@@ -1,0 +1,314 @@
+---
+title: "Functional Interceptors and HTTP Features"
+slug: "functional-interceptors"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["Angular", "advanced", "HTTP", "interceptors", "HttpContextToken", "withFetch", "transfer state", "retry"]
+summary: "Angular 15+ functional interceptors enable composable HTTP middleware without class boilerplate. Combined with HttpContext tokens, provideHttpClient features (withFetch, withInterceptors), and advanced patterns like retry with backoff and request deduplication, they form a powerful HTTP layer."
+docsLinks:
+  - label: "HTTP Guide"
+    url: "https://angular.dev/guide/http"
+  - label: "HTTP Interceptors"
+    url: "https://angular.dev/guide/http/interceptors"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## provideHttpClient Features
+
+Angular 15+ uses a functional configuration API for HttpClient:
+
+```typescript
+import {
+  provideHttpClient,
+  withInterceptors,
+  withFetch,
+  withRequestsMadeViaParent,
+  withXsrfConfiguration,
+  withNoXsrfProtection,
+  withJsonpSupport,
+} from '@angular/common/http';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideHttpClient(
+      withInterceptors([loggingInterceptor, authInterceptor, retryInterceptor]),
+      withFetch(),              // Use fetch() instead of XMLHttpRequest (faster, works in SSR)
+      withXsrfConfiguration({  // Custom XSRF settings
+        cookieName: 'XSRF-TOKEN',
+        headerName: 'X-XSRF-TOKEN',
+      })
+    )
+  ]
+};
+```
+
+### `withFetch()` — Why It Matters
+
+```typescript
+// Angular's default HttpClient used XMLHttpRequest
+// withFetch() switches to the native Fetch API:
+
+// Benefits of Fetch:
+// 1. Works in Angular SSR (Node.js has fetch since v18)
+// 2. Supports request streaming and response streaming
+// 3. Better integration with Service Workers
+// 4. Smaller bundle contribution
+
+// Required for SSR:
+provideHttpClient(withFetch()) // Required for Angular Universal SSR
+```
+
+## Advanced Interceptor Patterns
+
+### Request Deduplication
+
+Prevent the same request from being made multiple times simultaneously:
+
+```typescript
+// Cache of in-flight requests
+const inFlightCache = new Map<string, Observable<HttpEvent<unknown>>>();
+
+export const deduplicationInterceptor: HttpInterceptorFn = (req, next) => {
+  // Only deduplicate GET requests
+  if (req.method !== 'GET') return next(req);
+
+  const cacheKey = `${req.method}:${req.urlWithParams}`;
+  const cached = inFlightCache.get(cacheKey);
+
+  if (cached) {
+    return cached; // Return same Observable — multiple subscribers, one request
+  }
+
+  const shared$ = next(req).pipe(
+    shareReplay(1),
+    finalize(() => inFlightCache.delete(cacheKey))
+  );
+
+  inFlightCache.set(cacheKey, shared$);
+  return shared$;
+};
+```
+
+### Exponential Backoff Retry
+
+```typescript
+import { retry, timer } from 'rxjs';
+
+export const retryInterceptor: HttpInterceptorFn = (req, next) => {
+  const MAX_RETRIES = req.context.get(RETRY_COUNT); // From HttpContext
+
+  return next(req).pipe(
+    retry({
+      count: MAX_RETRIES,
+      delay: (error: HttpErrorResponse, retryIndex: number) => {
+        // Don't retry on client errors (4xx) except 429 Too Many Requests
+        if (error.status >= 400 && error.status < 500 && error.status !== 429) {
+          throw error; // Don't retry
+        }
+
+        // Exponential backoff: 1s, 2s, 4s, ...
+        const delayMs = Math.pow(2, retryIndex) * 1000;
+        console.log(`Retry ${retryIndex} after ${delayMs}ms`);
+        return timer(delayMs);
+      }
+    })
+  );
+};
+```
+
+### Request Timeout
+
+```typescript
+export const timeoutInterceptor: HttpInterceptorFn = (req, next) => {
+  const timeoutMs = req.context.get(REQUEST_TIMEOUT) ?? 30_000; // 30s default
+
+  return next(req).pipe(
+    timeout({
+      each: timeoutMs,
+      with: () => throwError(() => new Error(`Request timed out after ${timeoutMs}ms`))
+    })
+  );
+};
+```
+
+## HttpContext: Passing Data to Interceptors
+
+`HttpContext` is the clean way to configure interceptor behavior per-request:
+
+```typescript
+// Define context tokens with defaults
+const RETRY_COUNT = new HttpContextToken<number>(() => 3);
+const REQUEST_TIMEOUT = new HttpContextToken<number>(() => 30_000);
+const SKIP_AUTH = new HttpContextToken<boolean>(() => false);
+const CACHE_TTL = new HttpContextToken<number>(() => 0); // 0 = no cache
+
+// Use in interceptors
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  if (req.context.get(SKIP_AUTH)) return next(req);
+  // ... add auth header
+  return next(req);
+};
+
+export const cachingInterceptor: HttpInterceptorFn = (req, next) => {
+  const ttl = req.context.get(CACHE_TTL);
+  if (ttl === 0) return next(req); // No caching
+  // ... implement caching
+};
+
+// Use in service calls
+@Injectable({ providedIn: 'root' })
+class ApiService {
+  getPublicData() {
+    return this.http.get('/api/public', {
+      context: new HttpContext()
+        .set(SKIP_AUTH, true)
+        .set(RETRY_COUNT, 5)
+        .set(CACHE_TTL, 60_000) // Cache for 60 seconds
+    });
+  }
+
+  sendCriticalData(data: unknown) {
+    return this.http.post('/api/critical', data, {
+      context: new HttpContext()
+        .set(REQUEST_TIMEOUT, 60_000) // 60 second timeout for important requests
+        .set(RETRY_COUNT, 0)          // No retries for mutations
+    });
+  }
+}
+```
+
+<Callout type="tip">
+`HttpContextToken` defaults are defined as factory functions (not values) to ensure each request gets a fresh instance. The token name (`RETRY_COUNT`, `SKIP_AUTH`) is just a variable — the token is identified by object reference, so the same token instance must be imported in both the interceptor and the code that sets it.
+</Callout>
+
+## Interceptor Ordering and Composition
+
+```typescript
+// Interceptors are applied in registration order (outside-in for requests)
+provideHttpClient(
+  withInterceptors([
+    loggingInterceptor,    // 1st: Logs every request (before any modification)
+    authInterceptor,       // 2nd: Adds Bearer token
+    retryInterceptor,      // 3rd: Wraps with retry logic
+    timeoutInterceptor,    // 4th: Adds timeout
+    cachingInterceptor,    // 5th: Checks/sets cache (innermost)
+  ])
+)
+
+// Request flow:     logging → auth → retry → timeout → cache → network
+// Response flow:    cache → timeout → retry → auth → logging
+```
+
+## Testing Interceptors
+
+```typescript
+describe('retryInterceptor', () => {
+  let httpMock: HttpTestingController;
+  let http: HttpClient;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([retryInterceptor])),
+        provideHttpClientTesting(),
+      ]
+    });
+
+    httpMock = TestBed.inject(HttpTestingController);
+    http = TestBed.inject(HttpClient);
+  });
+
+  it('should retry 3 times on 500 error', () => {
+    let completed = false;
+
+    http.get('/api/data').subscribe({
+      error: () => { completed = true; }
+    });
+
+    // Original request + 3 retries
+    for (let i = 0; i < 4; i++) {
+      const req = httpMock.expectOne('/api/data');
+      req.flush('Server Error', { status: 500, statusText: 'Server Error' });
+    }
+
+    expect(completed).toBe(true);
+    httpMock.verify();
+  });
+});
+```
+
+<CodeChallenge
+  id="interceptor-context"
+  difficulty="advanced"
+  description="Two interceptors read the same HttpContextToken. The first interceptor modifies req.context.set(TOKEN, 'modified'). Does the second interceptor see 'modified' or the original value?"
+  options={[
+    "The second interceptor sees 'modified' — context is shared and mutable",
+    "The second interceptor sees the original value — HttpRequest is immutable, including its context",
+    "It depends on whether the first interceptor called next() before or after modifying the context",
+    "Modifying a context token in an interceptor throws an error"
+  ]}
+  correctAnswer={0}
+  explanation="Unlike HttpRequest (which is immutable — clone() creates a new instance), HttpContext is mutable and shared across all interceptors for the same request. When an interceptor calls req.context.set(TOKEN, value), all subsequent interceptors reading that token see the new value. This is intentional — it allows interceptors to communicate with each other. For example, an auth interceptor could mark a request as 'token refreshed' so a retry interceptor knows not to refresh again. HttpContext is explicitly designed as a mutable communication channel between interceptors."
+/>
+
+## Building an HTTP Caching Service
+
+```typescript
+@Injectable({ providedIn: 'root' })
+class HttpCacheService {
+  private cache = new Map<string, { response: HttpResponse<unknown>; expires: number }>();
+
+  get(key: string): HttpResponse<unknown> | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.response;
+  }
+
+  set(key: string, response: HttpResponse<unknown>, ttlMs: number): void {
+    this.cache.set(key, {
+      response,
+      expires: Date.now() + ttlMs
+    });
+  }
+
+  invalidate(pattern: RegExp): void {
+    for (const key of this.cache.keys()) {
+      if (pattern.test(key)) this.cache.delete(key);
+    }
+  }
+}
+
+export const cachingInterceptor: HttpInterceptorFn = (req, next) => {
+  const ttl = req.context.get(CACHE_TTL);
+  if (req.method !== 'GET' || ttl === 0) return next(req);
+
+  const cache = inject(HttpCacheService);
+  const cacheKey = req.urlWithParams;
+
+  const cached = cache.get(cacheKey);
+  if (cached) return of(cached);
+
+  return next(req).pipe(
+    tap(event => {
+      if (event instanceof HttpResponse) {
+        cache.set(cacheKey, event, ttl);
+      }
+    })
+  );
+};
+```
+
+## Senior Insight: Interceptor Design Principles
+
+1. **Single responsibility**: Each interceptor does one thing (auth, retry, logging, caching)
+2. **Order matters**: Design the order intentionally — logging first captures raw requests, auth before retry ensures retries include fresh tokens
+3. **Context over headers**: Use `HttpContext` for interceptor communication, not custom headers (headers go to the server; context stays client-side)
+4. **Always re-throw errors**: Catch errors, transform them, but re-throw so the Observable chain completes with error and calling code can handle it
+5. **Avoid side effects in interceptors**: No state mutation, no UI updates — interceptors should be pure middleware

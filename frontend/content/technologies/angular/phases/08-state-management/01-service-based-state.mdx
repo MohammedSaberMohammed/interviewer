@@ -1,0 +1,233 @@
+---
+title: "Service-Based State Management"
+slug: "service-based-state"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["Angular", "state management", "BehaviorSubject", "service", "signals"]
+summary: "Before reaching for NgRx, understand when service-based state with BehaviorSubject or signals is the right choice. Many applications don't need NgRx — and overusing it adds unnecessary complexity."
+docsLinks:
+  - label: "Sharing State Between Components"
+    url: "https://angular.dev/guide/components/inputs"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## When You Don't Need NgRx
+
+NgRx adds significant boilerplate. Many Angular applications are well-served by simple service-based state with BehaviorSubject or signals. Use NgRx when:
+- Multiple unrelated components need the same state
+- State transitions are complex and need to be audited
+- Time-travel debugging is valuable
+- The team has strong NgRx experience
+
+Use service-based state when:
+- State belongs to a feature area (not truly global)
+- Few components share the state
+- State transitions are simple (CRUD, toggles)
+
+## BehaviorSubject Service Pattern
+
+```typescript
+// A complete cart state service
+export interface CartState {
+  items: CartItem[];
+  loading: boolean;
+  error: string | null;
+}
+
+@Injectable({ providedIn: 'root' })
+export class CartService {
+  // Private state
+  private state = new BehaviorSubject<CartState>({
+    items: [],
+    loading: false,
+    error: null,
+  });
+
+  // Public read-only observables (derived from state)
+  readonly state$ = this.state.asObservable();
+  readonly items$ = this.state$.pipe(map(s => s.items));
+  readonly totalItems$ = this.items$.pipe(map(items =>
+    items.reduce((sum, item) => sum + item.quantity, 0)
+  ));
+  readonly totalPrice$ = this.items$.pipe(map(items =>
+    items.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  ));
+  readonly isEmpty$ = this.items$.pipe(map(items => items.length === 0));
+
+  constructor(private http: HttpClient) {}
+
+  // State mutations — all go through private state subject
+  addItem(product: Product): void {
+    const current = this.state.value;
+    const existingIndex = current.items.findIndex(i => i.productId === product.id);
+
+    if (existingIndex >= 0) {
+      const items = current.items.map((item, i) =>
+        i === existingIndex ? { ...item, quantity: item.quantity + 1 } : item
+      );
+      this.setState({ items });
+    } else {
+      this.setState({
+        items: [...current.items, {
+          productId: product.id,
+          name: product.name,
+          price: product.price,
+          quantity: 1,
+        }]
+      });
+    }
+  }
+
+  removeItem(productId: string): void {
+    this.setState({
+      items: this.state.value.items.filter(i => i.productId !== productId)
+    });
+  }
+
+  async checkout(): Promise<void> {
+    this.setState({ loading: true, error: null });
+    try {
+      await firstValueFrom(
+        this.http.post('/api/orders', { items: this.state.value.items })
+      );
+      this.setState({ items: [], loading: false });
+    } catch (error: any) {
+      this.setState({ loading: false, error: error.message });
+    }
+  }
+
+  // Helper to merge partial state (like Redux setState)
+  private setState(partial: Partial<CartState>): void {
+    this.state.next({ ...this.state.value, ...partial });
+  }
+}
+```
+
+## Signal-Based Service State (Angular 17+)
+
+```typescript
+@Injectable({ providedIn: 'root' })
+export class CartService {
+  // State as signals
+  private items = signal<CartItem[]>([]);
+  private loading = signal(false);
+  private error = signal<string | null>(null);
+
+  // Derived computed signals
+  readonly itemCount = computed(() =>
+    this.items().reduce((sum, item) => sum + item.quantity, 0)
+  );
+  readonly totalPrice = computed(() =>
+    this.items().reduce((sum, item) => sum + item.price * item.quantity, 0)
+  );
+  readonly isEmpty = computed(() => this.items().length === 0);
+
+  // Read-only signals exposed publicly
+  readonly cartItems = this.items.asReadonly();
+  readonly isLoading = this.loading.asReadonly();
+  readonly errorMessage = this.error.asReadonly();
+
+  addItem(product: Product): void {
+    const existing = this.items().find(i => i.productId === product.id);
+    if (existing) {
+      this.items.update(items => items.map(item =>
+        item.productId === product.id
+          ? { ...item, quantity: item.quantity + 1 }
+          : item
+      ));
+    } else {
+      this.items.update(items => [...items, {
+        productId: product.id,
+        name: product.name,
+        price: product.price,
+        quantity: 1,
+      }]);
+    }
+  }
+
+  removeItem(productId: string): void {
+    this.items.update(items => items.filter(i => i.productId !== productId));
+  }
+}
+```
+
+## Component Usage
+
+```typescript
+// With BehaviorSubject service
+@Component({
+  standalone: true,
+  imports: [AsyncPipe],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <div class="cart-badge">{{ totalItems$ | async }}</div>
+  `
+})
+class CartBadgeComponent {
+  totalItems$ = inject(CartService).totalItems$;
+}
+
+// With Signal service
+@Component({
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    <div class="cart-badge">{{ cartService.itemCount() }}</div>
+  `
+})
+class CartBadgeComponent {
+  cartService = inject(CartService);
+}
+```
+
+<Callout type="tip">
+Signal-based services are becoming the preferred pattern in Angular 17+ because they're simpler, don't require the `async` pipe, and work perfectly with OnPush. Use `signal.asReadonly()` to expose state without allowing external mutation — maintaining encapsulation.
+</Callout>
+
+## Feature-Scoped State
+
+For state that belongs to a feature route, scope the service to avoid global pollution:
+
+```typescript
+// Scope the service to the feature route
+const routes: Routes = [{
+  path: 'checkout',
+  component: CheckoutComponent,
+  providers: [CheckoutStateService], // Destroyed when leaving /checkout
+}];
+
+// The state only lives as long as the checkout route is active
+@Injectable()
+export class CheckoutStateService {
+  step = signal<'cart' | 'shipping' | 'payment' | 'confirmation'>('cart');
+  shippingAddress = signal<Address | null>(null);
+  paymentMethod = signal<PaymentMethod | null>(null);
+}
+```
+
+<CodeChallenge
+  id="service-state-vs-ngrx"
+  difficulty="intermediate"
+  description="A small app has a user profile page that loads user data. Only the profile component uses this data. Should you use NgRx or a service with BehaviorSubject/signal?"
+  options={[
+    "NgRx — always use NgRx for scalability",
+    "Service-based state — one component using local data doesn't justify NgRx",
+    "BehaviorSubject only — signals are experimental and unstable",
+    "Neither — use local component state with @Input()"
+  ]}
+  correctAnswer={1}
+  explanation="NgRx overhead (actions, reducers, effects, selectors) is justified when multiple unrelated components share state, state changes are complex and need auditability, or the team is already using NgRx. A single component loading its own data is a perfect use case for service-based state with BehaviorSubject or signals. Keep it simple — add complexity only when there's a clear need."
+/>
+
+## Senior Insight: The Goldilocks Rule
+
+The right state management approach is the simplest one that meets your needs:
+
+1. **Component state** (`signal()`, local properties): One component uses this data
+2. **Service state** (BehaviorSubject or signals): A few related components share this data
+3. **NgRx**: Many unrelated components share this data, OR complex async state transitions, OR developer experience with time-travel debugging is important
+
+Most Angular applications benefit from a mix: NgRx for truly global state (auth, notifications), service state for feature state, and component state for UI state.

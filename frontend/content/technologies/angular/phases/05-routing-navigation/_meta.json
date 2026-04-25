@@ -1,0 +1,21 @@
+{
+  "slug": "05-routing-navigation",
+  "number": 5,
+  "title": "Routing & Navigation",
+  "subtitle": "Router setup, guards, resolvers, lazy loading, and preloading strategies",
+  "level": "mid",
+  "estimatedHours": 8,
+  "emoji": "🧭",
+  "color": "teal",
+  "description": "Angular's router is a full-featured client-side navigation system. Master route definitions, guards, resolvers, lazy loading, and the modern functional API introduced in Angular 15+.",
+  "prerequisites": ["02-angular-fundamentals"],
+  "learningOutcomes": [
+    "Define routes with parameters, nested children, and auxiliary outlets",
+    "Read route parameters and query parameters with ActivatedRoute",
+    "Implement authentication guards using functional canActivate/canMatch",
+    "Pre-fetch data with route resolvers using the modern resolveFn syntax",
+    "Configure lazy loading with loadComponent and loadChildren for code splitting",
+    "Choose between preloading strategies based on application needs",
+    "Design nested routing hierarchies with named router outlets"
+  ]
+}

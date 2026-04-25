@@ -1,0 +1,250 @@
+---
+title: "NgRx Component Store"
+slug: "component-store"
+order: 6
+difficulty: "advanced"
+readingTime: 11
+status: "published"
+tags: ["NgRx", "ComponentStore", "local state", "updaters", "effects"]
+summary: "NgRx Component Store provides reactive local state management at the component level — NgRx patterns without the global store boilerplate. Perfect for complex component state."
+docsLinks:
+  - label: "NgRx Component Store"
+    url: "https://ngrx.io/guide/component-store"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Component Store: Local NgRx
+
+The global NgRx store is great for shared application state, but overkill for component-local state. ComponentStore gives you NgRx's patterns (immutable updates, selectors, effects) without the actions/reducers boilerplate — and the state is scoped to the component's lifetime.
+
+```bash
+npm install @ngrx/component-store
+```
+
+## Creating a Component Store
+
+```typescript
+import { Injectable } from '@angular/core';
+import { ComponentStore } from '@ngrx/component-store';
+import { tapResponse } from '@ngrx/operators';
+
+// Define the state interface
+interface DataGridState {
+  rows: Row[];
+  selectedIds: Set<string>;
+  sortColumn: string;
+  sortDirection: 'asc' | 'desc';
+  pageIndex: number;
+  pageSize: number;
+  loading: boolean;
+  error: string | null;
+}
+
+// Extend ComponentStore with the state type
+@Injectable()
+export class DataGridStore extends ComponentStore<DataGridState> {
+  constructor(private dataService: DataService) {
+    // Initialize state in the constructor
+    super({
+      rows: [],
+      selectedIds: new Set(),
+      sortColumn: 'name',
+      sortDirection: 'asc',
+      pageIndex: 0,
+      pageSize: 20,
+      loading: false,
+      error: null,
+    });
+  }
+
+  // --- SELECTORS ---
+  readonly rows$ = this.select(state => state.rows);
+  readonly loading$ = this.select(state => state.loading);
+  readonly selectedIds$ = this.select(state => state.selectedIds);
+  readonly selectedCount$ = this.select(state => state.selectedIds.size);
+  readonly hasSelection$ = this.select(state => state.selectedIds.size > 0);
+
+  // Composed selector
+  readonly viewModel$ = this.select(
+    this.rows$,
+    this.loading$,
+    this.selectedCount$,
+    (rows, loading, selectedCount) => ({ rows, loading, selectedCount })
+  );
+
+  // --- UPDATERS ---
+  // Updaters are synchronous state mutations
+  readonly setLoading = this.updater((state, loading: boolean) => ({
+    ...state,
+    loading,
+  }));
+
+  readonly setRows = this.updater((state, rows: Row[]) => ({
+    ...state,
+    rows,
+    loading: false,
+  }));
+
+  readonly toggleSelection = this.updater((state, id: string) => {
+    const selectedIds = new Set(state.selectedIds);
+    if (selectedIds.has(id)) {
+      selectedIds.delete(id);
+    } else {
+      selectedIds.add(id);
+    }
+    return { ...state, selectedIds };
+  });
+
+  readonly clearSelection = this.updater(state => ({
+    ...state,
+    selectedIds: new Set<string>(),
+  }));
+
+  readonly setSort = this.updater((state, { column, direction }: { column: string; direction: 'asc' | 'desc' }) => ({
+    ...state,
+    sortColumn: column,
+    sortDirection: direction,
+    pageIndex: 0, // Reset page when sorting
+  }));
+
+  // --- EFFECTS ---
+  // Effects handle async operations
+  readonly loadData = this.effect<{ page: number; pageSize: number }>((params$) =>
+    params$.pipe(
+      tap(() => this.setLoading(true)),
+      switchMap(({ page, pageSize }) =>
+        this.dataService.getData({ page, pageSize }).pipe(
+          tapResponse(
+            (rows) => this.setRows(rows), // On success
+            (error: Error) => this.patchState({ loading: false, error: error.message })
+          )
+        )
+      )
+    )
+  );
+}
+```
+
+## Using ComponentStore in a Component
+
+```typescript
+@Component({
+  selector: 'app-data-grid',
+  standalone: true,
+  providers: [DataGridStore], // Each component instance gets its own store
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    @if (vm$ | async; as vm) {
+      <p>{{ vm.selectedCount }} selected</p>
+      <table>
+        @for (row of vm.rows; track row.id) {
+          <tr [class.selected]="isSelected(row.id)"
+              (click)="store.toggleSelection(row.id)">
+            <td>{{ row.name }}</td>
+          </tr>
+        }
+      </table>
+      @if (vm.loading) { <app-spinner /> }
+    }
+  `
+})
+class DataGridComponent implements OnInit {
+  store = inject(DataGridStore);
+  vm$ = this.store.viewModel$;
+
+  // Method that calls store updater
+  isSelected(id: string): boolean {
+    // For synchronous access — use snapshot carefully
+    return false; // Better: use vm$.selectedIds
+  }
+
+  ngOnInit() {
+    this.store.loadData({ page: 0, pageSize: 20 });
+  }
+}
+```
+
+<Callout type="tip">
+Provide `ComponentStore` services in the component's `providers` array (not in `providedIn: 'root'`). This ensures each component instance gets its own store instance that is created and destroyed with the component — true local state management.
+</Callout>
+
+## `patchState` vs Updaters
+
+```typescript
+// patchState — quick inline partial update (less explicit)
+this.patchState({ loading: false, error: null });
+
+// Updater — named, reusable, testable operation (more explicit)
+readonly setLoading = this.updater((state, loading: boolean) => ({
+  ...state,
+  loading,
+}));
+this.setLoading(false);
+
+// For simple states, patchState is fine
+// For state with complex transitions, prefer named updaters
+```
+
+## `tapResponse` — Effect Helper
+
+```typescript
+import { tapResponse } from '@ngrx/operators';
+
+// tapResponse handles success, error, AND finalize (like RxJS tap + catchError)
+this.dataService.getData().pipe(
+  tapResponse({
+    next: (data) => this.setData(data),
+    error: (error: Error) => this.setError(error.message),
+    finalize: () => this.setLoading(false), // Runs on complete OR error
+  })
+)
+```
+
+<CodeChallenge
+  id="component-store-scope"
+  difficulty="advanced"
+  description="Two instances of DataGridComponent are rendered simultaneously. Each has providers: [DataGridStore]. How many DataGridStore instances exist?"
+  options={[
+    "One — stores are singletons even when provided at component level",
+    "Two — each component instance creates its own store instance",
+    "It depends on whether DataGridStore is provided in a module",
+    "Zero — ComponentStore instances are created lazily only when accessed"
+  ]}
+  correctAnswer={1}
+  explanation="Providing a service in a component's providers array creates one instance per component instance. Two DataGridComponents = two DataGridStore instances, each with their own independent state. When the component is destroyed, its store instance is destroyed too. This is exactly the 'local state' behavior ComponentStore is designed for."
+/>
+
+## ComponentStore vs Global Store
+
+| Use Case | Global NgRx Store | ComponentStore |
+|----------|-------------------|----------------|
+| Multiple components share state | ✅ | ❌ |
+| State survives navigation | ✅ | ❌ |
+| Time-travel debugging needed | ✅ | Partial |
+| Complex feature state (one component tree) | Overkill | ✅ |
+| Dialog/modal local state | Overkill | ✅ |
+| Infinite scroll, pagination | Overkill | ✅ |
+
+## Senior Insight: ComponentStore in 2024
+
+With Angular's signal-based approach, many ComponentStore use cases can now be handled with signal-based services:
+
+```typescript
+// ComponentStore approach
+@Injectable()
+class GridStore extends ComponentStore<GridState> { ... }
+
+// Signal approach (Angular 17+) — often simpler
+@Injectable()
+class GridStore {
+  rows = signal<Row[]>([]);
+  loading = signal(false);
+  selectedIds = signal(new Set<string>());
+
+  rowCount = computed(() => this.rows().length);
+  hasSelection = computed(() => this.selectedIds().size > 0);
+}
+```
+
+For teams already using NgRx, ComponentStore provides a consistent API. For teams starting fresh, signal-based services are simpler and don't require an additional dependency.

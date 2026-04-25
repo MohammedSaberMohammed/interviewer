@@ -1,0 +1,280 @@
+---
+title: "Injection Token Traps"
+slug: "injection-token-traps"
+order: 5
+difficulty: "advanced"
+readingTime: 8
+status: "published"
+tags: ["Angular", "traps", "InjectionToken", "DI", "NullInjectorError", "forwardRef", "circular dependency", "providers"]
+summary: "Angular's DI system has several traps: NullInjectorError from missing providers, token identity issues when tokens are recreated, circular dependency errors, and forwardRef pitfalls. These errors are often cryptic without deep DI knowledge."
+docsLinks:
+  - label: "Dependency Injection"
+    url: "https://angular.dev/guide/di"
+  - label: "InjectionToken"
+    url: "https://angular.dev/api/core/InjectionToken"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## Trap 1: NullInjectorError — Missing Provider
+
+The most common DI error:
+
+```
+NullInjectorError: No provider for UserService!
+```
+
+```typescript
+// ❌ Cause 1: Service not provided anywhere
+@Injectable() // No providedIn!
+class UserService { }
+
+// Fix: Add providedIn
+@Injectable({ providedIn: 'root' })
+class UserService { }
+```
+
+```typescript
+// ❌ Cause 2: Service provided in lazy module, injected in root-level component
+// LazyModule provides UserService
+// AppComponent (in root) injects UserService
+// → AppComponent's injector (root) doesn't have UserService
+
+// Fix: Provide in root OR only inject inside the lazy module
+```
+
+```typescript
+// ❌ Cause 3: Testing without providing mock
+// In test: providers: [ComponentUnderTest]
+// ComponentUnderTest injects AuthService
+// But test doesn't provide AuthService → Error!
+
+// Fix:
+TestBed.configureTestingModule({
+  providers: [
+    ComponentUnderTest,
+    { provide: AuthService, useValue: mockAuthService } // ← Required!
+  ]
+});
+```
+
+## Trap 2: Token Identity — Same Token, Different Instances
+
+`InjectionToken` identity is based on **object reference**, not the token name string:
+
+```typescript
+// tokens.ts
+export const API_URL = new InjectionToken<string>('api-url');
+```
+
+```typescript
+// ❌ WRONG: Re-creating the token in a different file
+// config.ts
+const API_URL = new InjectionToken<string>('api-url'); // NEW instance!
+
+// This token is NOT the same as the one in tokens.ts
+// Even though the description string is identical
+```
+
+```typescript
+// ✅ CORRECT: Always import the same token instance
+import { API_URL } from './tokens';
+
+// Provide it:
+providers: [{ provide: API_URL, useValue: 'https://api.example.com' }]
+
+// Inject it:
+const apiUrl = inject(API_URL); // Uses the same API_URL reference
+```
+
+<Callout type="warning">
+InjectionToken identity is reference-based (like object identity). Two `new InjectionToken('same-name')` calls create two different, incompatible tokens even with the same description string. The description is only for debugging — it appears in error messages and DevTools.
+</Callout>
+
+## Trap 3: Circular Dependency
+
+```typescript
+// ❌ ServiceA injects ServiceB, ServiceB injects ServiceA → circular!
+
+@Injectable({ providedIn: 'root' })
+class ServiceA {
+  private serviceB = inject(ServiceB); // ServiceB depends on ServiceA!
+}
+
+@Injectable({ providedIn: 'root' })
+class ServiceB {
+  private serviceA = inject(ServiceA); // Circular!
+}
+// Error: Circular dependency in DI detected for ServiceA
+```
+
+Solutions:
+
+```typescript
+// Fix 1: Restructure — extract shared logic to a third service
+@Injectable({ providedIn: 'root' })
+class SharedLogicService { /* Common functionality */ }
+
+@Injectable({ providedIn: 'root' })
+class ServiceA {
+  private shared = inject(SharedLogicService); // No circular dep
+}
+
+@Injectable({ providedIn: 'root' })
+class ServiceB {
+  private shared = inject(SharedLogicService); // No circular dep
+}
+```
+
+```typescript
+// Fix 2: Use forwardRef (delays resolution)
+@Injectable({ providedIn: 'root' })
+class ServiceA {
+  // forwardRef: resolve ServiceB lazily to break the circular reference
+  private serviceB = inject(forwardRef(() => ServiceB));
+}
+```
+
+## Trap 4: Using inject() Outside Injection Context
+
+```typescript
+// ❌ inject() only works in injection contexts
+
+class MyClass {
+  // ❌ Not in a component/service/directive — inject() fails
+  private service = inject(SomeService);
+}
+
+// ❌ Outside of class field initializer or constructor
+function helper() {
+  const service = inject(SomeService); // Error: not in injection context
+}
+```
+
+```typescript
+// ✅ Valid injection contexts:
+@Injectable()
+class MyService {
+  // Class field initializer — ✅
+  private dep = inject(OtherService);
+
+  constructor() {
+    // Constructor body — ✅
+    const dep2 = inject(ThirdService);
+  }
+}
+
+// Function called within injection context (e.g., factory function):
+const factory = () => {
+  const service = inject(SomeService); // ✅ If called as InjectionToken factory
+  return new SomeThing(service);
+};
+```
+
+## Trap 5: multi: true Providers Accumulate
+
+```typescript
+// ❌ Multiple modules providing the same multi-token accumulate ALL values
+
+// Modules A and B both provide:
+providers: [{ provide: HTTP_INTERCEPTORS, useClass: MyInterceptor, multi: true }]
+
+// If both modules are imported, the interceptor runs TWICE
+// This is a common source of duplicate HTTP headers, duplicate logging, etc.
+```
+
+```typescript
+// ✅ Provide interceptors only once, in the root config
+// app.config.ts:
+provideHttpClient(withInterceptors([myInterceptor])) // Only here
+
+// Never provide the same interceptor in feature modules
+```
+
+## Trap 6: Provider Scope Mismatch (Captive Dependency)
+
+```typescript
+// ❌ Singleton service injecting a request-scoped service
+@Injectable({ providedIn: 'root' }) // Singleton
+class AppService {
+  // RequestScopedService should be new per request,
+  // but AppService is created once and holds one instance forever
+  private requestService = inject(RequestScopedService);
+}
+
+@Injectable({ providedIn: 'root' }) // Also singleton!
+class RequestScopedService {
+  // Intended to be per-request but providedIn: 'root' makes it a singleton
+}
+```
+
+The captive dependency problem: a short-lived service injected into a longer-lived service is "captured" and becomes as long-lived as its consumer.
+
+## Trap 7: useExisting vs useClass Confusion
+
+```typescript
+// ❌ useExisting vs useClass confusion
+
+// useClass: Creates a NEW instance of the class
+providers: [
+  { provide: AbstractLogger, useClass: ConcreteLogger }
+  // Two separate instances: one for AbstractLogger, one for ConcreteLogger if injected
+]
+
+// useExisting: Reuses the EXISTING instance from another token
+providers: [
+  ConcreteLogger, // First, provide the concrete
+  { provide: AbstractLogger, useExisting: ConcreteLogger } // Alias — same instance!
+]
+```
+
+```typescript
+// Common mistake: using useClass when you want the same instance
+// If ConcreteLogger has state, useClass creates separate instances
+// while useExisting ensures all consumers share one instance
+```
+
+<CodeChallenge
+  id="injection-token-identity"
+  difficulty="advanced"
+  description="Library A exports: const TOKEN = new InjectionToken('myToken'). Your app imports this TOKEN and provides: { provide: TOKEN, useValue: 'value' }. A component from Library A injects TOKEN. Will it receive 'value'?"
+  options={[
+    "Yes — Angular matches tokens by their description string 'myToken'",
+    "Yes — if you import and use the same TOKEN reference from Library A, it's the same token object",
+    "No — tokens from external libraries cannot be used in app providers",
+    "It depends on whether Library A uses providedIn: 'root'"
+  ]}
+  correctAnswer={1}
+  explanation="InjectionToken identity is based on JavaScript object reference (===). When you import TOKEN from Library A and use it in your providers, you're using the exact same object reference that Library A's component imports. Angular sees the same reference when looking up the token, so your provided value 'value' is resolved. This is the correct pattern for library configuration tokens. The key: you MUST import the token from the library — creating a new InjectionToken('myToken') in your app creates a DIFFERENT object that won't match Library A's component's injection."
+/>
+
+## Detecting DI Errors
+
+```typescript
+// Enable detailed DI error messages in tests:
+TestBed.configureTestingModule({
+  providers: [
+    // Add this to get detailed injection error messages
+    { provide: ErrorHandler, useClass: DetailedErrorHandler }
+  ]
+});
+
+// Check provider configuration:
+// Angular DevTools → Components → Providers tab shows injection tree
+
+// Debug circular dependencies:
+// Angular CLI outputs the dependency chain in the error:
+// Circular dependency in DI detected for MyService:
+//   MyService → ServiceA → ServiceB → MyService
+```
+
+## Senior Insight: DI Design Principles
+
+The best defense against DI traps:
+1. **Single responsibility in services** — avoids circular dependencies
+2. **Explicit provider configuration** — `providedIn: 'root'` for singletons, component providers for local state
+3. **Shared token files** — all `InjectionToken` definitions in one file, imported everywhere
+4. **One interceptor registration point** — always in `app.config.ts`, never in feature modules
+5. **Test-first mindset** — if a service is hard to provide in tests, its DI configuration is probably wrong
+
+The hardest DI bugs are provider scope mismatches (captive dependency) and token identity issues — both require understanding DI as a hierarchical system, not just a "magic service locator".
