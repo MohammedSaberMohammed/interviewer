@@ -48,9 +48,9 @@ export function PhasesHeader({ techSlug, totalLessons, techTitle }: PhasesHeader
       </div>
 
       {mounted && (
-        <div className="flex shrink-0 items-center gap-4 rounded-2xl border border-border bg-[oklch(0.13_0.022_270)] px-5 py-4">
+        <div className="flex shrink-0 items-center gap-4 rounded-2xl border border-border bg-card px-5 py-4">
           <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true">
-            <circle cx="32" cy="32" r={r} fill="none" stroke="oklch(1 0 0 / 0.07)" strokeWidth="5" />
+            <circle cx="32" cy="32" r={r} fill="none" stroke="var(--color-border)" strokeWidth="5" />
             <circle
               cx="32" cy="32" r={r}
               fill="none"

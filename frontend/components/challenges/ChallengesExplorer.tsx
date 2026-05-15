@@ -21,7 +21,7 @@ function EmptyPanel() {
     <div className="flex h-full flex-col items-center justify-center gap-4 rounded-2xl border border-border bg-muted/20 p-12 text-center">
       <div
         className="flex h-14 w-14 items-center justify-center rounded-2xl"
-        style={{ background: 'linear-gradient(135deg, #6366F1, #8B5CF6)' }}
+        style={{ background: 'linear-gradient(135deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320))' }}
       >
         <Layers className="h-7 w-7 text-white" aria-hidden="true" />
       </div>
@@ -181,7 +181,7 @@ export function ChallengesExplorer({ challenges }: ChallengesExplorerProps) {
                                     {isSelected && (
                                       <span
                                         className="absolute inset-y-0 left-0 w-0.5 rounded-l-lg"
-                                        style={{ background: 'linear-gradient(180deg, #6366F1, #8B5CF6)' }}
+                                        style={{ background: 'linear-gradient(180deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320))' }}
                                       />
                                     )}
 

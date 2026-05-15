@@ -326,12 +326,9 @@ html.dark .shiki span {
     @apply hover:shadow-[0_12px_32px_oklch(0_0_0/0.08)] hover:border-primary/20;
   }
 
-  /* Glass card */
+  /* Glass card — theme-aware (uses --card so it works in light + dark) */
   .card-glass {
-    background: oklch(0.155 0.022 270 / 0.55);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    @apply border border-border rounded-2xl;
+    @apply bg-card/75 backdrop-blur-2xl border border-border rounded-2xl;
     box-shadow: var(--shadow-elevated);
     transition: all var(--duration-standard) var(--ease-emphasized);
   }
@@ -355,11 +352,10 @@ html.dark .shiki span {
   }
   .btn-glow:active { transform: translateY(0); }
 
-  /* Ghost button */
+  /* Ghost button — theme-aware */
   .btn-ghost-border {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all;
-    background: oklch(0.155 0.022 270 / 0.55);
-    backdrop-filter: blur(20px);
+    @apply bg-card/70 backdrop-blur-xl;
     @apply border border-border text-foreground;
     transition-duration: var(--duration-standard);
     transition-timing-function: var(--ease-emphasized);

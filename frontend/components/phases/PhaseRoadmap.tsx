@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { motion } from 'motion/react'
-import { Lock, CheckCircle2, ArrowRight, Zap } from 'lucide-react'
+import { CheckCircle2, ArrowRight } from 'lucide-react'
 import { useProgressStore } from '@/stores/progressStore'
 import { IsometricCube } from '@/components/ui/IsometricCube'
 import { cn } from '@/lib/utils'
@@ -20,22 +20,22 @@ const LEVEL_CUBE_COLOR: Record<PhaseLevel, string> = {
   senior: 'amber',
 }
 
-const LEVEL_LABEL: Record<PhaseLevel, { label: string; color: string; bg: string }> = {
-  junior: {
-    label: 'Junior',
-    color: 'text-[oklch(0.82_0.18_195)]',
-    bg: 'bg-[oklch(0.72_0.18_195/0.12)] border-[oklch(0.72_0.18_195/0.25)]',
-  },
-  mid: {
-    label: 'Mid',
-    color: 'text-[oklch(0.85_0.20_320)]',
-    bg: 'bg-[oklch(0.68_0.25_320/0.12)] border-[oklch(0.68_0.25_320/0.25)]',
-  },
-  senior: {
-    label: 'Senior',
-    color: 'text-[oklch(0.88_0.18_85)]',
-    bg: 'bg-[oklch(0.78_0.18_85/0.12)] border-[oklch(0.78_0.18_85/0.25)]',
-  },
+const LEVEL_ACCENT: Record<PhaseLevel, string> = {
+  junior:  'oklch(0.72 0.18 195)',
+  mid:     'oklch(0.68 0.25 320)',
+  senior:  'oklch(0.78 0.18 85)',
+}
+
+const LEVEL_BADGE: Record<PhaseLevel, string> = {
+  junior:  'bg-[oklch(0.72_0.18_195/0.12)] border-[oklch(0.72_0.18_195/0.3)] text-[oklch(0.72_0.18_195)]',
+  mid:     'bg-[oklch(0.68_0.25_320/0.12)] border-[oklch(0.68_0.25_320/0.3)] text-[oklch(0.85_0.20_320)]',
+  senior:  'bg-[oklch(0.78_0.18_85/0.12)] border-[oklch(0.78_0.18_85/0.3)] text-[oklch(0.88_0.18_85)]',
+}
+
+const LEVEL_LABEL: Record<PhaseLevel, string> = {
+  junior: 'Junior',
+  mid: 'Mid-Level',
+  senior: 'Senior',
 }
 
 function ProgressRing({ pct, size = 48 }: { pct: number; size?: number }) {
@@ -43,8 +43,8 @@ function ProgressRing({ pct, size = 48 }: { pct: number; size?: number }) {
   const circ = 2 * Math.PI * r
   const offset = circ - (pct / 100) * circ
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="oklch(1 0 0 / 0.08)" strokeWidth="4" />
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-label={`${pct}% complete`}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--color-border)" strokeWidth="4" />
       <circle
         cx={size / 2} cy={size / 2} r={r}
         fill="none"
@@ -56,7 +56,13 @@ function ProgressRing({ pct, size = 48 }: { pct: number; size?: number }) {
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
         style={{ transition: 'stroke-dashoffset 0.6s ease', filter: 'drop-shadow(0 0 6px oklch(0.72 0.18 195 / 0.7))' }}
       />
-      <text x={size / 2} y={size / 2 + 4} textAnchor="middle" fontSize="11" fontWeight="700" fill="oklch(0.82 0.18 195)">
+      <text
+        x={size / 2} y={size / 2 + 4}
+        textAnchor="middle"
+        fontSize="11"
+        fontWeight="700"
+        style={{ fill: 'var(--color-primary)' }}
+      >
         {pct}%
       </text>
     </svg>
@@ -75,17 +81,9 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
   const completedLessons: string[] = mounted ? (technologies[techSlug]?.completedLessons ?? []) : []
 
   return (
-    <div className="relative mx-auto max-w-4xl px-4 py-8">
-      {/* Vertical center line */}
-      <div
-        className="pointer-events-none absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2"
-        style={{ background: 'linear-gradient(to bottom, transparent, oklch(1 0 0 / 0.07) 10%, oklch(1 0 0 / 0.07) 90%, transparent)' }}
-        aria-hidden
-      />
-
-      <div className="relative flex flex-col gap-0">
+    <div className="mx-auto max-w-3xl px-4 py-4">
+      <div className="flex flex-col gap-2">
         {phases.map((phase, i) => {
-          const isLeft = i % 2 === 0
           const totalLessons = phase.lessons.length
           const completedInPhase = phase.lessons.filter((l) =>
             completedLessons.includes(`${techSlug}/${phase.slug}/${l.slug}`)
@@ -93,13 +91,11 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
           const pct = totalLessons === 0 ? 0 : Math.round((completedInPhase / totalLessons) * 100)
           const isComplete = pct === 100
           const isStarted = pct > 0 && !isComplete
-          const isFirst = i === 0
-          const showStartHere = isFirst && !isStarted && !isComplete
+          const showStartHere = i === 0 && !isStarted && !isComplete && mounted
 
-          const levelStyle = LEVEL_LABEL[phase.level]
+          const accentColor = isComplete ? 'oklch(0.72 0.20 145)' : LEVEL_ACCENT[phase.level]
           const cubeColor = LEVEL_CUBE_COLOR[phase.level]
 
-          // First incomplete lesson link
           const firstIncompleteLesson = phase.lessons.find(
             (l) => !completedLessons.includes(`${techSlug}/${phase.slug}/${l.slug}`)
           )
@@ -108,135 +104,98 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
             : `/${techSlug}/phases/${phase.slug}`
 
           return (
-            <div key={phase.slug} className="relative flex items-center">
-              {/* Connector line segment above (except first) */}
-              {i > 0 && (
-                <div
-                  className="pointer-events-none absolute left-1/2 -top-6 h-12 w-px -translate-x-1/2"
-                  style={{ background: isComplete ? 'oklch(0.72 0.20 145 / 0.4)' : 'oklch(1 0 0 / 0.07)' }}
-                  aria-hidden
-                />
-              )}
+            <motion.div
+              key={phase.slug}
+              initial={{ opacity: 0, y: 12 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: '-32px' }}
+              transition={{ duration: 0.32, ease: [0.2, 0, 0, 1], delay: Math.min(i * 0.025, 0.25) }}
+            >
+              <Link href={href} className="group block">
+                <div className={cn(
+                  'relative flex items-center gap-4 rounded-2xl border bg-card px-5 py-4 transition-all duration-250',
+                  isComplete
+                    ? 'border-[oklch(0.72_0.20_145/0.25)]'
+                    : isStarted
+                      ? 'border-[oklch(0.72_0.18_195/0.3)] shadow-[0_0_0_1px_oklch(0.72_0.18_195/0.08),0_4px_16px_oklch(0.72_0.18_195/0.12)]'
+                      : 'border-border group-hover:border-primary/25',
+                  'group-hover:-translate-y-0.5 group-hover:shadow-[0_8px_24px_oklch(0_0_0/0.1)]',
+                )}>
+                  {/* Left accent bar */}
+                  <div
+                    className="absolute inset-y-0 left-0 w-[3px] rounded-l-2xl"
+                    style={{ background: accentColor }}
+                    aria-hidden
+                  />
 
-              {/* Node dot on center line */}
-              <div className={cn(
-                'absolute left-1/2 z-10 flex -translate-x-1/2 items-center justify-center rounded-full border-2 transition-all duration-300',
-                isComplete
-                  ? 'size-5 border-[oklch(0.72_0.20_145)] bg-[oklch(0.72_0.20_145/0.2)]'
-                  : isStarted
-                    ? 'size-5 border-[oklch(0.72_0.18_195)] bg-[oklch(0.72_0.18_195/0.15)]'
-                    : 'size-4 border-border bg-card',
-              )}>
-                {isComplete && <CheckCircle2 className="size-3 text-[oklch(0.72_0.20_145)]" />}
-                {isStarted && <div className="size-2 rounded-full bg-[oklch(0.72_0.18_195)]" style={{ boxShadow: '0 0 8px oklch(0.72 0.18 195 / 0.8)' }} />}
-              </div>
+                  {/* Cube */}
+                  <div className={cn('hidden sm:block shrink-0 ml-1', isComplete && 'opacity-40')}>
+                    <IsometricCube color={cubeColor} size={52} />
+                  </div>
 
-              {/* Card — alternates left/right */}
-              <motion.div
-                initial={{ opacity: 0, x: isLeft ? -20 : 20 }}
-                whileInView={{ opacity: 1, x: 0 }}
-                viewport={{ once: true, margin: '-60px' }}
-                transition={{ duration: 0.4, ease: [0.2, 0, 0, 1] }}
-                className={cn('mb-10 w-[46%]', isLeft ? 'mr-auto pr-6' : 'ml-auto pl-6')}
-              >
-                <Link href={href} className="group block">
-                  <div className={cn(
-                    'relative overflow-hidden rounded-2xl border p-5 transition-all duration-300',
-                    'bg-[oklch(0.13_0.022_270)] backdrop-blur-sm',
-                    isComplete
-                      ? 'border-[oklch(0.72_0.20_145/0.3)] shadow-[0_0_0_1px_oklch(0.72_0.20_145/0.1)]'
-                      : isStarted
-                        ? 'border-[oklch(0.72_0.18_195/0.35)] shadow-[var(--shadow-glow-cyan)]'
-                        : 'border-border hover:border-[oklch(0.72_0.18_195/0.25)]',
-                    'group-hover:-translate-y-0.5 group-hover:shadow-[0_12px_32px_oklch(0_0_0/0.4)]',
-                  )}>
-
-                    {/* Start Here pulse badge */}
-                    {showStartHere && mounted && (
-                      <div className="absolute -top-2 right-4 z-10 flex items-center gap-1.5 rounded-full border border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.12)] px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.14em] text-[oklch(0.82_0.18_195)]">
-                        <span className="relative flex size-1.5">
-                          <span className="animate-ping absolute inline-flex size-full rounded-full bg-[oklch(0.72_0.18_195)] opacity-75" />
-                          <span className="relative inline-flex size-1.5 rounded-full bg-[oklch(0.72_0.18_195)]" />
+                  {/* Main content */}
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+                        Phase {String(phase.number).padStart(2, '0')}
+                      </span>
+                      <span className={cn(
+                        'rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.1em]',
+                        LEVEL_BADGE[phase.level]
+                      )}>
+                        {LEVEL_LABEL[phase.level]}
+                      </span>
+                      {showStartHere && (
+                        <span className="flex items-center gap-1 rounded-full border border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.1)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-[oklch(0.72_0.18_195)]">
+                          <span className="relative flex size-1.5">
+                            <span className="animate-ping absolute inline-flex size-full rounded-full bg-[oklch(0.72_0.18_195)] opacity-75" />
+                            <span className="relative inline-flex size-1.5 rounded-full bg-[oklch(0.72_0.18_195)]" />
+                          </span>
+                          Start Here
                         </span>
-                        Start Here
-                      </div>
-                    )}
-
-                    {/* Completion checkmark overlay */}
-                    {isComplete && (
-                      <div className="absolute top-3 right-3 flex size-7 items-center justify-center rounded-full bg-[oklch(0.72_0.20_145/0.15)] border border-[oklch(0.72_0.20_145/0.3)]">
-                        <CheckCircle2 className="size-4 text-[oklch(0.8_0.20_145)]" />
-                      </div>
-                    )}
-
-                    <div className="flex items-start gap-4">
-                      {/* Cube visual */}
-                      <div className={cn('shrink-0 transition-all duration-300', isComplete ? 'opacity-60' : 'opacity-100')}>
-                        <IsometricCube color={cubeColor} size={64} />
-                      </div>
-
-                      <div className="min-w-0 flex-1 pt-1">
-                        {/* Phase number + level */}
-                        <div className="mb-1.5 flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
-                            Phase {String(phase.number).padStart(2, '0')}
-                          </span>
-                          <span className={cn('rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.1em]', levelStyle.bg, levelStyle.color)}>
-                            {levelStyle.label}
-                          </span>
-                        </div>
-
-                        {/* Title */}
-                        <h3 className="text-sm font-semibold leading-snug text-foreground group-hover:text-[oklch(0.82_0.18_195)] transition-colors">
-                          {phase.title}
-                        </h3>
-
-                        {/* Subtitle */}
-                        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                          {phase.subtitle}
-                        </p>
-
-                        {/* Footer: lessons count + progress / locked */}
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          <span className="font-mono text-[10px] text-muted-foreground">
-                            {phase.lessons.length} lessons · {phase.estimatedHours}h
-                          </span>
-
-                          {mounted && isStarted && (
-                            <ProgressRing pct={pct} size={44} />
-                          )}
-                          {mounted && isComplete && (
-                            <span className="font-mono text-[10px] font-bold text-[oklch(0.8_0.20_145)] uppercase tracking-wide">
-                              Complete
-                            </span>
-                          )}
-                          {mounted && !isStarted && !isComplete && (
-                            <div className="flex items-center gap-1 text-[oklch(0.82_0.18_195)] opacity-0 group-hover:opacity-100 transition-opacity">
-                              <span className="font-mono text-[10px] font-semibold">Begin</span>
-                              <ArrowRight className="size-3" />
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      )}
                     </div>
 
-                    {/* Hover glow */}
-                    <div
-                      className="pointer-events-none absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-                      style={{ background: 'radial-gradient(ellipse 60% 40% at 30% 20%, oklch(0.72 0.18 195 / 0.05) 0%, transparent 70%)' }}
-                      aria-hidden
-                    />
+                    <h3 className={cn(
+                      'text-[15px] font-semibold leading-snug transition-colors',
+                      isComplete
+                        ? 'text-muted-foreground'
+                        : 'text-foreground group-hover:text-primary',
+                    )}>
+                      {phase.title}
+                    </h3>
+                    {phase.subtitle && (
+                      <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{phase.subtitle}</p>
+                    )}
+
+                    <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                      {phase.lessons.length} lessons · {phase.estimatedHours}h
+                    </p>
                   </div>
-                </Link>
-              </motion.div>
-            </div>
+
+                  {/* Right: state indicator */}
+                  <div className="shrink-0 pr-1">
+                    {mounted && isComplete && (
+                      <CheckCircle2 className="size-5 text-[oklch(0.72_0.20_145)]" />
+                    )}
+                    {mounted && isStarted && <ProgressRing pct={pct} size={44} />}
+                    {(!mounted || (!isStarted && !isComplete)) && (
+                      <ArrowRight className={cn(
+                        'size-4 text-muted-foreground transition-all duration-200',
+                        mounted ? 'opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5' : 'opacity-0',
+                      )} />
+                    )}
+                  </div>
+                </div>
+              </Link>
+            </motion.div>
           )
         })}
 
         {/* End node */}
-        <div className="flex flex-col items-center gap-3 pb-8">
-          <div className="flex size-10 items-center justify-center rounded-full border border-[oklch(0.78_0.18_85/0.3)] bg-[oklch(0.78_0.18_85/0.08)]">
-            <Zap className="size-5 text-[oklch(0.88_0.18_85)]" />
+        <div className="mt-4 flex items-center justify-center gap-3 rounded-2xl border border-dashed border-[oklch(0.78_0.18_85/0.3)] py-5">
+          <div className="flex size-8 items-center justify-center rounded-full border border-[oklch(0.78_0.18_85/0.3)] bg-[oklch(0.78_0.18_85/0.08)]">
+            <span className="text-sm">🏆</span>
           </div>
           <p className="font-mono text-[11px] tracking-[0.12em] uppercase text-muted-foreground">
             Senior-ready
