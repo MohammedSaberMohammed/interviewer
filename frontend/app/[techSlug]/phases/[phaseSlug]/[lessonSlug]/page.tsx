@@ -35,6 +35,7 @@ import { ArchDiagram } from '@/components/lesson/ArchDiagram'
 import { CodeBlock } from '@/components/lesson/CodeBlock'
 import { QuestStep, CharacterTeach, TapToSpot, QuestLayout } from '@/components/quest'
 import { AddLessonToBasketButton } from '@/components/basket/AddLessonToBasketButton'
+import { ReadingProgress } from '@/components/lesson/ReadingProgress'
 
 interface Props {
   params: Promise<{ techSlug: string; phaseSlug: string; lessonSlug: string }>
@@ -112,6 +113,7 @@ export default async function LessonPage({ params }: Props) {
 
   return (
     <>
+      <ReadingProgress />
       <Navbar techSlug={techSlug} />
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
@@ -148,7 +150,7 @@ export default async function LessonPage({ params }: Props) {
                   <div className="flex flex-wrap items-center gap-2">
                     <DifficultyBadge level={lesson.difficulty} />
                     {lesson.questMode && (
-                      <span className="inline-flex items-center rounded-full bg-indigo-50 dark:bg-indigo-950/50 px-2.5 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-[oklch(0.85_0.20_320)]">
                         Quest
                       </span>
                     )}
@@ -170,7 +172,7 @@ export default async function LessonPage({ params }: Props) {
                     />
                   )}
                 </div>
-                <h1 className="text-3xl font-bold tracking-tight mb-2">{lesson.title}</h1>
+                <h1 className="font-display text-3xl font-medium tracking-tight mb-2">{lesson.title}</h1>
                 {lesson.summary && (
                   <p className="text-muted-foreground text-base leading-relaxed max-w-2xl">{lesson.summary}</p>
                 )}

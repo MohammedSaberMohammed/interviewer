@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Inter, JetBrains_Mono } from 'next/font/google'
+import { Bricolage_Grotesque, Onest, JetBrains_Mono } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SearchProvider } from '@/components/search/SearchProvider'
@@ -9,8 +9,15 @@ import { BasketGlobalUI } from '@/components/basket/BasketProviders'
 import { buildSearchIndex } from '@/lib/content'
 import './globals.css'
 
-const inter = Inter({
-  variable: '--font-inter',
+const bricolage = Bricolage_Grotesque({
+  variable: '--font-bricolage',
+  subsets: ['latin'],
+  display: 'swap',
+  axes: ['opsz'],
+})
+
+const onest = Onest({
+  variable: '--font-onest',
   subsets: ['latin'],
   display: 'swap',
 })
@@ -27,7 +34,7 @@ export const metadata: Metadata = {
     template: '%s | Interviewer App',
   },
   description:
-    'Master technical interviews with structured, deep-dive courses. Choose your technology and start your interview preparation journey.',
+    'Master technical interviews with a guided, gamified path — from fundamentals to senior-level traps. Choose your stack and begin.',
   keywords: ['interview prep', 'technical interviews', 'coding interview', 'software engineer', '.NET', 'Angular', 'TypeScript'],
 }
 
@@ -37,13 +44,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable} h-full`}
+      className={`${bricolage.variable} ${onest.variable} ${jetbrainsMono.variable} h-full`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col antialiased">
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
+          defaultTheme="dark"
           enableSystem
           disableTransitionOnChange={false}
         >
