@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
@@ -22,9 +22,7 @@ export function Navbar({ techSlug }: NavbarProps) {
   const navItems = techSlug ? getTechNavItems(techSlug) : NAV_ITEMS
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-border/60 backdrop-blur-md"
-      style={{ background: 'oklch(0.095 0.025 270 / 0.85)' }}
-    >
+    <header className="sticky top-0 z-40 w-full border-b border-border/60 backdrop-blur-md bg-background/90">
       <div className="container mx-auto flex h-14 items-center gap-4 px-4">
         {/* Mobile drawer */}
         <MobileDrawer />
@@ -60,8 +58,8 @@ export function Navbar({ techSlug }: NavbarProps) {
                 className={cn(
                   'rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200',
                   active
-                    ? 'text-[oklch(0.82_0.18_195)] bg-[oklch(0.72_0.18_195/0.1)] shadow-[0_0_0_1px_oklch(0.72_0.18_195/0.2)]'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-[oklch(1_0_0/0.05)]'
+                    ? 'text-primary bg-primary/10 ring-1 ring-primary/20'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-foreground/5'
                 )}
               >
                 {item.title}
@@ -79,8 +77,8 @@ export function Navbar({ techSlug }: NavbarProps) {
           <button
             type="button"
             onClick={openSearch}
-            aria-label="Search lessons"
-            className="hidden sm:flex items-center gap-2.5 rounded-lg border border-border bg-[oklch(1_0_0/0.03)] px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-[oklch(1_0_0/0.12)] hover:text-foreground w-40"
+            aria-keyshortcuts="Meta+k"
+            className="hidden sm:flex items-center gap-2.5 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-foreground/20 hover:text-foreground w-40"
           >
             <Search className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="flex-1 text-left">Search…</span>

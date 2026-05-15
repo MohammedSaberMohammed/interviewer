@@ -22,7 +22,7 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
 
   return (
     <aside className={cn('w-full', className)} aria-label="Phase lessons">
-      <p className="mb-3 px-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+      <p className="mb-3 px-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
         {phaseTitle}
       </p>
       <nav>
@@ -45,7 +45,7 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                     isActive
                       ? 'bg-primary/8 text-primary font-medium dark:bg-primary/12'
                       : isPlaceholder
-                        ? 'text-muted-foreground/40 cursor-not-allowed'
+                        ? 'text-muted-foreground cursor-not-allowed'
                         : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
@@ -54,16 +54,16 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                     <span
                       aria-hidden="true"
                       className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full"
-                      style={{ background: 'linear-gradient(180deg, #6366F1, #8B5CF6)' }}
+                      style={{ background: 'linear-gradient(180deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320))' }}
                     />
                   )}
 
                   {isComplete ? (
-                    <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" aria-label="Completed" />
+                    <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" aria-hidden="true" />
                   ) : isPlaceholder ? (
-                    <Lock className="h-3 w-3 shrink-0 text-muted-foreground/30" aria-label="Coming soon" />
+                    <Lock className="h-3 w-3 shrink-0 text-muted-foreground/50" aria-hidden="true" />
                   ) : (
-                    <Circle className="h-3 w-3 shrink-0 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" aria-label="Not started" />
+                    <Circle className="h-3 w-3 shrink-0 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" aria-hidden="true" />
                   )}
 
                   <span className="line-clamp-2 leading-snug">{lesson.title}</span>

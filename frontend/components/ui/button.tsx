@@ -25,7 +25,7 @@ const buttonVariants = cva(
           "bg-gradient-to-br from-[oklch(0.68_0.25_320)] to-[oklch(0.60_0.22_320)] text-[oklch(0.97_0.01_270)] shadow-[0_0_40px_rgba(217,70,239,.4),0_0_16px_rgba(217,70,239,.2)] hover:shadow-[0_0_70px_rgba(217,70,239,.6),0_0_28px_rgba(217,70,239,.35)] hover:-translate-y-0.5 active:translate-y-0",
         /* Ghost with visible border + hover glow */
         "ghost-glow":
-          "border border-border/80 bg-card/40 backdrop-blur-sm text-foreground hover:border-brand-cyan/40 hover:text-[oklch(0.82_0.18_195)] dark:bg-card/30",
+          "border border-border/80 bg-card/40 backdrop-blur-sm text-foreground hover:border-brand-cyan/40 hover:text-primary dark:bg-card/30",
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",

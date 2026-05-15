@@ -46,7 +46,7 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
     <nav aria-label="On this page" className={cn('', className)}>
       <div className="mb-3 flex items-center gap-1.5">
         <BookOpen className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
           On This Page
         </p>
       </div>

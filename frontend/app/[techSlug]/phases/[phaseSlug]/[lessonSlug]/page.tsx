@@ -150,7 +150,7 @@ export default async function LessonPage({ params }: Props) {
                   <div className="flex flex-wrap items-center gap-2">
                     <DifficultyBadge level={lesson.difficulty} />
                     {lesson.questMode && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-[oklch(0.85_0.20_320)]">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-brand-magenta">
                         Quest
                       </span>
                     )}

@@ -37,7 +37,7 @@ export default async function TechChallengesPage({ params }: Props) {
         {/* Header */}
         <div className="mb-8 flex flex-wrap items-start justify-between gap-6">
           <div>
-            <p className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-[oklch(0.72_0.18_195)]">
+            <p className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-brand-cyan">
               Practice Arena
             </p>
             <h1 className="font-display text-4xl font-medium tracking-tight">

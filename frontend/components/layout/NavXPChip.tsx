@@ -15,10 +15,10 @@ function calcLevel(xp: number): XPLevel {
 }
 
 const LEVEL_COLORS: Record<XPLevel, string> = {
-  novice:     'text-[oklch(0.82_0.18_195)]',
-  apprentice: 'text-[oklch(0.82_0.18_195)]',
-  senior:     'text-[oklch(0.85_0.20_320)]',
-  architect:  'text-[oklch(0.88_0.18_85)]',
+  novice:     'text-brand-cyan',
+  apprentice: 'text-brand-cyan',
+  senior:     'text-brand-magenta',
+  architect:  'text-brand-amber',
 }
 
 export function NavXPChip() {
@@ -44,8 +44,7 @@ export function NavXPChip() {
   return (
     <Link
       href="/progress"
-      className="hidden md:flex items-center gap-3 rounded-xl border border-border px-3 py-1.5 text-xs transition-all hover:border-[oklch(0.72_0.18_195/0.3)] hover:bg-[oklch(0.72_0.18_195/0.05)]"
-      aria-label={`${xpTotal} XP, ${levelLabel}, ${streakDays} day streak`}
+      className="hidden md:flex items-center gap-3 rounded-xl border border-border px-3 py-1.5 text-xs transition-all hover:border-primary/30 hover:bg-primary/5"
     >
       <span className="flex items-center gap-1">
         <Star className={`size-3 ${textColor}`} aria-hidden />
@@ -61,8 +60,8 @@ export function NavXPChip() {
         <>
           <span className="h-3 w-px bg-border" aria-hidden />
           <span className="flex items-center gap-0.5">
-            <Flame className="size-3 text-[oklch(0.88_0.18_85)]" aria-hidden />
-            <span className="font-mono font-bold text-[oklch(0.88_0.18_85)]">{streakDays}</span>
+            <Flame className="size-3 text-brand-amber" aria-hidden />
+            <span className="font-mono font-bold text-brand-amber">{streakDays}</span>
           </span>
         </>
       )}

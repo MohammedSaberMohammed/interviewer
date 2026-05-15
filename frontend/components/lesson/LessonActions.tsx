@@ -45,7 +45,7 @@ export function LessonActions({ techSlug, phaseSlug, lessonSlug }: LessonActions
         className={cn(
           'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all',
           isComplete
-            ? 'bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20 dark:text-emerald-400'
+            ? 'bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20 dark:text-emerald-400'
             : 'btn-brand',
         )}
       >

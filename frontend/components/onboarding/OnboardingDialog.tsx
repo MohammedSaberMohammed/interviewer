@@ -29,9 +29,9 @@ const STEPS = [
     italicWord: 1,
     body: 'Three commitments power the path:',
     pact: [
-      { icon: Clock, color: 'text-[oklch(0.72_0.18_195)]', text: '10 minutes a day, minimum. Daily beats marathon.', bold: '10 minutes a day,' },
-      { icon: Sparkles, color: 'text-[oklch(0.85_0.20_320)]', text: 'Phases unlock in order. Foundations first, always.', bold: 'Phases unlock in order.' },
-      { icon: Trophy, color: 'text-[oklch(0.88_0.18_85)]', text: "Challenges aren't optional. Read + solve = remember.", bold: "Challenges aren't optional." },
+      { icon: Clock, color: 'text-brand-cyan', text: '10 minutes a day, minimum. Daily beats marathon.', bold: '10 minutes a day,' },
+      { icon: Sparkles, color: 'text-brand-magenta', text: 'Phases unlock in order. Foundations first, always.', bold: 'Phases unlock in order.' },
+      { icon: Trophy, color: 'text-brand-amber', text: "Challenges aren't optional. Read + solve = remember.", bold: "Challenges aren't optional." },
     ],
     cta: "I'm in",
   },
@@ -108,7 +108,7 @@ export function OnboardingDialog({ className }: OnboardingDialogProps) {
         </button>
 
         {/* Step tag */}
-        <p className="mb-5 font-mono text-[11px] tracking-[0.18em] uppercase text-[oklch(0.85_0.20_320)]">
+        <p className="mb-5 font-mono text-[11px] tracking-[0.18em] uppercase text-brand-magenta">
           {current.tag}
         </p>
 

@@ -106,14 +106,14 @@ export function ChallengesExplorer({ challenges }: ChallengesExplorerProps) {
                 'flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all',
                 filter === tab.key
                   ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
+                  : 'text-foreground/60 hover:text-foreground',
               )}
             >
               {tab.label}
               <span
                 className={cn(
                   'rounded-full px-1.5 py-0.5 tabular-nums text-[10px] font-semibold leading-none',
-                  filter === tab.key ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
+                  filter === tab.key ? 'bg-primary/10 text-primary' : 'bg-muted text-foreground/60',
                 )}
               >
                 {tab.count}
@@ -146,7 +146,7 @@ export function ChallengesExplorer({ challenges }: ChallengesExplorerProps) {
                       {/* Phase heading */}
                       <Link
                         href={`/${techSlug}/phases/${phaseSlug}`}
-                        className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70 hover:text-primary transition-colors"
+                        className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground hover:text-primary transition-colors"
                       >
                         Phase {phase.phaseNumber} · {phase.phaseTitle}
                       </Link>

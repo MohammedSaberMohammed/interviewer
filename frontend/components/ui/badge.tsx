@@ -24,16 +24,16 @@ const badgeVariants = cva(
           "border-transparent text-primary underline-offset-4 hover:underline",
         /* Cyan — quest / current focus */
         cyan:
-          "border-[oklch(0.72_0.18_195/0.3)] bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.82_0.18_195)]",
+          "border-[oklch(0.72_0.18_195/0.3)] bg-[oklch(0.72_0.18_195/0.1)] text-brand-cyan",
         /* Magenta — senior / advanced */
         magenta:
-          "border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] text-[oklch(0.85_0.20_320)]",
+          "border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] text-brand-magenta",
         /* Amber — streak / achievement / warning */
         amber:
-          "border-[oklch(0.78_0.18_85/0.3)] bg-[oklch(0.78_0.18_85/0.1)] text-[oklch(0.88_0.18_85)]",
+          "border-[oklch(0.78_0.18_85/0.3)] bg-[oklch(0.78_0.18_85/0.1)] text-brand-amber",
         /* Success — completed / correct */
         success:
-          "border-[oklch(0.72_0.20_145/0.3)] bg-[oklch(0.72_0.20_145/0.1)] text-[oklch(0.8_0.20_145)]",
+          "border-[oklch(0.72_0.20_145/0.3)] bg-[oklch(0.72_0.20_145/0.1)] text-[oklch(0.42_0.18_145)] dark:text-[oklch(0.8_0.20_145)]",
       },
     },
     defaultVariants: {

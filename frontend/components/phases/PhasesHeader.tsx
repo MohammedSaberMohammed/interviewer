@@ -29,7 +29,7 @@ export function PhasesHeader({ techSlug, totalLessons, techTitle }: PhasesHeader
   return (
     <div className="flex items-start justify-between gap-6 flex-wrap">
       <div>
-        <p className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-[oklch(0.72_0.18_195)]">
+        <p className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-brand-cyan">
           Quest Map
         </p>
         <h1 className="font-display text-4xl font-medium tracking-tight">

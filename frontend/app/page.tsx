@@ -10,21 +10,21 @@ import { HeroOrb } from '@/components/home/HeroOrb'
 const FEATURES = [
   {
     icon: Code2,
-    color: 'text-[oklch(0.72_0.18_195)]',
+    color: 'text-brand-cyan',
     glow: 'bg-[oklch(0.72_0.18_195/0.1)]',
     title: 'Real Code Challenges',
     description: 'Every lesson ends with an embedded challenge. Read it once, solve it under pressure — the way interviews actually work.',
   },
   {
     icon: Zap,
-    color: 'text-[oklch(0.85_0.20_320)]',
+    color: 'text-brand-magenta',
     glow: 'bg-[oklch(0.68_0.25_320/0.1)]',
     title: 'Quest Mode',
     description: 'Earn XP, maintain streaks, unlock badges — from Novice to Architect. Progress that feels earned, not handed out.',
   },
   {
     icon: Brain,
-    color: 'text-[oklch(0.88_0.18_85)]',
+    color: 'text-brand-amber',
     glow: 'bg-[oklch(0.78_0.18_85/0.1)]',
     title: 'Memory Visualizer',
     description: 'See memory layout, heap vs stack, reference pointers — animated diagrams that make the abstract concrete.',
@@ -70,7 +70,7 @@ export default function HomePage() {
               {/* Left — copy */}
               <div>
                 {/* Eyebrow */}
-                <div className="mb-7 inline-flex items-center gap-2.5 rounded-full border border-[oklch(0.72_0.18_195/0.25)] bg-[oklch(0.72_0.18_195/0.07)] px-4 py-1.5 font-mono text-[11px] tracking-[0.14em] uppercase text-[oklch(0.82_0.18_195)]">
+                <div className="mb-7 inline-flex items-center gap-2.5 rounded-full border border-[oklch(0.72_0.18_195/0.25)] bg-[oklch(0.72_0.18_195/0.07)] px-4 py-1.5 font-mono text-[11px] tracking-[0.14em] uppercase text-brand-cyan">
                   <span className="relative flex size-2">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[oklch(0.72_0.18_195)] opacity-75" />
                     <span className="relative inline-flex size-2 rounded-full bg-[oklch(0.72_0.18_195)]" />
@@ -115,7 +115,7 @@ export default function HomePage() {
                     { num: String(technologies.length), label: 'Stacks', accent: true },
                   ].map(({ num, label, accent }) => (
                     <div key={label} className="flex flex-col gap-1">
-                      <span className={`font-display text-3xl font-semibold tracking-tight leading-none ${accent ? 'text-[oklch(0.72_0.18_195)]' : ''}`}>
+                      <span className={`font-display text-3xl font-semibold tracking-tight leading-none ${accent ? 'text-brand-cyan' : ''}`}>
                         {num}
                       </span>
                       <span className="font-mono text-[11px] tracking-[0.1em] uppercase text-muted-foreground">
@@ -138,7 +138,7 @@ export default function HomePage() {
         <section id="roadmap" className="py-4 px-4">
           <div className="container mx-auto max-w-7xl">
             <div className="card-glass p-8 md:p-12">
-              <div className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-[oklch(0.72_0.18_195)]">
+              <div className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-brand-cyan">
                 Your path
               </div>
               <h2 className="mb-2 font-display text-3xl font-medium tracking-tight">
@@ -154,10 +154,12 @@ export default function HomePage() {
                   <Link
                     key={slug}
                     href={i === 0 ? `/dotnet/phases` : '#'}
+                    aria-hidden={i !== 0 ? 'true' : undefined}
+                    tabIndex={i !== 0 ? -1 : undefined}
                     className={`flex shrink-0 items-center gap-3 rounded-2xl border px-5 py-4 min-w-[200px] transition-all duration-200 ${
                       i === 0
                         ? 'border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.06)] shadow-[var(--shadow-glow-cyan)] hover:shadow-[0_0_60px_rgba(34,211,238,.5)]'
-                        : 'border-border bg-card/50 opacity-50 cursor-default pointer-events-none'
+                        : 'border-border/40 bg-muted/20 cursor-default pointer-events-none'
                     }`}
                   >
                     <div className={`flex size-9 shrink-0 items-center justify-center rounded-xl font-mono text-sm font-bold ${
@@ -168,7 +170,7 @@ export default function HomePage() {
                       {String(i + 1).padStart(2, '0')}
                     </div>
                     <div>
-                      <div className="text-sm font-semibold leading-tight">{meta!.title}</div>
+                      <div className={`text-sm font-semibold leading-tight ${i === 0 ? '' : 'text-muted-foreground'}`}>{meta!.title}</div>
                       <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
                         {i === 0 ? 'Start here' : 'Locked'} · {meta!.level ?? 'Junior'}
                       </div>

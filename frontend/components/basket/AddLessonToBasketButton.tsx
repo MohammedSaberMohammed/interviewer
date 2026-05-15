@@ -79,12 +79,12 @@ export function AddLessonToBasketButton({
         type="button"
         onClick={handleClick}
         title={inAnyBasket ? 'In a template' : 'Add lesson to template'}
-        aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to template'}
+        aria-label={inAnyBasket ? 'Already in a template' : 'Add lesson to template'}
         className={cn(
           'flex items-center justify-center rounded-md border px-2 py-1.5 transition-colors shrink-0 text-xs font-medium gap-1',
           inAnyBasket
-            ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400'
-            : 'border-border bg-background text-muted-foreground hover:border-[#6366F1]/50 hover:text-[#6366F1] hover:bg-[#6366F1]/5 dark:hover:border-indigo-500/40 dark:hover:text-indigo-300',
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400'
+            : 'border-border bg-background text-muted-foreground hover:border-primary/40 hover:text-primary hover:bg-primary/5',
           className,
         )}
       >
@@ -101,12 +101,11 @@ export function AddLessonToBasketButton({
       type="button"
       onClick={handleClick}
       title={inAnyBasket ? 'In a template' : 'Add lesson to template'}
-      aria-label={inAnyBasket ? 'Lesson already in a basket' : 'Add lesson to template'}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors',
         inAnyBasket
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400'
-          : 'border-border text-muted-foreground hover:border-[#6366F1]/40 hover:bg-[#6366F1]/5 hover:text-[#6366F1] dark:hover:border-indigo-500/40 dark:hover:text-indigo-300',
+          : 'border-border text-muted-foreground hover:border-primary/40 hover:bg-primary/5 hover:text-primary',
         className,
       )}
     >

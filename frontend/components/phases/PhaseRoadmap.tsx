@@ -27,9 +27,9 @@ const LEVEL_ACCENT: Record<PhaseLevel, string> = {
 }
 
 const LEVEL_BADGE: Record<PhaseLevel, string> = {
-  junior:  'bg-[oklch(0.72_0.18_195/0.12)] border-[oklch(0.72_0.18_195/0.3)] text-[oklch(0.72_0.18_195)]',
-  mid:     'bg-[oklch(0.68_0.25_320/0.12)] border-[oklch(0.68_0.25_320/0.3)] text-[oklch(0.85_0.20_320)]',
-  senior:  'bg-[oklch(0.78_0.18_85/0.12)] border-[oklch(0.78_0.18_85/0.3)] text-[oklch(0.88_0.18_85)]',
+  junior:  'bg-[oklch(0.72_0.18_195/0.12)] border-[oklch(0.72_0.18_195/0.3)] text-brand-cyan',
+  mid:     'bg-[oklch(0.68_0.25_320/0.12)] border-[oklch(0.68_0.25_320/0.3)] text-brand-magenta',
+  senior:  'bg-[oklch(0.78_0.18_85/0.12)] border-[oklch(0.78_0.18_85/0.3)] text-brand-amber',
 }
 
 const LEVEL_LABEL: Record<PhaseLevel, string> = {
@@ -146,7 +146,7 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
                         {LEVEL_LABEL[phase.level]}
                       </span>
                       {showStartHere && (
-                        <span className="flex items-center gap-1 rounded-full border border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.1)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-[oklch(0.72_0.18_195)]">
+                        <span className="flex items-center gap-1 rounded-full border border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.1)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-brand-cyan">
                           <span className="relative flex size-1.5">
                             <span className="animate-ping absolute inline-flex size-full rounded-full bg-[oklch(0.72_0.18_195)] opacity-75" />
                             <span className="relative inline-flex size-1.5 rounded-full bg-[oklch(0.72_0.18_195)]" />
@@ -156,14 +156,14 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
                       )}
                     </div>
 
-                    <h3 className={cn(
+                    <h2 className={cn(
                       'text-[15px] font-semibold leading-snug transition-colors',
                       isComplete
                         ? 'text-muted-foreground'
                         : 'text-foreground group-hover:text-primary',
                     )}>
                       {phase.title}
-                    </h3>
+                    </h2>
                     {phase.subtitle && (
                       <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{phase.subtitle}</p>
                     )}

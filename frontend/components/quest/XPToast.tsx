@@ -13,7 +13,10 @@ interface XPEntry {
 let _nextId = 0
 
 export function XPToastProvider() {
+  const [mounted, setMounted] = useState(false)
   const [entries, setEntries] = useState<XPEntry[]>([])
+
+  useEffect(() => { setMounted(true) }, [])
 
   const handleAward = useCallback((e: Event) => {
     const { amount, reason } = (e as CustomEvent<{ amount: number; reason: string }>).detail
@@ -41,7 +44,7 @@ export function XPToastProvider() {
     return () => window.removeEventListener('xp:award', handleAward)
   }, [handleAward])
 
-  if (typeof document === 'undefined') return null
+  if (!mounted) return null
 
   return createPortal(
     <div
