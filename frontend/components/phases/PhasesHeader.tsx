@@ -62,7 +62,7 @@ export function PhasesHeader({ techSlug, totalLessons, techTitle }: PhasesHeader
               transform="rotate(-90 32 32)"
               style={{ transition: 'stroke-dashoffset 0.6s ease', filter: 'drop-shadow(0 0 8px oklch(0.72 0.18 195 / 0.6))' }}
             />
-            <text x="32" y="36" textAnchor="middle" fontSize="12" fontWeight="700" fill="oklch(0.82 0.18 195)">
+            <text x="32" y="36" textAnchor="middle" fontSize="12" fontWeight="700" style={{ fill: 'var(--color-primary)' }}>
               {pct}%
             </text>
           </svg>

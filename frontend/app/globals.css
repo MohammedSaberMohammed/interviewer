@@ -278,9 +278,15 @@
 
   code:not([class]) {
     @apply font-mono rounded px-1.5 py-0.5 text-sm;
+    /* Light mode — soft slate tint, accessible dark-teal text */
+    background: oklch(0.91 0.012 265);
+    color: oklch(0.44 0.18 230);
+    border: 1px solid oklch(0.80 0.01 265);
+  }
+  .dark code:not([class]) {
     background: oklch(0.185 0.022 270 / 0.9);
     color: oklch(0.72 0.18 195);
-    border: 1px solid oklch(0.96 0 0 / 0.08);
+    border-color: oklch(0.96 0 0 / 0.08);
   }
 
   :focus-visible {
@@ -300,20 +306,17 @@
 .code-block::-webkit-scrollbar-thumb:hover { background: oklch(0.72 0.18 195 / 40%); }
 
 /* ─── Shiki dual-theme (github-light / github-dark) ────────────────────────── */
-/* Light mode: use --shiki-light variables */
-html .shiki,
+/* Token colors only — backgrounds are controlled by the CodeBlock container.  */
+/* Light mode */
 html .shiki span {
   color: var(--shiki-light) !important;
-  background-color: var(--shiki-light-bg) !important;
   font-style: var(--shiki-light-font-style) !important;
   font-weight: var(--shiki-light-font-weight) !important;
   text-decoration: var(--shiki-light-text-decoration) !important;
 }
-/* Dark mode: use --shiki-dark variables */
-html.dark .shiki,
+/* Dark mode */
 html.dark .shiki span {
   color: var(--shiki-dark) !important;
-  background-color: var(--shiki-dark-bg) !important;
   font-style: var(--shiki-dark-font-style) !important;
   font-weight: var(--shiki-dark-font-weight) !important;
   text-decoration: var(--shiki-dark-text-decoration) !important;

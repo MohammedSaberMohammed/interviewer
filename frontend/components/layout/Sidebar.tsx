@@ -52,7 +52,7 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                   className={cn(
                     'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs transition-all duration-200',
                     isActive
-                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.82_0.18_195)] dark:bg-[oklch(0.72_0.18_195/0.12)] dark:text-[oklch(0.82_0.18_195)]'
+                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.72_0.18_195/0.12)] dark:text-[oklch(0.82_0.18_195)]'
                       : isPlaceholder
                         ? 'text-muted-foreground cursor-not-allowed'
                         : isComplete

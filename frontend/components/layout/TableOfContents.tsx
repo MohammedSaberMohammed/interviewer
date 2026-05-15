@@ -57,7 +57,7 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
                 item.level === 3 && 'pl-5',
                 item.level === 4 && 'pl-7',
                 activeId === item.id
-                  ? 'border-[oklch(0.72_0.18_195)] text-[oklch(0.82_0.18_195)] font-medium'
+                  ? 'border-[oklch(0.44_0.18_230)] text-[oklch(0.44_0.18_230)] dark:border-[oklch(0.72_0.18_195)] dark:text-[oklch(0.82_0.18_195)] font-medium'
                   : 'border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground'
               )}
               onClick={(e) => {
