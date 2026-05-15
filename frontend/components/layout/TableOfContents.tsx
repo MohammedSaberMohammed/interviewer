@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface TocItem {
@@ -44,37 +43,28 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
 
   return (
     <nav aria-label="On this page" className={cn('', className)}>
-      <div className="mb-3 flex items-center gap-1.5">
-        <BookOpen className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-          On This Page
-        </p>
-      </div>
-      <ul className="space-y-1">
+      <p className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+        On This Page
+      </p>
+      <ul className="flex flex-col gap-0.5">
         {items.map((item) => (
           <li key={item.id}>
             <a
               href={`#${item.id}`}
               className={cn(
-                'flex items-start gap-2 rounded-md py-1 text-xs leading-relaxed transition-colors',
-                item.level === 3 && 'pl-2',
-                item.level === 4 && 'pl-4',
+                'block border-l-2 py-1.5 text-xs leading-relaxed transition-all duration-200',
+                item.level === 2 && 'pl-3',
+                item.level === 3 && 'pl-5',
+                item.level === 4 && 'pl-7',
                 activeId === item.id
-                  ? 'font-medium text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
+                  ? 'border-[oklch(0.72_0.18_195)] text-[oklch(0.82_0.18_195)] font-medium'
+                  : 'border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground'
               )}
               onClick={(e) => {
                 e.preventDefault()
                 document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth' })
               }}
             >
-              <span
-                aria-hidden="true"
-                className={cn(
-                  'mt-1.5 h-1 w-1 shrink-0 rounded-full',
-                  activeId === item.id ? 'bg-primary' : 'bg-muted-foreground/40'
-                )}
-              />
               {item.text}
             </a>
           </li>

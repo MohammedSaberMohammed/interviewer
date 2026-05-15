@@ -116,16 +116,14 @@ export default async function LessonPage({ params }: Props) {
       <ReadingProgress />
       <Navbar techSlug={techSlug} />
       <div className="container mx-auto px-4 py-8">
-        {/* Breadcrumb */}
-        <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm text-muted-foreground mb-6">
-          <Link href="/technologies" className="hover:text-foreground transition-colors">Technologies</Link>
-          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+        {/* Breadcrumb — mono style matching mockup */}
+        <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground mb-6">
           <Link href={`/${techSlug}/phases`} className="hover:text-foreground transition-colors">{tech?.title ?? techSlug}</Link>
-          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          <span aria-hidden="true" className="text-muted-foreground/50">›</span>
           <Link href={`/${techSlug}/phases/${phaseSlug}`} className="hover:text-foreground transition-colors">
-            {phaseMeta?.title ?? phaseSlug}
+            Phase {phaseMeta?.number ?? ''}
           </Link>
-          <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          <span aria-hidden="true" className="text-muted-foreground/50">›</span>
           <span className="text-foreground truncate max-w-48">{lesson.title}</span>
         </nav>
 
@@ -144,22 +142,21 @@ export default async function LessonPage({ params }: Props) {
 
           {/* Main content */}
           <main id="main-content" className="flex-1 min-w-0">
-            <div className="mb-8 flex items-start gap-6">
-              <div className="flex-1 min-w-0">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <DifficultyBadge level={lesson.difficulty} />
-                    {lesson.questMode && (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-brand-magenta">
-                        Quest
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3" aria-hidden="true" />
-                      {lesson.readingTime} min read
-                    </span>
-                  </div>
-                  {lesson.status === 'published' && (
+            <div className="mb-8">
+              {/* Meta badges row */}
+              <div className="flex flex-wrap items-center gap-2 mb-4">
+                <DifficultyBadge level={lesson.difficulty} />
+                {lesson.questMode && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-[oklch(0.68_0.25_320/0.3)] bg-[oklch(0.68_0.25_320/0.1)] px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.1em] text-brand-magenta">
+                    ⚡ Quest
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  <Clock className="h-2.5 w-2.5" aria-hidden="true" />
+                  {lesson.readingTime} min read
+                </span>
+                {lesson.status === 'published' && (
+                  <div className="ml-auto">
                     <AddLessonToBasketButton
                       lessonSlug={lessonSlug}
                       phaseSlug={phaseSlug}
@@ -170,19 +167,20 @@ export default async function LessonPage({ params }: Props) {
                       difficulty={lesson.difficulty}
                       summary={lesson.summary}
                     />
-                  )}
-                </div>
-                <h1 className="font-display text-3xl font-medium tracking-tight mb-2">{lesson.title}</h1>
-                {lesson.summary && (
-                  <p className="text-muted-foreground text-base leading-relaxed max-w-2xl">{lesson.summary}</p>
+                  </div>
                 )}
-                <div className="mt-5">
-                  <LessonActions techSlug={techSlug} phaseSlug={phaseSlug} lessonSlug={lessonSlug} />
-                </div>
               </div>
-              <div aria-hidden="true" className="hidden md:flex shrink-0 h-16 w-16 items-center justify-center rounded-2xl bg-muted text-4xl">
-                {phaseMeta?.emoji}
-              </div>
+
+              {/* Large title */}
+              <h1 className="font-display text-4xl sm:text-5xl font-semibold tracking-[-0.03em] leading-[1.05] mb-4">
+                {lesson.title}
+              </h1>
+
+              {lesson.summary && (
+                <p className="text-muted-foreground text-base leading-relaxed max-w-2xl mb-6">{lesson.summary}</p>
+              )}
+
+              <LessonActions techSlug={techSlug} phaseSlug={phaseSlug} lessonSlug={lessonSlug} />
             </div>
 
             <QuestLayout
@@ -219,10 +217,10 @@ export default async function LessonPage({ params }: Props) {
             />
           </main>
 
-          {/* Right sidebar — TOC */}
-          <aside className="hidden xl:block w-48 shrink-0">
+          {/* Right sidebar — TOC + XP card */}
+          <aside className="hidden xl:block w-52 shrink-0">
             <div className="sticky top-20">
-              <LessonTOC summary={lesson.summary} />
+              <LessonTOC techSlug={techSlug} />
             </div>
           </aside>
         </div>

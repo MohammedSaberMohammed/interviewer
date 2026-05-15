@@ -420,7 +420,7 @@ html.dark .shiki span {
 /* ─── Prose (MDX lesson content) ────────────────────────────────────────────── */
 @layer components {
   .prose-lesson {
-    @apply max-w-prose;
+    @apply max-w-[720px];
     @apply prose dark:prose-invert;
     @apply prose-headings:font-heading prose-headings:tracking-tight prose-headings:font-medium;
     @apply prose-code:font-mono prose-code:text-sm;
@@ -428,7 +428,45 @@ html.dark .shiki span {
     @apply prose-a:text-primary prose-a:no-underline hover:prose-a:underline;
     @apply prose-strong:text-foreground;
     @apply prose-lead:text-muted-foreground;
+    @apply prose-p:leading-[1.75] prose-p:text-base;
   }
+
+  /* H2: gradient left accent bar (cyan → magenta) */
+  .prose-lesson h2 {
+    position: relative;
+    padding-left: 18px;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+  }
+  .prose-lesson h2::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 3px;
+    background: linear-gradient(180deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320));
+    border-radius: 2px;
+  }
+
+  /* Inline code: cyan tint */
+  .prose-lesson :not(pre) > code {
+    background: oklch(0.72 0.18 195 / 0.08);
+    color: oklch(0.44 0.18 230);
+    border-radius: 5px;
+    padding: 2px 6px;
+    font-size: 0.88em;
+    border: 1px solid oklch(0.72 0.18 195 / 0.15);
+  }
+  .dark .prose-lesson :not(pre) > code {
+    background: oklch(0.72 0.18 195 / 0.12);
+    color: oklch(0.82 0.18 195);
+    border-color: oklch(0.72 0.18 195 / 0.2);
+  }
+
   .dark .prose-lesson {
     --tw-prose-body: oklch(0.88 0.01 270);
     --tw-prose-headings: oklch(0.96 0.01 270);
