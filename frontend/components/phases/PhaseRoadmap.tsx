@@ -96,12 +96,7 @@ export function PhaseRoadmap({ phases, techSlug }: PhaseRoadmapProps) {
           const accentColor = isComplete ? 'oklch(0.72 0.20 145)' : LEVEL_ACCENT[phase.level]
           const cubeColor = LEVEL_CUBE_COLOR[phase.level]
 
-          const firstIncompleteLesson = phase.lessons.find(
-            (l) => !completedLessons.includes(`${techSlug}/${phase.slug}/${l.slug}`)
-          )
-          const href = firstIncompleteLesson
-            ? `/${techSlug}/phases/${phase.slug}/${firstIncompleteLesson.slug}`
-            : `/${techSlug}/phases/${phase.slug}`
+          const href = `/${techSlug}/phases/${phase.slug}`
 
           return (
             <motion.div

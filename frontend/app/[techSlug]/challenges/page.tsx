@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
-import { Code2, HelpCircle } from 'lucide-react'
-import { getAllChallenges, getAllTechSlugs, getTechMeta } from '@/lib/content'
+import { Code2, HelpCircle, Zap, BarChart3 } from 'lucide-react'
+import { getAllChallenges, getAllTechSlugs, getTechMeta, getAllPhases } from '@/lib/content'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
 import { ChallengesExplorer } from '@/components/challenges/ChallengesExplorer'
@@ -27,50 +27,95 @@ export default async function TechChallengesPage({ params }: Props) {
   const { techSlug } = await params
   const meta = getTechMeta(techSlug)
   const challenges = getAllChallenges().filter((c) => c.techSlug === techSlug)
+  const phases = getAllPhases(techSlug).map((p) => ({
+    slug: p.slug,
+    number: p.number,
+    title: p.title,
+  }))
   const quizCount = challenges.filter((c) => c.type === 'quiz').length
   const codeCount = challenges.filter((c) => c.type === 'challenge').length
+
+  const stats = [
+    { label: 'Total', value: challenges.length, icon: BarChart3, colorClass: 'text-brand-cyan', bgClass: 'bg-[oklch(0.72_0.18_195/0.12)]' },
+    { label: 'Quiz', value: quizCount, icon: HelpCircle, colorClass: 'text-[oklch(0.85_0.20_320)]', bgClass: 'bg-[oklch(0.68_0.25_320/0.12)]' },
+    { label: 'Coding', value: codeCount, icon: Code2, colorClass: 'text-brand-cyan', bgClass: 'bg-[oklch(0.72_0.18_195/0.12)]' },
+    { label: 'System Design', value: 0, icon: Zap, colorClass: 'text-brand-amber', bgClass: 'bg-[oklch(0.78_0.18_85/0.12)]' },
+  ]
 
   return (
     <>
       <Navbar techSlug={techSlug} />
-      <main id="main-content" className="container mx-auto px-4 py-10 max-w-6xl">
-        {/* Header */}
-        <div className="mb-8 flex flex-wrap items-start justify-between gap-6">
-          <div>
-            <p className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-brand-cyan">
-              Practice Arena
-            </p>
-            <h1 className="font-display text-4xl font-medium tracking-tight">
-              {meta?.title ?? techSlug}{' '}
-              <em className="italic font-light text-gradient-brand">Challenges</em>
-            </h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Embedded quizzes &amp; code challenges — sorted by phase.
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
-              <span className="flex size-6 items-center justify-center rounded-lg bg-[oklch(0.68_0.25_320/0.12)]">
-                <HelpCircle className="h-3.5 w-3.5 text-[oklch(0.85_0.20_320)]" aria-hidden="true" />
-              </span>
-              <span className="font-mono text-sm font-semibold">{quizCount}</span>
-              <span className="text-xs text-muted-foreground">quizzes</span>
+      <main id="main-content">
+
+        {/* ── Hero ──────────────────────────────────────────── */}
+        <div
+          className="relative overflow-hidden"
+          style={{
+            background: 'linear-gradient(135deg, oklch(0.20 0.12 280) 0%, oklch(0.18 0.14 310) 50%, oklch(0.20 0.10 290) 100%)',
+          }}
+        >
+          {/* Subtle grid */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 opacity-[0.05]"
+            style={{
+              backgroundImage: `linear-gradient(oklch(1 0 0 / 0.8) 1px, transparent 1px), linear-gradient(90deg, oklch(1 0 0 / 0.8) 1px, transparent 1px)`,
+              backgroundSize: '40px 40px',
+            }}
+          />
+          {/* Glow */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 h-64 w-full opacity-20"
+            style={{ background: 'radial-gradient(ellipse 60% 100% at 50% 0%, oklch(0.72 0.18 195 / 0.5), transparent)' }}
+          />
+
+          <div className="container mx-auto px-4 py-10 max-w-6xl relative">
+            {/* Title */}
+            <div className="mb-8">
+              <p className="mb-2 font-mono text-[10px] tracking-[0.18em] uppercase text-[oklch(0.82_0.18_195)]">
+                Practice Arena
+              </p>
+              <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-white mb-2">
+                {meta?.title ?? techSlug}{' '}
+                <span className="bg-gradient-to-r from-[oklch(0.82_0.18_195)] to-[oklch(0.85_0.20_320)] bg-clip-text text-transparent">
+                  Challenges
+                </span>
+              </h1>
+              <p className="text-sm text-white/60">
+                Practice with quizzes and code challenges — filtered by phase, difficulty, and status.
+              </p>
             </div>
-            <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
-              <span className="flex size-6 items-center justify-center rounded-lg bg-[oklch(0.72_0.18_195/0.12)]">
-                <Code2 className="h-3.5 w-3.5 text-[oklch(0.72_0.18_195)]" aria-hidden="true" />
-              </span>
-              <span className="font-mono text-sm font-semibold">{codeCount}</span>
-              <span className="text-xs text-muted-foreground">code</span>
+
+            {/* Stats */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {stats.map(({ label, value, icon: Icon, colorClass, bgClass }) => (
+                <div
+                  key={label}
+                  className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-sm"
+                >
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${bgClass}`}>
+                    <Icon className={`h-4 w-4 ${colorClass}`} aria-hidden="true" />
+                  </span>
+                  <div>
+                    <p className="font-mono text-xl font-bold text-white tabular-nums">{value}</p>
+                    <p className="text-[10px] text-white/50">{label}</p>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
-        {challenges.length === 0 ? (
-          <p className="text-muted-foreground">No challenges yet.</p>
-        ) : (
-          <ChallengesExplorer challenges={challenges} />
-        )}
+        {/* ── Explorer ───────────────────────────────────────── */}
+        <div className="container mx-auto px-4 py-8 max-w-6xl">
+          {challenges.length === 0 ? (
+            <p className="text-muted-foreground">No challenges yet.</p>
+          ) : (
+            <ChallengesExplorer challenges={challenges} phases={phases} />
+          )}
+        </div>
+
       </main>
       <Footer />
     </>
