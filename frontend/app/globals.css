@@ -14,6 +14,7 @@
   --font-sans: var(--font-inter);
   --font-mono: var(--font-jetbrains-mono);
   --font-heading: var(--font-inter);
+  --font-display: var(--font-inter);   /* alias — components using font-display still resolve */
 
   /* Colors — mapped from CSS vars */
   --color-background: var(--background);
@@ -119,6 +120,14 @@
   --brand-foreground: oklch(1 0 0);
   --gradient-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 60%, #A78BFA 100%);
 
+  /* Legacy brand aliases — so existing components don't break */
+  --brand-cyan:         oklch(0.585 0.220 264);   /* → indigo */
+  --brand-magenta:      oklch(0.55  0.240 295);   /* → violet */
+  --brand-amber:        oklch(0.78  0.170 72);    /* → amber  */
+  --brand-text-cyan:    oklch(0.44  0.200 264);   /* WCAG AA on white */
+  --brand-text-magenta: oklch(0.46  0.220 295);   /* WCAG AA on white */
+  --brand-text-amber:   oklch(0.52  0.150 72);    /* WCAG AA on white */
+
   /* Semantic status */
   --success: oklch(0.72 0.20 145);
   --warning: oklch(0.78 0.17 72);
@@ -184,6 +193,14 @@
   --brand: oklch(0.695 0.190 264);
   --brand-foreground: oklch(0.076 0.012 264);
   --gradient-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 60%, #A78BFA 100%);
+
+  /* Legacy brand aliases — vivid on dark backgrounds */
+  --brand-cyan:         oklch(0.695 0.190 264);   /* → bright indigo */
+  --brand-magenta:      oklch(0.72  0.220 295);   /* → bright violet */
+  --brand-amber:        oklch(0.78  0.180 85);    /* → bright amber  */
+  --brand-text-cyan:    oklch(0.75  0.190 264);
+  --brand-text-magenta: oklch(0.78  0.220 295);
+  --brand-text-amber:   oklch(0.88  0.180 85);
 
   /* Semantic status */
   --success: oklch(0.72 0.20 145);
@@ -423,6 +440,23 @@ html.dark .shiki span {
   /* ── Section label ──────────────────────────────────────────────────── */
   .section-label {
     @apply inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/70 px-3 py-1 text-xs font-medium text-muted-foreground;
+  }
+}
+
+/* ─── Legacy brand text utilities ──────────────────────────────────────── */
+/* Kept for backward compat with existing components; values remapped to     */
+/* the new indigo/violet palette via CSS variables above.                    */
+@layer utilities {
+  .text-brand-cyan    { color: var(--brand-text-cyan); }
+  .text-brand-magenta { color: var(--brand-text-magenta); }
+  .text-brand-amber   { color: var(--brand-text-amber); }
+
+  /* Alias so both class names resolve the same gradient text */
+  .text-gradient-brand {
+    background: var(--gradient-brand);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
   }
 }
 
