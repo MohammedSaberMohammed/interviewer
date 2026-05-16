@@ -99,9 +99,9 @@ export function CodeChallenge({
   }
 
   return (
-    <div className="not-prose my-6 rounded-xl border border-border overflow-hidden bg-card dark:bg-card">
+    <div className="not-prose my-6 rounded-xl border border-border overflow-hidden bg-card dark:bg-[oklch(0.103_0.018_264)] challenge-card">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 dark:bg-[oklch(0.18_0.014_264/0.5)] px-4 py-3">
+      <div className="flex items-center justify-between gap-2 border-b border-border dark:border-[oklch(0.820_0.155_195/0.12)] bg-muted/40 dark:bg-[oklch(0.085_0.016_264/0.8)] px-4 py-3">
         <div className="flex items-center gap-2">
           <Code2 className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
           <span className="text-sm font-semibold">{displayTitle}</span>
@@ -114,11 +114,17 @@ export function CodeChallenge({
 
       <div className="p-4 space-y-4">
         {/* Code block */}
-        <div className="overflow-hidden rounded-lg border border-border">
-          <div className="border-b border-border bg-muted/50 px-3 py-1.5">
-            <span className="text-xs font-mono text-muted-foreground">{language}</span>
+        <div className="overflow-hidden rounded-lg border border-border dark:border-[oklch(0.820_0.155_195/0.10)]"
+          style={{ boxShadow: '0 2px 12px oklch(0 0 0 / 0.30)' }}>
+          <div className="flex items-center gap-2 border-b border-border dark:border-[oklch(0.820_0.155_195/0.10)] bg-muted/50 dark:bg-[oklch(0.075_0.014_264)] px-3 py-1.5">
+            <div className="flex gap-1.5" aria-hidden="true">
+              <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]/60" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]/60" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]/60" />
+            </div>
+            <span className="text-xs font-mono text-muted-foreground ml-1">{language}</span>
           </div>
-          <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[oklch(0.10_0.016_264)] p-4 text-sm font-mono leading-relaxed">
+          <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[oklch(0.068_0.014_264)] p-4 text-sm font-mono leading-relaxed">
             <code className={`language-${language} text-slate-800 dark:text-slate-100`}>{code}</code>
           </pre>
         </div>
@@ -133,13 +139,13 @@ export function CodeChallenge({
           {shuffled.options.map((option, i) => {
             const isSelected = selected === i
             const isCorrectOption = i === shuffled.correctAnswer
-            let optionClass = 'border-border bg-background dark:bg-[oklch(0.13_0.014_264)] hover:bg-accent hover:border-primary/30 dark:hover:bg-[oklch(0.175_0.018_264)]'
+            let optionClass = 'border-border bg-background dark:bg-[oklch(0.128_0.018_264)] dark:border-[oklch(0.820_0.155_195/0.08)] hover:bg-accent hover:border-primary/30 dark:hover:bg-[oklch(0.155_0.022_195)] dark:hover:border-[oklch(0.820_0.155_195/0.25)]'
 
             if (submitted) {
               if (isCorrectOption) optionClass = 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40'
               else if (isSelected && !isCorrectOption) optionClass = 'border-rose-500 bg-rose-50 dark:bg-rose-950/40'
             } else if (isSelected) {
-              optionClass = 'border-primary bg-accent'
+              optionClass = 'border-primary bg-accent dark:bg-[oklch(0.155_0.030_195)] dark:border-[oklch(0.820_0.155_195/0.50)]'
             }
 
             return (

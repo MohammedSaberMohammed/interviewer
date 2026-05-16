@@ -22,10 +22,11 @@ export function Navbar({ techSlug }: NavbarProps) {
 
   return (
     <header className="sticky top-0 z-40 w-full">
-      {/* Glass border bottom */}
-      <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-border to-transparent" />
+      {/* Glass border bottom — cyan glow in dark mode */}
+      <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-border to-transparent dark:via-[oklch(0.820_0.155_195/0.28)] navbar-border-glow" />
 
-      <div className="backdrop-blur-xl bg-background/85 supports-[backdrop-filter]:bg-background/75 h-14 flex items-center">
+      <div className="backdrop-blur-xl bg-background/85 dark:bg-[oklch(0.063_0.012_264/0.80)] supports-[backdrop-filter]:bg-background/75 dark:supports-[backdrop-filter]:bg-[oklch(0.063_0.012_264/0.65)] h-14 flex items-center"
+        style={{ boxShadow: '0 1px 0 oklch(0 0 0 / 0.20), 0 4px 20px oklch(0 0 0 / 0.15)' }}>
         <div className="container mx-auto flex h-full items-center gap-4 px-4 max-w-7xl">
 
           {/* Mobile drawer */}
@@ -91,7 +92,7 @@ export function Navbar({ techSlug }: NavbarProps) {
               type="button"
               onClick={openSearch}
               aria-label="Search lessons"
-              className="hidden sm:flex items-center gap-2.5 rounded-lg border border-border/80 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-border hover:bg-muted hover:text-foreground w-44 group"
+              className="hidden sm:flex items-center gap-2.5 rounded-lg border border-border/80 bg-muted/40 dark:bg-[oklch(0.103_0.018_264/0.70)] dark:border-[oklch(0.820_0.155_195/0.10)] px-3 py-1.5 text-xs text-muted-foreground transition-all hover:border-border dark:hover:border-[oklch(0.820_0.155_195/0.25)] hover:bg-muted dark:hover:bg-[oklch(0.138_0.030_195/0.30)] hover:text-foreground w-44 group"
             >
               <Search className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span className="flex-1 text-left">Search…</span>
