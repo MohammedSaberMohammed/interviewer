@@ -33,6 +33,7 @@ public static class DependencyInjection
 
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
         services.AddScoped<ITechnologyRepository, TechnologyRepository>();
+        services.AddScoped<ILessonRepository, LessonRepository>();
 
         return services;
     }

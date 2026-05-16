@@ -10,6 +10,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
 {
     public DbSet<Technology> Technologies => Set<Technology>();
     public DbSet<Phase> Phases => Set<Phase>();
+    public DbSet<Lesson> Lessons => Set<Lesson>();
+    public DbSet<LessonVersion> LessonVersions => Set<LessonVersion>();
+    public DbSet<Challenge> Challenges => Set<Challenge>();
+    public DbSet<ChallengeOption> ChallengeOptions => Set<ChallengeOption>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
