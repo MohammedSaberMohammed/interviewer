@@ -22,30 +22,33 @@ export function PhaseDetailProgress({ techSlug, phaseSlug, totalLessons }: Phase
   const completed = completedLessons.filter((id) => id.startsWith(`${phaseSlug}/`)).length
   const pct = totalLessons === 0 ? 0 : Math.round((completed / totalLessons) * 100)
 
-  if (!mounted || completed === 0) return null
-
   return (
     <div className="mb-6 rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium">Your Progress</span>
-        <span className="text-xs font-semibold tabular-nums text-primary">{pct}%</span>
+        <span className="text-sm font-semibold">Your Progress</span>
+        <span className="text-xs font-bold tabular-nums text-primary">
+          {mounted ? pct : 0}%
+          <span className="text-muted-foreground font-normal ml-1.5">
+            · {mounted ? completed : 0} / {totalLessons} lessons
+          </span>
+        </span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{
-            width: `${pct}%`,
+            width: `${mounted ? pct : 0}%`,
             background: pct === 100
               ? 'oklch(0.72 0.20 145)'
-              : 'linear-gradient(90deg, #6366F1, #8B5CF6)',
+              : 'linear-gradient(90deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320))',
           }}
           role="progressbar"
-          aria-valuenow={pct}
+          aria-valuenow={mounted ? pct : 0}
           aria-valuemin={0}
           aria-valuemax={100}
+          aria-label={`Progress: ${mounted ? pct : 0}% complete`}
         />
       </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">{completed} of {totalLessons} lessons completed</p>
     </div>
   )
 }

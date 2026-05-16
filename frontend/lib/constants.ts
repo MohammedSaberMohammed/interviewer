@@ -113,6 +113,7 @@ export const CALLOUT_CONFIG = {
 /* ─── Navigation items ────────────────────────────────────────────────────── */
 export const NAV_ITEMS = [
   { title: 'Technologies', href: '/technologies', description: 'Choose your technology track' },
+  { title: 'Templates', href: '/interview-templates', description: 'Interview question templates' },
   { title: 'About', href: '/about', description: 'About this platform' },
 ] as const
 
@@ -122,6 +123,7 @@ export function getTechNavItems(techSlug: string) {
     { title: 'Challenges', href: `/${techSlug}/challenges`, description: 'Practice with code challenges' },
     { title: 'Cheatsheet', href: `/${techSlug}/cheatsheet`, description: 'Quick reference for interviews' },
     { title: 'Glossary', href: `/${techSlug}/glossary`, description: 'Key terms and definitions' },
+    { title: 'Templates', href: '/interview-templates', description: 'Interview question templates' },
   ]
 }
 

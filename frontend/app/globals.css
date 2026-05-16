@@ -14,6 +14,7 @@
   --font-sans: var(--font-inter);
   --font-mono: var(--font-jetbrains-mono);
   --font-heading: var(--font-inter);
+  --font-display: var(--font-inter);   /* alias — components using font-display still resolve */
 
   /* Colors — mapped from CSS vars */
   --color-background: var(--background);
@@ -119,6 +120,14 @@
   --brand-foreground: oklch(1 0 0);
   --gradient-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 60%, #A78BFA 100%);
 
+  /* Legacy brand aliases — so existing components don't break */
+  --brand-cyan:         oklch(0.585 0.220 264);   /* → indigo */
+  --brand-magenta:      oklch(0.55  0.240 295);   /* → violet */
+  --brand-amber:        oklch(0.78  0.170 72);    /* → amber  */
+  --brand-text-cyan:    oklch(0.44  0.200 264);   /* WCAG AA on white */
+  --brand-text-magenta: oklch(0.46  0.220 295);   /* WCAG AA on white */
+  --brand-text-amber:   oklch(0.52  0.150 72);    /* WCAG AA on white */
+
   /* Semantic status */
   --success: oklch(0.72 0.20 145);
   --warning: oklch(0.78 0.17 72);
@@ -144,32 +153,32 @@
 
 /* ─── Dark mode ─────────────────────────────────────────────────────────── */
 .dark {
-  /* Base — premium near-black like Linear/Vercel */
-  --background: oklch(0.076 0.012 264);            /* #09090B */
+  /* Base — lifted from pure black so content layers are readable */
+  --background: oklch(0.118 0.014 264);            /* ~#0E0E18 — dark slate, not void */
   --foreground: oklch(0.940 0.004 264);             /* #F1F1F3 */
 
-  /* Card — slightly lighter than bg */
-  --card: oklch(0.105 0.012 264);                  /* #111115 */
+  /* Card — visibly above background */
+  --card: oklch(0.155 0.014 264);                  /* ~#151520 */
   --card-foreground: oklch(0.940 0.004 264);
 
-  /* Popover */
-  --popover: oklch(0.105 0.012 264);
+  /* Popover — top elevation */
+  --popover: oklch(0.185 0.014 264);
   --popover-foreground: oklch(0.940 0.004 264);
 
   /* Primary — brighter indigo for dark bg */
   --primary: oklch(0.695 0.190 264);               /* #818CF8 */
-  --primary-foreground: oklch(0.076 0.012 264);
+  --primary-foreground: oklch(0.118 0.014 264);
 
   /* Secondary */
-  --secondary: oklch(0.152 0.014 264);             /* #191920 */
+  --secondary: oklch(0.195 0.014 264);
   --secondary-foreground: oklch(0.850 0.006 264);
 
   /* Muted */
-  --muted: oklch(0.145 0.012 264);
+  --muted: oklch(0.188 0.012 264);
   --muted-foreground: oklch(0.480 0.010 264);      /* #6B7280 */
 
   /* Accent */
-  --accent: oklch(0.190 0.035 264);
+  --accent: oklch(0.215 0.035 264);
   --accent-foreground: oklch(0.695 0.190 264);
 
   /* Destructive */
@@ -184,6 +193,14 @@
   --brand: oklch(0.695 0.190 264);
   --brand-foreground: oklch(0.076 0.012 264);
   --gradient-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 60%, #A78BFA 100%);
+
+  /* Legacy brand aliases — vivid on dark backgrounds */
+  --brand-cyan:         oklch(0.695 0.190 264);   /* → bright indigo */
+  --brand-magenta:      oklch(0.72  0.220 295);   /* → bright violet */
+  --brand-amber:        oklch(0.78  0.180 85);    /* → bright amber  */
+  --brand-text-cyan:    oklch(0.75  0.190 264);
+  --brand-text-magenta: oklch(0.78  0.220 295);
+  --brand-text-amber:   oklch(0.88  0.180 85);
 
   /* Semantic status */
   --success: oklch(0.72 0.20 145);
@@ -263,6 +280,17 @@
 .code-block::-webkit-scrollbar-track  { background: transparent; }
 .code-block::-webkit-scrollbar-thumb  { background: oklch(0.5 0 0 / 16%); border-radius: 9999px; }
 .code-block::-webkit-scrollbar-thumb:hover { background: oklch(0.5 0 0 / 30%); }
+
+/* ─── Shiki dual-theme (github-light / github-dark) ─────────────────────── */
+/* Shiki outputs inline `color:#hex` for the light theme on every span, so   */
+/* light mode needs no override — the inline styles are already correct.      */
+/* In dark mode we swap to the --shiki-dark custom property.                 */
+html.dark .shiki span {
+  color: var(--shiki-dark) !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
 
 /* ─── Component layer ───────────────────────────────────────────────────── */
 @layer components {
@@ -415,16 +443,101 @@
   }
 }
 
+/* ─── Legacy brand text utilities ──────────────────────────────────────── */
+/* Kept for backward compat with existing components; values remapped to     */
+/* the new indigo/violet palette via CSS variables above.                    */
+@layer utilities {
+  .text-brand-cyan    { color: var(--brand-text-cyan); }
+  .text-brand-magenta { color: var(--brand-text-magenta); }
+  .text-brand-amber   { color: var(--brand-text-amber); }
+
+  /* Alias so both class names resolve the same gradient text */
+  .text-gradient-brand {
+    background: var(--gradient-brand);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
 /* ─── Prose (MDX lesson content) ────────────────────────────────────────── */
 @layer components {
   .prose-lesson {
-    @apply max-w-prose;
-    @apply prose prose-slate dark:prose-invert;
+    @apply w-full max-w-none;
+    @apply prose;
     @apply prose-headings:font-semibold prose-headings:tracking-tight;
-    @apply prose-code:font-mono prose-code:text-sm;
+    @apply prose-code:font-mono prose-code:text-sm prose-code:before:content-none prose-code:after:content-none;
     @apply prose-pre:bg-transparent prose-pre:p-0;
     @apply prose-a:text-primary prose-a:no-underline hover:prose-a:underline;
     @apply prose-strong:text-foreground;
     @apply prose-lead:text-muted-foreground;
   }
+
+  /* dark:prose-invert doesn't work inside @apply in Tailwind v4 — use explicit selector.
+     Tailwind Typography also generates @supports (color: lab()) blocks that set
+     --tw-prose-headings directly on h1–h6 elements, overriding the parent-level invert.
+     We override with explicit oklch values which have no @supports conflict. */
+  .dark .prose-lesson {
+    --tw-prose-body:         oklch(0.88 0.01 270);
+    --tw-prose-headings:     oklch(0.96 0.01 270);
+    --tw-prose-lead:         oklch(0.62 0.018 270);
+    --tw-prose-links:        oklch(0.72 0.18 195);
+    --tw-prose-bold:         oklch(0.96 0.01 270);
+    --tw-prose-counters:     oklch(0.62 0.018 270);
+    --tw-prose-bullets:      oklch(0.72 0.18 195 / 0.6);
+    --tw-prose-hr:           oklch(0.96 0 0 / 0.18);
+    --tw-prose-quotes:       oklch(0.88 0.01 270);
+    --tw-prose-quote-borders:oklch(0.72 0.18 195 / 0.4);
+    --tw-prose-captions:     oklch(0.62 0.018 270);
+    --tw-prose-code:         oklch(0.72 0.18 195);
+    --tw-prose-pre-code:     oklch(0.88 0.01 270);
+    --tw-prose-pre-bg:       oklch(0.13 0.022 270);
+    --tw-prose-th-borders:   oklch(0.96 0 0 / 0.1);
+    --tw-prose-td-borders:   oklch(0.96 0 0 / 0.06);
+  }
+
+  /* Tailwind Typography @supports (color: lab()) blocks set --tw-prose-headings
+     directly on h1–h6 elements (not just the root), overriding the parent vars above.
+     Beat them with a higher-specificity (.dark + class) direct color rule. */
+  .dark .prose-lesson :where(h1, h2, h3, h4, h5, h6, th):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+    --tw-prose-headings: oklch(0.96 0.01 270);
+    color: oklch(0.96 0.01 270);
+  }
+}
+
+/* ─── Prose lesson: decorative overrides (outside @layer so Tailwind doesn't drop them) ── */
+/* H2 gradient left accent bar (cyan → magenta) */
+.prose-lesson h2 {
+  position: relative;
+  padding-left: 18px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+}
+.prose-lesson h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: linear-gradient(180deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320));
+  border-radius: 2px;
+}
+
+/* Inline code: tinted chip (not inside a <pre>) */
+.prose-lesson :not(pre) > code {
+  background: oklch(0.72 0.18 195 / 0.08);
+  color: oklch(0.44 0.18 230);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 0.88em;
+  border: 1px solid oklch(0.72 0.18 195 / 0.15);
+}
+.dark .prose-lesson :not(pre) > code {
+  background: oklch(0.72 0.18 195 / 0.12);
+  color: oklch(0.82 0.18 195);
+  border-color: oklch(0.72 0.18 195 / 0.2);
 }

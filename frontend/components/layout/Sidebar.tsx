@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { CheckCircle2, Circle, Lock } from 'lucide-react'
+import { Lock } from 'lucide-react'
 import { useProgressStore } from '@/stores/progressStore'
 import type { LessonMeta } from '@/types'
 
@@ -21,12 +21,21 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
   const completedLessons = technologies[techSlug]?.completedLessons ?? []
 
   return (
-    <aside className={cn('w-full', className)} aria-label="Phase lessons">
-      <p className="mb-3 px-3 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+    <aside
+      className={cn(
+        'w-full rounded-2xl border border-border bg-card/80 dark:bg-card dark:border-[oklch(0.26_0.014_264/0.6)] backdrop-blur-xl p-5',
+        className
+      )}
+      aria-label="Phase lessons"
+    >
+      {/* Phase tag */}
+      <p className="mb-1 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-brand-cyan">
         {phaseTitle}
       </p>
+      <p className="mb-4 font-display text-[15px] font-semibold text-foreground">Lessons</p>
+
       <nav>
-        <ul className="space-y-px">
+        <ul className="flex flex-col gap-0.5">
           {lessons.map((lesson) => {
             const href = `/${techSlug}/phases/${phaseSlug}/${lesson.slug}`
             const isActive = pathname === href
@@ -41,29 +50,36 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                   aria-disabled={isPlaceholder}
                   onClick={isPlaceholder ? (e) => e.preventDefault() : undefined}
                   className={cn(
-                    'group relative flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors',
+                    'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs transition-all duration-200',
                     isActive
-                      ? 'bg-primary/8 text-primary font-medium dark:bg-primary/12'
+                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.72_0.18_195/0.15)] dark:text-[oklch(0.82_0.18_195)]'
                       : isPlaceholder
-                        ? 'text-muted-foreground/40 cursor-not-allowed'
-                        : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                        ? 'text-muted-foreground/70 cursor-not-allowed'
+                        : isComplete
+                          ? 'text-foreground/60 dark:text-[oklch(0.68_0.010_264)] hover:bg-accent hover:text-foreground'
+                          : 'text-foreground/60 dark:text-[oklch(0.70_0.010_264)] hover:bg-accent hover:text-foreground',
                   )}
                 >
-                  {/* Active indicator */}
-                  {isActive && (
+                  {/* Status dot */}
+                  {isPlaceholder ? (
+                    <Lock className="h-2.5 w-2.5 shrink-0 text-muted-foreground/50" aria-hidden="true" />
+                  ) : isComplete ? (
                     <span
                       aria-hidden="true"
-                      className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full"
-                      style={{ background: 'linear-gradient(180deg, #6366F1, #8B5CF6)' }}
+                      className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500"
+                      style={{ boxShadow: '0 0 8px oklch(0.72 0.20 145 / 0.7)' }}
                     />
-                  )}
-
-                  {isComplete ? (
-                    <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" aria-label="Completed" />
-                  ) : isPlaceholder ? (
-                    <Lock className="h-3 w-3 shrink-0 text-muted-foreground/30" aria-label="Coming soon" />
+                  ) : isActive ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-2.5 w-2.5 shrink-0 rounded-full bg-[oklch(0.72_0.18_195)]"
+                      style={{ boxShadow: '0 0 10px oklch(0.72 0.18 195 / 0.7)' }}
+                    />
                   ) : (
-                    <Circle className="h-3 w-3 shrink-0 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" aria-label="Not started" />
+                    <span
+                      aria-hidden="true"
+                      className="h-2.5 w-2.5 shrink-0 rounded-full border border-muted-foreground/40"
+                    />
                   )}
 
                   <span className="line-clamp-2 leading-snug">{lesson.title}</span>

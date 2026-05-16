@@ -110,7 +110,7 @@ export function SearchPalette({ open, onClose, entries }: SearchPaletteProps) {
                   </div>
                   <span className="text-xs text-muted-foreground truncate">{entry.phaseTitle}</span>
                   {entry.summary && (
-                    <span className="text-xs text-muted-foreground/70 line-clamp-1">{entry.summary}</span>
+                    <span className="text-xs text-muted-foreground line-clamp-1">{entry.summary}</span>
                   )}
                 </button>
               </li>

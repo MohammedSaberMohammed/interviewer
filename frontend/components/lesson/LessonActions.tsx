@@ -43,11 +43,15 @@ export function LessonActions({ techSlug, phaseSlug, lessonSlug }: LessonActions
         onClick={() => isComplete ? store.unmarkLessonComplete(techSlug, lessonId) : store.markLessonComplete(techSlug, lessonId)}
         aria-pressed={isComplete}
         className={cn(
-          'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all',
+          'inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition-all duration-250',
           isComplete
-            ? 'bg-emerald-500/10 text-emerald-600 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20 dark:text-emerald-400'
-            : 'btn-brand',
+            ? 'bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/30 hover:bg-emerald-500/20 dark:text-emerald-400'
+            : 'text-[oklch(0.08_0.02_270)] hover:-translate-y-0.5',
         )}
+        style={isComplete ? undefined : {
+          background: 'linear-gradient(135deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320))',
+          boxShadow: '0 0 28px oklch(0.72 0.18 195 / 0.4)',
+        }}
       >
         <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
         {isComplete ? 'Completed' : 'Mark Complete'}
