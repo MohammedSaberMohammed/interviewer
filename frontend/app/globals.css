@@ -166,16 +166,16 @@
 
 /* ─── Dark mode — primary experience ───────────────────────────────────────── */
 .dark {
-  /* Base — deep slate-violet */
-  --background: oklch(0.095 0.025 270);            /* #08080f */
+  /* Base — deep slate-violet (lifted from pure black for readability) */
+  --background: oklch(0.135 0.022 270);            /* ~#10101c — dark but not void */
   --foreground: oklch(0.96 0.01 270);              /* #f4f4f7 */
 
-  /* Card */
-  --card: oklch(0.13 0.022 270);                   /* #0d0d18 */
+  /* Card — visibly above background */
+  --card: oklch(0.175 0.022 270);                  /* ~#161626 */
   --card-foreground: oklch(0.96 0.01 270);
 
-  /* Popover */
-  --popover: oklch(0.155 0.022 270);               /* #14141f */
+  /* Popover — top elevation layer */
+  --popover: oklch(0.205 0.022 270);               /* ~#1c1c2e */
   --popover-foreground: oklch(0.96 0.01 270);
 
   /* Primary — Electric Cyan */
@@ -183,28 +183,28 @@
   --primary-foreground: oklch(0.095 0.025 270);    /* dark bg text on cyan */
 
   /* Secondary */
-  --secondary: oklch(0.185 0.022 270);             /* #14141f elevated */
+  --secondary: oklch(0.215 0.022 270);             /* elevated surface */
   --secondary-foreground: oklch(0.96 0.01 270);
 
   /* Muted */
-  --muted: oklch(0.185 0.022 270);                 /* #14141f */
+  --muted: oklch(0.215 0.022 270);
   --muted-foreground: oklch(0.62 0.018 270);       /* #9ca0b3 */
 
   /* Accent — hover surface */
-  --accent: oklch(0.2 0.025 270);
+  --accent: oklch(0.235 0.025 270);
   --accent-foreground: oklch(0.96 0.01 270);
 
   /* Destructive */
   --destructive: oklch(0.65 0.22 27);
 
   /* Border / Input / Ring */
-  --border: oklch(0.96 0 0 / 0.07);               /* hairline 7% white */
-  --input: oklch(0.185 0.022 270);
+  --border: oklch(0.96 0 0 / 0.09);               /* hairline — slightly stronger on lighter bg */
+  --input: oklch(0.215 0.022 270);
   --ring: oklch(0.72 0.18 195);                    /* cyan ring */
 
   /* Brand */
   --brand: oklch(0.72 0.18 195);                   /* electric cyan */
-  --brand-foreground: oklch(0.095 0.025 270);
+  --brand-foreground: oklch(0.135 0.022 270);
   --brand-cyan: oklch(0.72 0.18 195);              /* electric cyan */
   --brand-magenta: oklch(0.68 0.25 320);           /* vivid magenta */
   --brand-amber: oklch(0.78 0.18 85);              /* streak amber */
@@ -306,15 +306,9 @@
 .code-block::-webkit-scrollbar-thumb:hover { background: oklch(0.72 0.18 195 / 40%); }
 
 /* ─── Shiki dual-theme (github-light / github-dark) ────────────────────────── */
-/* Token colors only — backgrounds are controlled by the CodeBlock container.  */
-/* Light mode */
-html .shiki span {
-  color: var(--shiki-light) !important;
-  font-style: var(--shiki-light-font-style) !important;
-  font-weight: var(--shiki-light-font-weight) !important;
-  text-decoration: var(--shiki-light-text-decoration) !important;
-}
-/* Dark mode */
+/* Shiki outputs inline `color:#hex` for the light theme on every span, so     */
+/* light mode needs no override — the inline styles are already correct.        */
+/* In dark mode we swap to the --shiki-dark custom property.                   */
 html.dark .shiki span {
   color: var(--shiki-dark) !important;
   font-style: var(--shiki-dark-font-style) !important;
@@ -423,10 +417,10 @@ html.dark .shiki span {
 /* ─── Prose (MDX lesson content) ────────────────────────────────────────────── */
 @layer components {
   .prose-lesson {
-    @apply max-w-[720px];
+    @apply w-full max-w-none;
     @apply prose dark:prose-invert;
     @apply prose-headings:font-heading prose-headings:tracking-tight prose-headings:font-medium;
-    @apply prose-code:font-mono prose-code:text-sm;
+    @apply prose-code:font-mono prose-code:text-sm prose-code:before:content-none prose-code:after:content-none;
     @apply prose-pre:bg-transparent prose-pre:p-0;
     @apply prose-a:text-primary prose-a:no-underline hover:prose-a:underline;
     @apply prose-strong:text-foreground;
@@ -484,7 +478,7 @@ html.dark .shiki span {
     --tw-prose-captions: oklch(0.62 0.018 270);
     --tw-prose-code: oklch(0.72 0.18 195);
     --tw-prose-pre-code: oklch(0.88 0.01 270);
-    --tw-prose-pre-bg: oklch(0.13 0.022 270);
+    --tw-prose-pre-bg: oklch(0.175 0.022 270);
     --tw-prose-th-borders: oklch(0.96 0 0 / 0.1);
     --tw-prose-td-borders: oklch(0.96 0 0 / 0.06);
   }
