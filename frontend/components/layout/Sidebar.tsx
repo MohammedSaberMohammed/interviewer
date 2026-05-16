@@ -23,7 +23,7 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
   return (
     <aside
       className={cn(
-        'w-full rounded-2xl border border-border bg-card/60 backdrop-blur-xl p-5',
+        'w-full rounded-2xl border border-border bg-card/80 dark:bg-card dark:border-[oklch(0.26_0.014_264/0.6)] backdrop-blur-xl p-5',
         className
       )}
       aria-label="Phase lessons"
@@ -52,12 +52,12 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                   className={cn(
                     'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs transition-all duration-200',
                     isActive
-                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.72_0.18_195/0.12)] dark:text-[oklch(0.82_0.18_195)]'
+                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.72_0.18_195/0.15)] dark:text-[oklch(0.82_0.18_195)]'
                       : isPlaceholder
-                        ? 'text-muted-foreground cursor-not-allowed'
+                        ? 'text-muted-foreground/70 cursor-not-allowed'
                         : isComplete
-                          ? 'text-muted-foreground hover:bg-accent hover:text-foreground'
-                          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                          ? 'text-foreground/60 dark:text-[oklch(0.68_0.010_264)] hover:bg-accent hover:text-foreground'
+                          : 'text-foreground/60 dark:text-[oklch(0.70_0.010_264)] hover:bg-accent hover:text-foreground',
                   )}
                 >
                   {/* Status dot */}

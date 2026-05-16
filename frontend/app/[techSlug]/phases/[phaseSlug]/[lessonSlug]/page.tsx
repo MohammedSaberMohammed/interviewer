@@ -206,7 +206,7 @@ export default async function LessonPage({ params }: Props) {
             {lesson.tags.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-1.5">
                 {lesson.tags.map((tag) => (
-                  <span key={tag} className="rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
+                  <span key={tag} className="rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-foreground/60 dark:bg-[oklch(0.20_0.016_264)] dark:border-[oklch(0.30_0.016_264/0.7)] dark:text-[oklch(0.72_0.012_264)]">{tag}</span>
                 ))}
               </div>
             )}

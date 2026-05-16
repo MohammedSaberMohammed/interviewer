@@ -42,8 +42,8 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
   if (items.length === 0) return null
 
   return (
-    <nav aria-label="On this page" className={cn('', className)}>
-      <p className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+    <nav aria-label="On this page" className={cn('rounded-2xl border border-border bg-card/80 dark:bg-card dark:border-[oklch(0.26_0.014_264/0.6)] p-4 mb-4', className)}>
+      <p className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground dark:text-[oklch(0.58_0.012_264)]">
         On This Page
       </p>
       <ul className="flex flex-col gap-0.5">
@@ -58,7 +58,7 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
                 item.level === 4 && 'pl-7',
                 activeId === item.id
                   ? 'border-[oklch(0.44_0.18_230)] text-[oklch(0.44_0.18_230)] dark:border-[oklch(0.72_0.18_195)] dark:text-[oklch(0.82_0.18_195)] font-medium'
-                  : 'border-border text-muted-foreground hover:text-foreground hover:border-muted-foreground'
+                  : 'border-border text-foreground/55 dark:text-[oklch(0.65_0.010_264)] hover:text-foreground dark:hover:text-foreground hover:border-muted-foreground'
               )}
               onClick={(e) => {
                 e.preventDefault()
