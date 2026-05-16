@@ -1,9 +1,11 @@
 using Interviewer.Application.Common.Interfaces;
 using Interviewer.Domain.Catalog.Repositories;
+using Interviewer.Infrastructure.Identity;
 using Interviewer.Infrastructure.Persistence;
 using Interviewer.Infrastructure.Persistence.Interceptors;
 using Interviewer.Infrastructure.Persistence.Repositories;
 using Interviewer.Infrastructure.Services;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,8 +34,23 @@ public static class DependencyInjection
         });
 
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
+
+        services.AddIdentityCore<ApplicationUser>(options =>
+        {
+            options.Password.RequiredLength = 8;
+            options.Password.RequireDigit = true;
+            options.Password.RequireLowercase = true;
+            options.Password.RequireUppercase = false;
+            options.Password.RequireNonAlphanumeric = false;
+            options.User.RequireUniqueEmail = true;
+        })
+        .AddRoles<IdentityRole<long>>()
+        .AddEntityFrameworkStores<AppDbContext>();
+
         services.AddScoped<ITechnologyRepository, TechnologyRepository>();
         services.AddScoped<ILessonRepository, LessonRepository>();
+        services.AddScoped<IJwtTokenService, JwtTokenService>();
+        services.AddScoped<IIdentityService, IdentityService>();
 
         return services;
     }
