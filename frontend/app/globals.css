@@ -464,12 +464,25 @@ html.dark .shiki span {
 @layer components {
   .prose-lesson {
     @apply w-full max-w-none;
-    @apply prose prose-slate dark:prose-invert;
+    @apply prose;
     @apply prose-headings:font-semibold prose-headings:tracking-tight;
     @apply prose-code:font-mono prose-code:text-sm prose-code:before:content-none prose-code:after:content-none;
     @apply prose-pre:bg-transparent prose-pre:p-0;
     @apply prose-a:text-primary prose-a:no-underline hover:prose-a:underline;
     @apply prose-strong:text-foreground;
     @apply prose-lead:text-muted-foreground;
+  }
+
+  /* dark:prose-invert doesn't work inside @apply in Tailwind v4 — use explicit selector.
+     Tailwind Typography also generates @supports (color: lab()) blocks that set
+     --tw-prose-headings directly on h1–h6 elements, overriding the parent-level invert.
+     We must also set color directly on those elements with higher specificity (.dark + class). */
+  .dark .prose-lesson {
+    @apply prose-invert;
+  }
+
+  .dark .prose-lesson :where(h1, h2, h3, h4, h5, h6, th):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+    --tw-prose-headings: var(--foreground);
+    color: var(--foreground);
   }
 }
