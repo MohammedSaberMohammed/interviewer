@@ -485,7 +485,7 @@ html.dark .shiki span {
     --tw-prose-bold:         oklch(0.96 0.01 270);
     --tw-prose-counters:     oklch(0.62 0.018 270);
     --tw-prose-bullets:      oklch(0.72 0.18 195 / 0.6);
-    --tw-prose-hr:           oklch(0.96 0 0 / 0.07);
+    --tw-prose-hr:           oklch(0.96 0 0 / 0.18);
     --tw-prose-quotes:       oklch(0.88 0.01 270);
     --tw-prose-quote-borders:oklch(0.72 0.18 195 / 0.4);
     --tw-prose-captions:     oklch(0.62 0.018 270);

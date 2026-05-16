@@ -99,9 +99,9 @@ export function CodeChallenge({
   }
 
   return (
-    <div className="not-prose my-6 rounded-xl border border-border overflow-hidden">
+    <div className="not-prose my-6 rounded-xl border border-border overflow-hidden bg-card dark:bg-card">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-3">
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 dark:bg-[oklch(0.18_0.014_264/0.5)] px-4 py-3">
         <div className="flex items-center gap-2">
           <Code2 className="h-4 w-4 text-primary shrink-0" aria-hidden="true" />
           <span className="text-sm font-semibold">{displayTitle}</span>
@@ -118,7 +118,7 @@ export function CodeChallenge({
           <div className="border-b border-border bg-muted/50 px-3 py-1.5">
             <span className="text-xs font-mono text-muted-foreground">{language}</span>
           </div>
-          <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[#0d1117] p-4 text-sm font-mono leading-relaxed">
+          <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[oklch(0.10_0.016_264)] p-4 text-sm font-mono leading-relaxed">
             <code className={`language-${language} text-slate-800 dark:text-slate-100`}>{code}</code>
           </pre>
         </div>
@@ -133,7 +133,7 @@ export function CodeChallenge({
           {shuffled.options.map((option, i) => {
             const isSelected = selected === i
             const isCorrectOption = i === shuffled.correctAnswer
-            let optionClass = 'border-border bg-background hover:bg-accent hover:border-primary/30'
+            let optionClass = 'border-border bg-background dark:bg-[oklch(0.13_0.014_264)] hover:bg-accent hover:border-primary/30 dark:hover:bg-[oklch(0.175_0.018_264)]'
 
             if (submitted) {
               if (isCorrectOption) optionClass = 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40'
