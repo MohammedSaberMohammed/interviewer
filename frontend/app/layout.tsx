@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Bricolage_Grotesque, Onest, JetBrains_Mono } from 'next/font/google'
+import { Inter, JetBrains_Mono } from 'next/font/google'
 import { ThemeProvider } from 'next-themes'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SearchProvider } from '@/components/search/SearchProvider'
@@ -9,17 +9,11 @@ import { BasketGlobalUI } from '@/components/basket/BasketProviders'
 import { buildSearchIndex } from '@/lib/content'
 import './globals.css'
 
-const bricolage = Bricolage_Grotesque({
-  variable: '--font-bricolage',
+const inter = Inter({
+  variable: '--font-inter',
   subsets: ['latin'],
   display: 'swap',
-  axes: ['opsz'],
-})
-
-const onest = Onest({
-  variable: '--font-onest',
-  subsets: ['latin'],
-  display: 'swap',
+  weight: ['400', '500', '600', '700', '800'],
 })
 
 const jetbrainsMono = JetBrains_Mono({
@@ -30,12 +24,12 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: 'Interviewer App — Tech Interview Prep',
-    template: '%s | Interviewer App',
+    default: 'DevPrep — Senior-Level Interview Preparation',
+    template: '%s | DevPrep',
   },
   description:
-    'Master technical interviews with a guided, gamified path — from fundamentals to senior-level traps. Choose your stack and begin.',
-  keywords: ['interview prep', 'technical interviews', 'coding interview', 'software engineer', '.NET', 'Angular', 'TypeScript'],
+    'Structured, deep-dive interview prep for engineers targeting senior and staff-level roles. Phase-based learning, interactive challenges, and gamified progress.',
+  keywords: ['interview prep', 'technical interviews', 'senior engineer', 'coding interview', '.NET', 'Angular', 'TypeScript', 'system design'],
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -44,13 +38,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html
       lang="en"
-      className={`${bricolage.variable} ${onest.variable} ${jetbrainsMono.variable} h-full`}
+      className={`${inter.variable} ${jetbrainsMono.variable} h-full`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col antialiased">
         <ThemeProvider
           attribute="class"
-          defaultTheme="dark"
+          defaultTheme="system"
           enableSystem
           disableTransitionOnChange={false}
         >

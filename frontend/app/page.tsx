@@ -1,252 +1,325 @@
 import Link from 'next/link'
-import { ArrowRight, Code2, Zap, Brain } from 'lucide-react'
-import { getAllTechnologies, getAllPhaseSlugs, getPhaseMeta } from '@/lib/content'
+import {
+  ArrowRight, BookOpen, Zap, Target, Trophy, Users, Code2,
+  CheckCircle2, Layers, Flame, Star,
+} from 'lucide-react'
+import { getAllTechnologies } from '@/lib/content'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
-import { Gem3D } from '@/components/ui/Gem3D'
-import { OnboardingDialog } from '@/components/onboarding/OnboardingDialog'
-import { HeroOrb } from '@/components/home/HeroOrb'
+import { cn } from '@/lib/utils'
+
+/* ── Color map for tech badges ─────────────────────────────────────── */
+const TECH_COLOR_MAP: Record<string, { pill: string; glow: string }> = {
+  violet: {
+    pill: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 border-violet-200 dark:border-violet-700',
+    glow: 'group-hover:shadow-[0_0_30px_oklch(0.55_0.26_290_/_0.20)]',
+  },
+  red: {
+    pill: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 border-red-200 dark:border-red-800',
+    glow: 'group-hover:shadow-[0_0_30px_oklch(0.63_0.22_27_/_0.20)]',
+  },
+  blue: {
+    pill: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+    glow: 'group-hover:shadow-[0_0_30px_oklch(0.55_0.22_264_/_0.20)]',
+  },
+}
 
 const FEATURES = [
   {
+    icon: Layers,
+    title: 'Structured Learning Path',
+    description: 'Progress through carefully ordered phases — from language fundamentals to system design and architecture.',
+    badge: '13 phases',
+  },
+  {
     icon: Code2,
-    color: 'text-brand-cyan',
-    glow: 'bg-[oklch(0.72_0.18_195/0.1)]',
-    title: 'Real Code Challenges',
-    description: 'Every lesson ends with an embedded challenge. Read it once, solve it under pressure — the way interviews actually work.',
+    title: 'Interactive Challenges',
+    description: 'Code challenges and quizzes are embedded inside every lesson. Practice exactly what you just learned.',
+    badge: '200+ exercises',
+  },
+  {
+    icon: Target,
+    title: 'Interview-Focused',
+    description: 'Every lesson targets real interview questions. Understand the why, not just the syntax — so nothing surprises you.',
+    badge: 'Senior-ready',
   },
   {
     icon: Zap,
-    color: 'text-brand-magenta',
-    glow: 'bg-[oklch(0.68_0.25_320/0.1)]',
-    title: 'Quest Mode',
-    description: 'Earn XP, maintain streaks, unlock badges — from Novice to Architect. Progress that feels earned, not handed out.',
+    title: 'Gamified Progress',
+    description: 'Earn XP, maintain streaks, unlock achievement badges, and level up from Novice to Architect.',
+    badge: 'XP system',
   },
   {
-    icon: Brain,
-    color: 'text-brand-amber',
-    glow: 'bg-[oklch(0.78_0.18_85/0.1)]',
-    title: 'Memory Visualizer',
-    description: 'See memory layout, heap vs stack, reference pointers — animated diagrams that make the abstract concrete.',
+    icon: Trophy,
+    title: 'Interview Templates',
+    description: 'Curate your own question sets from any lesson and run timed mock interviews on your schedule.',
+    badge: 'Mock sessions',
   },
+  {
+    icon: Users,
+    title: 'Multi-Technology',
+    description: 'One cohesive platform. Master .NET and Angular today — with more technologies on the roadmap.',
+    badge: 'Growing library',
+  },
+]
+
+const SOCIAL_PROOF = [
+  { value: '13', label: 'Structured phases' },
+  { value: '200+', label: 'Lessons & challenges' },
+  { value: '4', label: 'Seniority levels' },
+  { value: '2', label: 'Technologies' },
 ]
 
 export default function HomePage() {
   const technologies = getAllTechnologies().filter((t) => t.status === 'active')
-
-  // Get first few phases from dotnet for the teaser strip
-  const dotnetSlugs = getAllPhaseSlugs('dotnet').slice(0, 6)
-  const dotnetPhases = dotnetSlugs
-    .map((slug) => ({ slug, meta: getPhaseMeta('dotnet', slug) }))
-    .filter((p) => p.meta !== null)
 
   return (
     <>
       <Navbar />
       <main id="main-content" className="overflow-x-hidden">
 
-        {/* ─── Hero ──────────────────────────────────────────────────────────── */}
-        <section className="relative min-h-[90vh] flex items-center overflow-hidden">
-          {/* Animated grid background */}
-          <div
-            className="pointer-events-none absolute inset-0 -z-10 opacity-[0.18]"
-            style={{
-              backgroundImage: 'linear-gradient(rgba(34,211,238,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.12) 1px, transparent 1px)',
-              backgroundSize: '64px 64px',
-              maskImage: 'radial-gradient(ellipse 70% 60% at 50% 30%, black, transparent 80%)',
-            }}
-            aria-hidden
-          />
-          {/* Radial gradient top-center */}
-          <div
-            className="pointer-events-none absolute inset-0 -z-10"
-            style={{ background: 'radial-gradient(ellipse 80% 55% at 50% -5%, rgba(34,211,238,0.09) 0%, transparent 65%)' }}
-            aria-hidden
-          />
+        {/* ── Hero ─────────────────────────────────────────────────────── */}
+        <section className="relative min-h-[82vh] flex flex-col items-center justify-center border-b border-border/40 overflow-hidden">
+          {/* Gradient mesh background */}
+          <div className="absolute inset-0 gradient-mesh pointer-events-none" aria-hidden="true" />
+          {/* Dot grid */}
+          <div className="absolute inset-0 bg-dot-pattern opacity-50 pointer-events-none" aria-hidden="true" />
+          {/* Bottom fade */}
+          <div className="absolute bottom-0 inset-x-0 h-40 bg-gradient-to-t from-background to-transparent pointer-events-none" aria-hidden="true" />
 
-          <div className="container mx-auto px-4 max-w-7xl">
-            <div className="grid grid-cols-1 lg:grid-cols-[1.25fr_1fr] gap-12 lg:gap-20 items-center py-20 lg:py-28">
+          <div className="relative z-10 container mx-auto px-4 py-24 text-center max-w-4xl">
+            {/* Live badge */}
+            <div className="inline-flex items-center gap-2 section-label mb-8">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+              </span>
+              Now with Angular support
+            </div>
 
-              {/* Left — copy */}
-              <div>
-                {/* Eyebrow */}
-                <div className="mb-7 inline-flex items-center gap-2.5 rounded-full border border-[oklch(0.72_0.18_195/0.25)] bg-[oklch(0.72_0.18_195/0.07)] px-4 py-1.5 font-mono text-[11px] tracking-[0.14em] uppercase text-brand-cyan">
-                  <span className="relative flex size-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[oklch(0.72_0.18_195)] opacity-75" />
-                    <span className="relative inline-flex size-2 rounded-full bg-[oklch(0.72_0.18_195)]" />
+            <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-[1.08] tracking-[-0.04em] mb-7">
+              <span className="gradient-text">Ace Your</span>
+              <br />
+              <span className="gradient-text-brand">Technical Interview</span>
+            </h1>
+
+            <p className="text-lg sm:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed">
+              Deep-dive interview prep for senior engineers. Structured phases,
+              interactive challenges, and gamified progress — for the
+              technologies that matter.
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <Link
+                href="/technologies"
+                className="btn-brand px-8 py-3 text-base"
+              >
+                Start Preparing
+                <ArrowRight className="h-4.5 w-4.5" />
+              </Link>
+              <Link
+                href="/about"
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-background/80 backdrop-blur px-8 py-3 text-sm font-semibold hover:bg-muted transition-colors"
+              >
+                How it works
+              </Link>
+            </div>
+
+            {/* Tech links */}
+            {technologies.length > 0 && (
+              <div className="mt-10 flex flex-wrap gap-2.5 justify-center">
+                {technologies.map((tech) => {
+                  const colors = TECH_COLOR_MAP[tech.color] ?? TECH_COLOR_MAP['violet']!
+                  return (
+                    <Link
+                      key={tech.slug}
+                      href={`/${tech.slug}/phases`}
+                      className={cn(
+                        'rounded-full border px-4 py-1.5 text-sm font-medium transition-all hover:scale-105 hover:opacity-90',
+                        colors.pill,
+                      )}
+                    >
+                      {tech.title}
+                    </Link>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ── Social proof strip ───────────────────────────────────────── */}
+        <section className="border-b border-border/50 bg-muted/30">
+          <div className="container mx-auto px-4 max-w-4xl">
+            <dl className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border/50">
+              {SOCIAL_PROOF.map(({ value, label }) => (
+                <div key={label} className="flex flex-col items-center py-7 px-4 gap-1">
+                  <dt className="text-3xl font-bold tracking-tight gradient-text-brand">{value}</dt>
+                  <dd className="text-sm text-muted-foreground text-center">{label}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </section>
+
+        {/* ── Features ─────────────────────────────────────────────────── */}
+        <section className="py-24 container mx-auto px-4 max-w-6xl">
+          <div className="text-center mb-16">
+            <div className="section-label mx-auto mb-5">Platform features</div>
+            <h2 className="text-4xl font-bold tracking-tight gradient-text mb-4">
+              Everything you need to prepare
+            </h2>
+            <p className="text-muted-foreground max-w-lg mx-auto leading-relaxed">
+              Built by engineers for engineers. No fluff — just focused,
+              deep-dive preparation that matches real interview formats.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {FEATURES.map(({ icon: Icon, title, description, badge }) => (
+              <div
+                key={title}
+                className="border-gradient p-6 flex flex-col gap-4 group transition-all duration-300 hover:-translate-y-1"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary group-hover:bg-primary/15 transition-colors">
+                    <Icon className="h-5 w-5" />
+                  </div>
+                  <span className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-muted text-muted-foreground">
+                    {badge}
                   </span>
-                  Interviewer-app · Now with Angular
                 </div>
-
-                {/* Headline */}
-                <h1 className="mb-6 font-display text-[clamp(52px,7.5vw,96px)] font-medium leading-[0.93] tracking-[-0.04em]">
-                  <span className="block">Train like you</span>
-                  <span className="block italic font-light text-gradient-brand">actually have to</span>
-                  <span className="block">ace it.</span>
-                </h1>
-
-                <p className="mb-10 max-w-[520px] text-[19px] leading-[1.55] text-muted-foreground">
-                  A guided, gamified path from junior fundamentals to senior interview traps — built for engineers who want depth, not flashcards.
-                </p>
-
-                {/* CTAs */}
-                <div className="mb-12 flex flex-wrap gap-4">
-                  <Link
-                    href="/technologies"
-                    className="btn-glow gap-2"
-                  >
-                    Start your journey
-                    <ArrowRight className="size-4" />
-                  </Link>
-                  <Link
-                    href="#roadmap"
-                    className="btn-ghost-border gap-2"
-                  >
-                    See the roadmap
-                  </Link>
+                <div>
+                  <h3 className="font-semibold text-foreground mb-1.5">{title}</h3>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{description}</p>
                 </div>
+              </div>
+            ))}
+          </div>
+        </section>
 
-                {/* Stats */}
-                <div className="flex flex-wrap gap-8 border-t border-border pt-8">
-                  {[
-                    { num: '13', label: 'Phases' },
-                    { num: '~400', label: 'Lessons' },
-                    { num: '12', label: 'Achievements' },
-                    { num: String(technologies.length), label: 'Stacks', accent: true },
-                  ].map(({ num, label, accent }) => (
-                    <div key={label} className="flex flex-col gap-1">
-                      <span className={`font-display text-3xl font-semibold tracking-tight leading-none ${accent ? 'text-brand-cyan' : ''}`}>
-                        {num}
-                      </span>
-                      <span className="font-mono text-[11px] tracking-[0.1em] uppercase text-muted-foreground">
-                        {label}
-                      </span>
-                    </div>
+        {/* ── Technology showcase ───────────────────────────────────────── */}
+        {technologies.length > 0 && (
+          <section className="py-20 border-y border-border/50 bg-muted/20">
+            <div className="container mx-auto px-4 max-w-5xl">
+              <div className="text-center mb-12">
+                <div className="section-label mx-auto mb-5">Active tracks</div>
+                <h2 className="text-3xl font-bold tracking-tight gradient-text">
+                  Pick your technology
+                </h2>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {technologies.map((tech) => {
+                  const colors = TECH_COLOR_MAP[tech.color] ?? TECH_COLOR_MAP['violet']!
+                  return (
+                    <Link
+                      key={tech.slug}
+                      href={`/${tech.slug}/phases`}
+                      className={cn(
+                        'group relative surface-interactive p-6 flex items-center gap-5',
+                        colors.glow,
+                      )}
+                    >
+                      <div className={cn(
+                        'flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-xl font-bold',
+                        colors.pill,
+                      )}>
+                        {tech.title.charAt(0)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-foreground">{tech.title}</p>
+                        <p className="text-sm text-muted-foreground mt-0.5 truncate">{tech.subtitle}</p>
+                        <div className="mt-2.5 flex flex-wrap gap-3 text-xs text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Layers className="h-3 w-3" /> 13 phases
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <BookOpen className="h-3 w-3" /> ~{tech.estimatedTotalHours}h
+                          </span>
+                        </div>
+                      </div>
+                      <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 -translate-x-2 transition-all group-hover:opacity-100 group-hover:translate-x-0 shrink-0" />
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ── Why it works ─────────────────────────────────────────────── */}
+        <section className="py-24 container mx-auto px-4 max-w-4xl">
+          <div className="grid md:grid-cols-2 gap-12 items-center">
+            <div>
+              <div className="section-label mb-5">Why engineers use this</div>
+              <h2 className="text-3xl font-bold tracking-tight gradient-text mb-5">
+                Interview prep that actually reflects real interviews
+              </h2>
+              <p className="text-muted-foreground leading-relaxed mb-8">
+                Most platforms teach trivia. This one digs into the internals — memory management,
+                async state machines, GC pressure, architectural tradeoffs — the things
+                senior engineers are actually expected to articulate.
+              </p>
+              <ul className="space-y-3">
+                {[
+                  'Phase-gated content, junior to architect level',
+                  'Challenges embedded inside lessons, not as afterthoughts',
+                  'Covers the "why behind the what" in every topic',
+                  'Built-in streak system to maintain daily momentum',
+                ].map((point) => (
+                  <li key={point} className="flex items-start gap-3 text-sm text-muted-foreground">
+                    <CheckCircle2 className="h-4.5 w-4.5 text-primary shrink-0 mt-0.5" />
+                    {point}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Visual card stack */}
+            <div className="relative h-64 md:h-80 flex items-center justify-center">
+              <div className="absolute surface-panel w-56 h-32 top-4 left-1/2 -translate-x-1/2 rotate-[-3deg] opacity-40 scale-95" />
+              <div className="absolute surface-panel w-56 h-32 top-8 left-1/2 -translate-x-1/2 rotate-[1.5deg] opacity-60 scale-97" />
+              <div className="surface-panel w-56 h-32 flex flex-col items-center justify-center gap-2 text-center p-4">
+                <div className="flex items-center gap-2">
+                  <Flame className="h-5 w-5 text-orange-500" />
+                  <span className="font-bold text-foreground text-lg">7-day streak</span>
+                </div>
+                <p className="text-xs text-muted-foreground">Keep the momentum going</p>
+                <div className="flex gap-1 mt-1">
+                  {[...Array(7)].map((_, i) => (
+                    <div key={i} className="h-2 w-5 rounded-full bg-orange-400/80" />
                   ))}
                 </div>
               </div>
-
-              {/* Right — hero orb */}
-              <div className="hidden lg:flex items-center justify-center">
-                <HeroOrb />
-              </div>
             </div>
           </div>
         </section>
 
-        {/* ─── Phase Teaser ──────────────────────────────────────────────────── */}
-        <section id="roadmap" className="py-4 px-4">
-          <div className="container mx-auto max-w-7xl">
-            <div className="card-glass p-8 md:p-12">
-              <div className="mb-2 font-mono text-[11px] tracking-[0.16em] uppercase text-brand-cyan">
-                Your path
-              </div>
-              <h2 className="mb-2 font-display text-3xl font-medium tracking-tight">
-                Your path starts at <em className="italic font-light text-gradient-brand">Phase 01</em>
-              </h2>
-              <p className="mb-8 text-muted-foreground">
-                13 phases. Each unlocks the next. No more wondering what to study tomorrow.
-              </p>
-
-              {/* Phase strip */}
-              <div className="flex gap-3 overflow-x-auto pb-2 -mx-2 px-2">
-                {dotnetPhases.map(({ slug, meta }, i) => (
-                  <Link
-                    key={slug}
-                    href={i === 0 ? `/dotnet/phases` : '#'}
-                    aria-hidden={i !== 0 ? 'true' : undefined}
-                    tabIndex={i !== 0 ? -1 : undefined}
-                    className={`flex shrink-0 items-center gap-3 rounded-2xl border px-5 py-4 min-w-[200px] transition-all duration-200 ${
-                      i === 0
-                        ? 'border-[oklch(0.72_0.18_195/0.4)] bg-[oklch(0.72_0.18_195/0.06)] shadow-[var(--shadow-glow-cyan)] hover:shadow-[0_0_60px_rgba(34,211,238,.5)]'
-                        : 'border-border/40 bg-muted/20 cursor-default pointer-events-none'
-                    }`}
-                  >
-                    <div className={`flex size-9 shrink-0 items-center justify-center rounded-xl font-mono text-sm font-bold ${
-                      i === 0
-                        ? 'bg-[oklch(0.72_0.18_195)] text-[oklch(0.095_0.025_270)] shadow-[0_0_16px_rgba(34,211,238,.5)]'
-                        : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {String(i + 1).padStart(2, '0')}
-                    </div>
-                    <div>
-                      <div className={`text-sm font-semibold leading-tight ${i === 0 ? '' : 'text-muted-foreground'}`}>{meta!.title}</div>
-                      <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-                        {i === 0 ? 'Start here' : 'Locked'} · {meta!.level ?? 'Junior'}
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-
-                {/* "And X more" pill */}
-                <div className="flex shrink-0 items-center justify-center rounded-2xl border border-dashed border-border px-6 min-w-[140px] text-sm text-muted-foreground">
-                  +{13 - dotnetPhases.length} more
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ─── Feature Strip ─────────────────────────────────────────────────── */}
-        <section className="py-20 px-4">
-          <div className="container mx-auto max-w-7xl">
-            <div className="mb-12 text-center">
-              <div className="mb-3 font-mono text-[11px] tracking-[0.16em] uppercase text-muted-foreground">
-                What makes it different
-              </div>
-              <h2 className="font-display text-4xl font-medium tracking-tight">
-                Built for depth,<br />
-                <em className="italic font-light text-gradient-brand">not breadth.</em>
-              </h2>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {FEATURES.map(({ icon: Icon, color, glow, title, description }) => (
-                <div key={title} className="card-glass group p-6">
-                  <div className={`mb-5 flex size-11 items-center justify-center rounded-xl ${glow}`}>
-                    <Icon className={`size-5 ${color}`} />
-                  </div>
-                  <h3 className="mb-2 font-display text-xl font-medium tracking-tight">{title}</h3>
-                  <p className="text-sm leading-relaxed text-muted-foreground">{description}</p>
-                </div>
+        {/* ── CTA ──────────────────────────────────────────────────────── */}
+        <section className="relative border-t border-border/50 py-24 overflow-hidden">
+          <div className="absolute inset-0 gradient-mesh opacity-60 pointer-events-none" aria-hidden="true" />
+          <div className="relative z-10 container mx-auto px-4 text-center max-w-2xl">
+            <div className="flex items-center justify-center gap-1 mb-4">
+              {[...Array(5)].map((_, i) => (
+                <Star key={i} className="h-4 w-4 fill-amber-400 text-amber-400" />
               ))}
             </div>
-          </div>
-        </section>
-
-        {/* ─── Bottom CTA ────────────────────────────────────────────────────── */}
-        <section className="border-t border-border py-20 px-4">
-          <div className="container mx-auto max-w-2xl text-center">
-            <div className="mb-6 flex justify-center">
-              <Gem3D color="cyan" size={80} />
-            </div>
-            <h2 className="mb-4 font-display text-4xl font-medium tracking-tight">
-              Pick your stack.<br />
-              <em className="italic font-light text-gradient-brand">Begin the path.</em>
+            <h2 className="text-4xl font-bold tracking-tight gradient-text mb-4">
+              Ready to prepare?
             </h2>
-            <p className="mb-8 text-muted-foreground">
-              No sign-up required. Progress saved locally. Start right now.
+            <p className="text-muted-foreground mb-10 leading-relaxed">
+              Pick your technology and start your structured path to senior-level mastery.
+              Progress is saved locally — no account required.
             </p>
-            <div className="flex flex-wrap justify-center gap-4">
-              {technologies.map((tech) => (
-                <Link
-                  key={tech.slug}
-                  href={`/${tech.slug}/phases`}
-                  className="btn-glow gap-2"
-                >
-                  {tech.title}
-                  <ArrowRight className="size-4" />
-                </Link>
-              ))}
-            </div>
+            <Link href="/technologies" className="btn-brand px-10 py-3.5 text-base">
+              Choose Your Technology
+              <ArrowRight className="h-5 w-5" />
+            </Link>
           </div>
         </section>
 
       </main>
       <Footer />
-
-      {/* First-run onboarding */}
-      <OnboardingDialog />
     </>
   )
 }
