@@ -1,5 +1,4 @@
 using System.Text;
-using Interviewer.Api.Endpoints;
 using Interviewer.Application;
 using Interviewer.Infrastructure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -10,6 +9,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
+
+builder.Services.AddControllers();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -32,7 +33,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
-builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo
@@ -84,10 +84,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }))
-    .WithTags("Health")
     .ExcludeFromDescription();
 
-app.MapCatalogEndpoints();
-app.MapAuthEndpoints();
+app.MapControllers();
 
 app.Run();
