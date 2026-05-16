@@ -16,6 +16,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options)
     public DbSet<LessonVersion> LessonVersions => Set<LessonVersion>();
     public DbSet<Challenge> Challenges => Set<Challenge>();
     public DbSet<ChallengeOption> ChallengeOptions => Set<ChallengeOption>();
+    public DbSet<GlossaryEntry> GlossaryEntries => Set<GlossaryEntry>();
+    public DbSet<CheatsheetSection> CheatsheetSections => Set<CheatsheetSection>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

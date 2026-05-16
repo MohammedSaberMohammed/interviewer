@@ -35,6 +35,12 @@ public class LessonVersion : Entity<long>
 
     internal void Archive() => Status = LessonVersionStatus.Archived;
 
+    public void UpdateContent(string contentMdx, string? frontmatterJson)
+    {
+        ContentMdx = contentMdx;
+        FrontmatterJson = frontmatterJson;
+    }
+
     public Challenge AddChallenge(
         string key,
         ChallengeType type,

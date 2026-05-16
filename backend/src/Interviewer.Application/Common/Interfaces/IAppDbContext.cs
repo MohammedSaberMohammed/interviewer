@@ -11,6 +11,8 @@ public interface IAppDbContext
     DbSet<LessonVersion> LessonVersions { get; }
     DbSet<Challenge> Challenges { get; }
     DbSet<ChallengeOption> ChallengeOptions { get; }
+    DbSet<GlossaryEntry> GlossaryEntries { get; }
+    DbSet<CheatsheetSection> CheatsheetSections { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }
