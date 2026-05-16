@@ -1,6 +1,6 @@
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class CheatsheetSection : Entity<long>
 {

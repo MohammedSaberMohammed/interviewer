@@ -1,6 +1,7 @@
 using Interviewer.Application.Common.Interfaces;
 using Interviewer.Domain.Catalog.Repositories;
 using Interviewer.Infrastructure.Identity;
+using Interviewer.Infrastructure.Identity.Entities;
 using Interviewer.Infrastructure.Persistence;
 using Interviewer.Infrastructure.Persistence.Interceptors;
 using Interviewer.Infrastructure.Persistence.Repositories;

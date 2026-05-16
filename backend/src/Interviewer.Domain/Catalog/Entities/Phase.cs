@@ -1,8 +1,7 @@
+using Interviewer.Domain.Catalog.Enums;
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
-
-public enum PhaseLevel { Junior, Mid, Senior }
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class Phase : Entity<long>
 {

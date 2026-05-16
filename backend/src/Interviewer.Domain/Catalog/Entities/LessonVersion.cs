@@ -1,8 +1,7 @@
+using Interviewer.Domain.Catalog.Enums;
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
-
-public enum LessonVersionStatus { Draft, Published, Archived }
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class LessonVersion : Entity<long>
 {

@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 
-namespace Interviewer.Infrastructure.Identity;
+namespace Interviewer.Infrastructure.Identity.Entities;
 
 public class ApplicationUser : IdentityUser<long>
 {

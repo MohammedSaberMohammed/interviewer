@@ -1,5 +1,6 @@
 using Interviewer.Application.Common.Interfaces;
 using Interviewer.Application.Common.Models;
+using Interviewer.Infrastructure.Identity.Entities;
 using Microsoft.AspNetCore.Identity;
 
 namespace Interviewer.Infrastructure.Identity;

@@ -1,9 +1,8 @@
+using Interviewer.Domain.Catalog.Enums;
 using Interviewer.Domain.Catalog.Events;
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
-
-public enum LessonDifficulty { Foundation, Intermediate, Advanced, Expert }
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class Lesson : AggregateRoot<long>
 {

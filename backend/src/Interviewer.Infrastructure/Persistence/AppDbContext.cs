@@ -1,6 +1,6 @@
 using Interviewer.Application.Common.Interfaces;
-using Interviewer.Domain.Catalog;
-using Interviewer.Infrastructure.Identity;
+using Interviewer.Domain.Catalog.Entities;
+using Interviewer.Infrastructure.Identity.Entities;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;

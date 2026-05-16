@@ -1,3 +1,5 @@
+using Interviewer.Domain.Catalog.Entities;
+
 namespace Interviewer.Domain.Catalog.Repositories;
 
 public interface ILessonRepository

@@ -1,6 +1,5 @@
 using Interviewer.Application.Common.Interfaces;
 using Interviewer.Application.Common.Models;
-using Interviewer.Domain.Catalog;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 

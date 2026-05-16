@@ -2,7 +2,7 @@ using Interviewer.Domain.Catalog.Events;
 using Interviewer.Domain.Catalog.ValueObjects;
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class Technology : AggregateRoot<string>
 {
@@ -62,7 +62,7 @@ public class Technology : AggregateRoot<string>
 
     public void SetOrder(int order) => DisplayOrder = order;
 
-    public Phase AddPhase(string slug, string title, string? description, PhaseLevel level)
+    public Phase AddPhase(string slug, string title, string? description, Enums.PhaseLevel level)
     {
         if (_phases.Any(p => p.Slug == slug.Trim().ToLowerInvariant()))
             throw new DomainException($"A phase with slug '{slug}' already exists in this technology.");

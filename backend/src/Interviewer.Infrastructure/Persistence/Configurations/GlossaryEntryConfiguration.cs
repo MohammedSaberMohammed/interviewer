@@ -1,4 +1,4 @@
-using Interviewer.Domain.Catalog;
+using Interviewer.Domain.Catalog.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 

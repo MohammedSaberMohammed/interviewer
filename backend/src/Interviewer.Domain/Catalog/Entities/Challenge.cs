@@ -1,8 +1,7 @@
+using Interviewer.Domain.Catalog.Enums;
 using Interviewer.Domain.Common;
 
-namespace Interviewer.Domain.Catalog;
-
-public enum ChallengeType { Mcq, Code, Quiz }
+namespace Interviewer.Domain.Catalog.Entities;
 
 public class Challenge : Entity<long>
 {

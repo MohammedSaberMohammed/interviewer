@@ -1,5 +1,5 @@
 using AutoMapper;
-using Interviewer.Domain.Catalog;
+using Interviewer.Domain.Catalog.Entities;
 
 namespace Interviewer.Application.Features.Catalog.GetTechnologies;
 

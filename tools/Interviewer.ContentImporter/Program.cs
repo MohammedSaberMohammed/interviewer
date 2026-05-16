@@ -1,7 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using Interviewer.Domain.Catalog;
+using Interviewer.Domain.Catalog.Entities;
+using Interviewer.Domain.Catalog.Enums;
 using Interviewer.Domain.Catalog.ValueObjects;
 using Interviewer.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
