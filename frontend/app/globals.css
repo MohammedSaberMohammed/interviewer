@@ -476,13 +476,68 @@ html.dark .shiki span {
   /* dark:prose-invert doesn't work inside @apply in Tailwind v4 — use explicit selector.
      Tailwind Typography also generates @supports (color: lab()) blocks that set
      --tw-prose-headings directly on h1–h6 elements, overriding the parent-level invert.
-     We must also set color directly on those elements with higher specificity (.dark + class). */
+     We override with explicit oklch values which have no @supports conflict. */
   .dark .prose-lesson {
-    @apply prose-invert;
+    --tw-prose-body:         oklch(0.88 0.01 270);
+    --tw-prose-headings:     oklch(0.96 0.01 270);
+    --tw-prose-lead:         oklch(0.62 0.018 270);
+    --tw-prose-links:        oklch(0.72 0.18 195);
+    --tw-prose-bold:         oklch(0.96 0.01 270);
+    --tw-prose-counters:     oklch(0.62 0.018 270);
+    --tw-prose-bullets:      oklch(0.72 0.18 195 / 0.6);
+    --tw-prose-hr:           oklch(0.96 0 0 / 0.07);
+    --tw-prose-quotes:       oklch(0.88 0.01 270);
+    --tw-prose-quote-borders:oklch(0.72 0.18 195 / 0.4);
+    --tw-prose-captions:     oklch(0.62 0.018 270);
+    --tw-prose-code:         oklch(0.72 0.18 195);
+    --tw-prose-pre-code:     oklch(0.88 0.01 270);
+    --tw-prose-pre-bg:       oklch(0.13 0.022 270);
+    --tw-prose-th-borders:   oklch(0.96 0 0 / 0.1);
+    --tw-prose-td-borders:   oklch(0.96 0 0 / 0.06);
   }
 
+  /* Tailwind Typography @supports (color: lab()) blocks set --tw-prose-headings
+     directly on h1–h6 elements (not just the root), overriding the parent vars above.
+     Beat them with a higher-specificity (.dark + class) direct color rule. */
   .dark .prose-lesson :where(h1, h2, h3, h4, h5, h6, th):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
-    --tw-prose-headings: var(--foreground);
-    color: var(--foreground);
+    --tw-prose-headings: oklch(0.96 0.01 270);
+    color: oklch(0.96 0.01 270);
   }
+}
+
+/* ─── Prose lesson: decorative overrides (outside @layer so Tailwind doesn't drop them) ── */
+/* H2 gradient left accent bar (cyan → magenta) */
+.prose-lesson h2 {
+  position: relative;
+  padding-left: 18px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+}
+.prose-lesson h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  background: linear-gradient(180deg, oklch(0.72 0.18 195), oklch(0.68 0.25 320));
+  border-radius: 2px;
+}
+
+/* Inline code: tinted chip (not inside a <pre>) */
+.prose-lesson :not(pre) > code {
+  background: oklch(0.72 0.18 195 / 0.08);
+  color: oklch(0.44 0.18 230);
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 0.88em;
+  border: 1px solid oklch(0.72 0.18 195 / 0.15);
+}
+.dark .prose-lesson :not(pre) > code {
+  background: oklch(0.72 0.18 195 / 0.12);
+  color: oklch(0.82 0.18 195);
+  border-color: oklch(0.72 0.18 195 / 0.2);
 }
