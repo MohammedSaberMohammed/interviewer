@@ -1,0 +1,13 @@
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\bin\Debug\net8.0\Interviewer.Domain.deps.json
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\bin\Debug\net8.0\Interviewer.Domain.dll
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\bin\Debug\net8.0\Interviewer.Domain.pdb
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.csproj.AssemblyReference.cache
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.GeneratedMSBuildEditorConfig.editorconfig
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.AssemblyInfoInputs.cache
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.AssemblyInfo.cs
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.csproj.CoreCompileInputs.cache
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.sourcelink.json
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.dll
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\refint\Interviewer.Domain.dll
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\Interviewer.Domain.pdb
+D:\Work\Workspace\side_projects\interview-app\backend\src\Interviewer.Domain\obj\Debug\net8.0\ref\Interviewer.Domain.dll
