@@ -1,0 +1,52 @@
+---
+title: "Iterables and Generators"
+slug: "iterables-generators"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "iterables", "generators", "for...of"]
+summary: "Understand for...of, custom iterables, and generator functions where lazy sequences are useful."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Iterators_and_generators"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Understand for...of, custom iterables, and generator functions where lazy sequences are useful. List transformations sit behind search, reports, tables, permissions, and API joins, so clarity and complexity both matter. Treat the syntax as a tool, then explain the operational consequence.
+
+## Default Move
+
+```javascript
+function* ids(records) {
+  for (const record of records) yield record.id;
+}
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Risk Check
+
+- Use map for shape changes, filter for removal, and reduce only when it stays readable.
+- Build lookup maps before joining large collections.
+- Copy arrays before mutating operations like sort.
+
+<Callout type="senior">
+The senior signal is choosing a structure that makes the next operation cheap and the current code readable.
+</Callout>
+
+<CodeChallenge
+  id="iterables-generators-check"
+  difficulty="intermediate"
+  description="What does a generator function return when called?"
+  options={[
+    "The first yielded value",
+    "An iterator object",
+    "An array of all values",
+    "A Promise only"
+  ]}
+  correctAnswer={1}
+  explanation="An iterator object is the correct choice for this practical JavaScript scenario."
+/>

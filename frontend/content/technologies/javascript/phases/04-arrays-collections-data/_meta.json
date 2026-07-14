@@ -1,0 +1,20 @@
+{
+    "slug":  "04-arrays-collections-data",
+    "number":  4,
+    "title":  "Arrays, Collections, and Data",
+    "subtitle":  "Transforming data without slow or unreadable code",
+    "level":  "junior",
+    "estimatedHours":  10,
+    "emoji":  "arr",
+    "color":  "yellow",
+    "description":  "Practice the array and collection patterns used in UI, APIs, and interviews: map/filter/reduce, grouping, deduping, sorting, Map, Set, and immutability.",
+    "prerequisites":  [
+                          "Language Foundations"
+                      ],
+    "learningOutcomes":  [
+                             "Choose array methods based on intent",
+                             "Use Map and Set for lookup-heavy work",
+                             "Avoid mutation bugs in state updates",
+                             "Write clear data transformations for API responses"
+                         ]
+}

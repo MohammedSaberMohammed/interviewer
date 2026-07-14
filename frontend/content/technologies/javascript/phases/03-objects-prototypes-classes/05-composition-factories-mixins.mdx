@@ -1,0 +1,52 @@
+---
+title: "Composition, Factories, and Mixins"
+slug: "composition-factories-mixins"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "composition", "factory functions"]
+summary: "Build objects from small behaviors when inheritance would create fragile hierarchies."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Working_with_objects"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Build objects from small behaviors when inheritance would create fragile hierarchies. Object bugs usually look like missing fields, unexpected shared mutation, or inherited data being treated as trusted input. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Ship This Shape
+
+```javascript
+function createRepository(client) {
+  return { findById: (id) => client.get('/items/' + id) };
+}
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Pass
+
+- Check whether a property is own or inherited.
+- Copy the nested branch you change, not just the top object.
+- Reject dangerous dynamic keys before merging data.
+
+<Callout type="senior">
+Do not turn object questions into philosophy. Explain lookup, ownership, mutation, and the safer pattern you would ship.
+</Callout>
+
+<CodeChallenge
+  id="composition-factories-mixins-check"
+  difficulty="intermediate"
+  description="Why use a factory function?"
+  options={[
+    "To create objects with controlled setup without requiring new",
+    "To disable closures",
+    "To force prototype pollution",
+    "To make JSON faster"
+  ]}
+  correctAnswer={0}
+  explanation="To create objects with controlled setup without requiring new is the correct choice for this practical JavaScript scenario."
+/>

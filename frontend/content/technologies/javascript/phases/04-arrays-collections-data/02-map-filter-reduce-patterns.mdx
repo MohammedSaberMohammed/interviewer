@@ -1,0 +1,52 @@
+---
+title: "Map, Filter, and Reduce Patterns"
+slug: "map-filter-reduce-patterns"
+order: 2
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "arrays", "map", "filter", "reduce"]
+summary: "Transform API and UI data with array methods while keeping intent readable."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Transform API and UI data with array methods while keeping intent readable. List transformations sit behind search, reports, tables, permissions, and API joins, so clarity and complexity both matter. The useful answer is the one that predicts the next bug before it ships.
+
+## Code Shape
+
+```javascript
+const activeEmails = users
+  .filter((user) => user.active)
+  .map((user) => user.email);
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Readiness Check
+
+- Use map for shape changes, filter for removal, and reduce only when it stays readable.
+- Build lookup maps before joining large collections.
+- Copy arrays before mutating operations like sort.
+
+<Callout type="senior">
+The senior signal is choosing a structure that makes the next operation cheap and the current code readable.
+</Callout>
+
+<CodeChallenge
+  id="map-filter-reduce-patterns-check"
+  difficulty="foundation"
+  description="Which method should create one output item per input item?"
+  options={[
+    "filter",
+    "map",
+    "some",
+    "find"
+  ]}
+  correctAnswer={1}
+  explanation="map is the correct choice for this practical JavaScript scenario."
+/>

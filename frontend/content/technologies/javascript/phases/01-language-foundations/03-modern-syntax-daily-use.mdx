@@ -1,0 +1,51 @@
+---
+title: "Modern Syntax You Use Daily"
+slug: "modern-syntax-daily-use"
+order: 3
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "destructuring", "spread", "optional chaining"]
+summary: "Use destructuring, rest/spread, template literals, optional chaining, and nullish coalescing without creating hidden bugs."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Optional_chaining"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Use destructuring, rest/spread, template literals, optional chaining, and nullish coalescing without creating hidden bugs. A small assumption here can corrupt state, hide valid user input, or make an API response look safer than it is. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Practical Implementation
+
+```javascript
+const displayName = user.profile?.displayName ?? 'Anonymous';
+const tags = [...defaultTags, ...customTags];
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Questions
+
+- Confirm the actual runtime type before leaning on syntax.
+- Default missing values without replacing valid falsy values.
+- Normalize external data once, close to the boundary.
+
+<Callout type="senior">
+For fundamentals, interviewers are listening for precision. Say what JavaScript does, then show the practical guardrail you would use.
+</Callout>
+
+<CodeChallenge
+  id="modern-syntax-daily-use-check"
+  difficulty="foundation"
+  description="Which expression preserves empty string and 0 while defaulting only missing values?"
+  options={[
+    "value || fallback",
+    "value ?? fallback",
+    "Boolean(value) ? value : fallback",
+    "value && fallback"
+  ]}
+  correctAnswer={1}
+  explanation="value ?? fallback is the correct choice for this practical JavaScript scenario."
+/>

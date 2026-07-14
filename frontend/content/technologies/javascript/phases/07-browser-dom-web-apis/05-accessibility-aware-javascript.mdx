@@ -1,0 +1,51 @@
+---
+title: "Accessibility-Aware JavaScript"
+slug: "accessibility-aware-javascript"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "accessibility", "focus", "keyboard", "ARIA"]
+summary: "Write interactions that work with keyboard, focus management, semantic HTML, and assistive technology."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/Accessibility"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Write interactions that work with keyboard, focus management, semantic HTML, and assistive technology. The browser is a shared runtime for rendering, input, accessibility, storage, and network events. The useful answer is the one that predicts the next bug before it ships.
+
+## Practical Implementation
+
+```javascript
+button.addEventListener('click', submit);
+button.addEventListener('keydown', handleKeyboardShortcut);
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Questions
+
+- Use safe DOM sinks for untrusted text.
+- Prefer delegation for dynamic child elements.
+- Release observers, timers, and listeners when ownership ends.
+
+<Callout type="senior">
+Browser API answers should mention user impact: responsiveness, accessibility, memory, and security.
+</Callout>
+
+<CodeChallenge
+  id="accessibility-aware-javascript-check"
+  difficulty="intermediate"
+  description="For a clickable action, what is usually better than a div with onClick?"
+  options={[
+    "A button element",
+    "A span with tabindex only",
+    "A custom tag with no role",
+    "An image with alt text only"
+  ]}
+  correctAnswer={0}
+  explanation="A button element is the correct choice for this practical JavaScript scenario."
+/>

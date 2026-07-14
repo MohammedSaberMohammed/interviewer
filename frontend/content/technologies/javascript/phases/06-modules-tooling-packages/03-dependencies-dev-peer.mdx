@@ -1,0 +1,51 @@
+---
+title: "Dependencies, Dev Dependencies, and Peer Dependencies"
+slug: "dependencies-dev-peer"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "npm", "dependencies", "packages"]
+summary: "Read dependency intent and avoid shipping test tools or duplicating framework versions by accident."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://docs.npmjs.com/specifying-dependencies-and-devdependencies-in-a-package-json-file"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Read dependency intent and avoid shipping test tools or duplicating framework versions by accident. Module and build decisions affect what code ships, when it loads, and whether production behaves like local development. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Ship This Shape
+
+```javascript
+// dependencies: code needed at runtime
+// devDependencies: build, lint, and test tools
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Pass
+
+- Separate build-time replacement from runtime configuration.
+- Know which dependencies are shipped to users or servers.
+- Use code splitting where delayed loading improves startup.
+
+<Callout type="senior">
+Tooling knowledge is practical when you can explain the artifact: chunks, env replacement, dependency graph, and runtime format.
+</Callout>
+
+<CodeChallenge
+  id="dependencies-dev-peer-check"
+  difficulty="intermediate"
+  description="When is peerDependencies commonly used?"
+  options={[
+    "A library expects the consuming app to provide a compatible package",
+    "A package is only needed for local tests",
+    "A package must be installed globally",
+    "A package is secret"
+  ]}
+  correctAnswer={0}
+  explanation="A library expects the consuming app to provide a compatible package is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,51 @@
+---
+title: "Property Ownership and Enumeration"
+slug: "property-ownership-enumeration"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "objects", "properties", "enumeration"]
+summary: "Understand own properties, inherited properties, enumerable keys, and why Object.keys and for...in differ."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Enumerability_and_ownership_of_properties"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Understand own properties, inherited properties, enumerable keys, and why Object.keys and for...in differ. Object bugs usually look like missing fields, unexpected shared mutation, or inherited data being treated as trusted input. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Practical Implementation
+
+```javascript
+Object.keys(user); // own enumerable keys
+Object.hasOwn(user, 'role');
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Review Questions
+
+- Check whether a property is own or inherited.
+- Copy the nested branch you change, not just the top object.
+- Reject dangerous dynamic keys before merging data.
+
+<Callout type="senior">
+Do not turn object questions into philosophy. Explain lookup, ownership, mutation, and the safer pattern you would ship.
+</Callout>
+
+<CodeChallenge
+  id="property-ownership-enumeration-check"
+  difficulty="intermediate"
+  description="What can for...in include that Object.keys does not?"
+  options={[
+    "Inherited enumerable properties",
+    "Private class fields",
+    "Symbols only",
+    "Non-enumerable properties only"
+  ]}
+  correctAnswer={0}
+  explanation="Inherited enumerable properties is the correct choice for this practical JavaScript scenario."
+/>

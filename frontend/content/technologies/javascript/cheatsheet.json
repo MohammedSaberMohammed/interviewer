@@ -1,0 +1,126 @@
+{
+    "sections":  [
+                     {
+                         "id":  "language-core",
+                         "title":  "Language Core",
+                         "content":  [
+                                         {
+                                             "label":  "let vs const vs var",
+                                             "value":  "Use const by default, let when reassignment is needed, avoid var. var is function-scoped and hoisted in ways that create bugs."
+                                         },
+                                         {
+                                             "label":  "== vs ===",
+                                             "value":  "Prefer ===. == performs coercion, which is useful only when you deliberately want null == undefined."
+                                         },
+                                         {
+                                             "label":  "truthy/falsy",
+                                             "value":  "Falsy values: false, 0, -0, 0n, \u0027\u0027, null, undefined, NaN. Everything else is truthy, including [] and {}."
+                                         },
+                                         {
+                                             "label":  "optional chaining",
+                                             "value":  "user?.profile?.name safely stops at null/undefined. Combine with ?? for defaults."
+                                         },
+                                         {
+                                             "label":  "nullish coalescing",
+                                             "value":  "value ?? fallback only falls back on null or undefined. It preserves 0, false, and empty string."
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "functions",
+                         "title":  "Functions and Scope",
+                         "content":  [
+                                         {
+                                             "label":  "Closure",
+                                             "value":  "A function keeps access to variables from the scope where it was created. Used for callbacks, factories, memoization, and encapsulation."
+                                         },
+                                         {
+                                             "label":  "Arrow functions",
+                                             "value":  "Lexical this, no own arguments, not constructible. Great for callbacks; avoid for prototype methods needing dynamic this."
+                                         },
+                                         {
+                                             "label":  "Hoisting",
+                                             "value":  "Function declarations are usable before declaration. let/const are hoisted but inaccessible before initialization."
+                                         },
+                                         {
+                                             "label":  "this",
+                                             "value":  "Depends on call site for regular functions. Use bind/call/apply or arrow functions when callback context matters."
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "async",
+                         "title":  "Async JavaScript",
+                         "content":  [
+                                         {
+                                             "label":  "Promise",
+                                             "value":  "Represents a future success or failure. Chain with then/catch or consume with async/await."
+                                         },
+                                         {
+                                             "label":  "await",
+                                             "value":  "Pauses the async function, not the thread. Rejections become thrown errors inside the async function."
+                                         },
+                                         {
+                                             "label":  "Promise.all",
+                                             "value":  "Run independent tasks concurrently; rejects fast on first rejection."
+                                         },
+                                         {
+                                             "label":  "Promise.allSettled",
+                                             "value":  "Use when every result matters, even failures."
+                                         },
+                                         {
+                                             "label":  "Microtasks",
+                                             "value":  "Promise callbacks run before timers after the current call stack completes."
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "browser",
+                         "title":  "Browser APIs",
+                         "content":  [
+                                         {
+                                             "label":  "querySelector",
+                                             "value":  "CSS selector based DOM lookup. Cache stable nodes instead of repeatedly querying inside hot paths."
+                                         },
+                                         {
+                                             "label":  "event delegation",
+                                             "value":  "Attach one listener to a parent and inspect event.target. Useful for dynamic lists."
+                                         },
+                                         {
+                                             "label":  "fetch",
+                                             "value":  "Rejects on network failure, not on HTTP 400/500. Check response.ok before parsing."
+                                         },
+                                         {
+                                             "label":  "localStorage",
+                                             "value":  "Synchronous key-value storage. Good for small preferences, not large or sensitive data."
+                                         }
+                                     ]
+                     },
+                     {
+                         "id":  "quality",
+                         "title":  "Quality and Production",
+                         "content":  [
+                                         {
+                                             "label":  "ES modules",
+                                             "value":  "Static import/export enables tree-shaking and clear dependencies. Dynamic import supports code splitting."
+                                         },
+                                         {
+                                             "label":  "Testing",
+                                             "value":  "Unit test pure logic, integration test async/API boundaries, e2e test critical user flows."
+                                         },
+                                         {
+                                             "label":  "XSS defense",
+                                             "value":  "Treat user input as untrusted. Prefer textContent/framework escaping over innerHTML."
+                                         },
+                                         {
+                                             "label":  "Performance",
+                                             "value":  "Ship less JavaScript, split non-critical code, avoid long tasks, clean up listeners and timers."
+                                         },
+                                         {
+                                             "label":  "Node errors",
+                                             "value":  "Use async/await with try/catch at boundaries. Never ignore rejected promises."
+                                         }
+                                     ]
+                     }
+                 ]
+}

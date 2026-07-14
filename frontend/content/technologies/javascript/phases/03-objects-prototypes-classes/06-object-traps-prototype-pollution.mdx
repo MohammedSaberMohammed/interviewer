@@ -1,0 +1,52 @@
+---
+title: "Object Traps and Prototype Pollution"
+slug: "object-traps-prototype-pollution"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "security", "prototype pollution"]
+summary: "Recognize dangerous dynamic property writes and defend object-merging code from prototype pollution."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/Security/Attacks/Prototype_pollution"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Recognize dangerous dynamic property writes and defend object-merging code from prototype pollution. Object bugs usually look like missing fields, unexpected shared mutation, or inherited data being treated as trusted input. Keep the explanation tied to behavior you can observe in a debugger, test, or production incident.
+
+## Concrete Pattern
+
+```javascript
+if (key === '__proto__' || key === 'constructor') {
+  throw new Error('Unsafe key');
+}
+```
+
+Keep the implementation explicit enough that ownership, failure, and the next likely change are easy to see.
+
+## Trap To Avoid
+
+- Check whether a property is own or inherited.
+- Copy the nested branch you change, not just the top object.
+- Reject dangerous dynamic keys before merging data.
+
+<Callout type="senior">
+Do not turn object questions into philosophy. Explain lookup, ownership, mutation, and the safer pattern you would ship.
+</Callout>
+
+<CodeChallenge
+  id="object-traps-prototype-pollution-check"
+  difficulty="advanced"
+  description="Which incoming key is especially dangerous in naive object merge code?"
+  options={[
+    "displayName",
+    "__proto__",
+    "email",
+    "createdAt"
+  ]}
+  correctAnswer={1}
+  explanation="__proto__ is the correct choice for this practical JavaScript scenario."
+/>

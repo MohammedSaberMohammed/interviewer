@@ -1,0 +1,73 @@
+---
+title: "Errors, Boundaries, and Debugging"
+slug: "errors-boundaries-debugging"
+order: 1
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["JavaScript", "errors", "debugging", "try catch", "promises"]
+summary: "Handle errors where you can add context or recover, and let the rest reach a boundary that can report them."
+docsLinks:
+  - label: "MDN Error"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error"
+  - label: "Node.js Errors"
+    url: "https://nodejs.org/api/errors.html"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Catch Where You Can Do Something Useful
+
+```javascript
+async function saveProfile(profile) {
+  try {
+    return await api.put('/profile', profile);
+  } catch (error) {
+    throw new Error('Could not save profile', { cause: error });
+  }
+}
+```
+
+Adding context is useful. Catching only to log and continue can hide a broken state.
+
+## Always Await or Return Promises
+
+```javascript
+async function handler() {
+  await sendEmail(); // errors can be caught by the caller
+}
+```
+
+If you intentionally fire and forget, attach a catch and make that decision obvious.
+
+```javascript
+void sendAnalytics().catch((error) => {
+  console.error('Analytics failed', error);
+});
+```
+
+## Debugging Checklist
+
+1. Reproduce the bug with the smallest input.
+2. Read the first meaningful stack frame in app code.
+3. Inspect runtime values, not assumptions.
+4. Add a regression test when the bug is understood.
+
+<Callout type="senior">
+The difference between junior and senior error handling is boundaries. UI code should show a useful state, API code should return a meaningful status, and background work should report failures without crashing unrelated work.
+</Callout>
+
+<CodeChallenge
+  id="fire-and-forget"
+  difficulty="intermediate"
+  description="What is the safest way to intentionally start non-critical async analytics without awaiting it?"
+  options={[
+    "sendAnalytics()",
+    "void sendAnalytics().catch(reportError)",
+    "try { sendAnalytics() } catch (e) { reportError(e) }",
+    "setTimeout(sendAnalytics(), 0)"
+  ]}
+  correctAnswer={1}
+  explanation="A promise rejection will not be caught by synchronous try/catch unless awaited. Attach catch when intentionally fire-and-forget."
+/>
+

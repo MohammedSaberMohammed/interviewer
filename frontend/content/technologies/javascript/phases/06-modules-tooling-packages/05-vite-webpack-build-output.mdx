@@ -1,0 +1,51 @@
+---
+title: "Vite, Webpack, and Build Output"
+slug: "vite-webpack-build-output"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Vite", "Webpack", "bundlers"]
+summary: "Understand what modern build tools output: chunks, assets, source maps, minified code, and env replacements."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://vite.dev/guide/"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Understand what modern build tools output: chunks, assets, source maps, minified code, and env replacements. Module and build decisions affect what code ships, when it loads, and whether production behaves like local development. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Concrete Pattern
+
+```javascript
+const Chart = await import('./Chart.js');
+Chart.mount(container);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Trap To Avoid
+
+- Separate build-time replacement from runtime configuration.
+- Know which dependencies are shipped to users or servers.
+- Use code splitting where delayed loading improves startup.
+
+<Callout type="senior">
+Tooling knowledge is practical when you can explain the artifact: chunks, env replacement, dependency graph, and runtime format.
+</Callout>
+
+<CodeChallenge
+  id="vite-webpack-build-output-check"
+  difficulty="intermediate"
+  description="Which is a normal bundler responsibility?"
+  options={[
+    "Code splitting modules into chunks",
+    "Creating database indexes",
+    "Approving pull requests",
+    "Encrypting all local files"
+  ]}
+  correctAnswer={0}
+  explanation="Code splitting modules into chunks is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,51 @@
+---
+title: "Map, Set, WeakMap, and WeakSet"
+slug: "map-set-weakmap-weakset"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Map", "Set", "WeakMap", "WeakSet"]
+summary: "Choose the right collection for membership checks, entity lookup, metadata, and garbage-collection-friendly caches."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Choose the right collection for membership checks, entity lookup, metadata, and garbage-collection-friendly caches. List transformations sit behind search, reports, tables, permissions, and API joins, so clarity and complexity both matter. The useful answer is the one that predicts the next bug before it ships.
+
+## Practical Implementation
+
+```javascript
+const usersById = new Map(users.map((user) => [user.id, user]));
+const uniqueTags = [...new Set(tags)];
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Questions
+
+- Use map for shape changes, filter for removal, and reduce only when it stays readable.
+- Build lookup maps before joining large collections.
+- Copy arrays before mutating operations like sort.
+
+<Callout type="senior">
+The senior signal is choosing a structure that makes the next operation cheap and the current code readable.
+</Callout>
+
+<CodeChallenge
+  id="map-set-weakmap-weakset-check"
+  difficulty="intermediate"
+  description="What can be used as a WeakMap key?"
+  options={[
+    "Only objects and non-registered symbols",
+    "Any string",
+    "Any number",
+    "Only arrays"
+  ]}
+  correctAnswer={0}
+  explanation="Only objects and non-registered symbols is the correct choice for this practical JavaScript scenario."
+/>

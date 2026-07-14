@@ -1,0 +1,63 @@
+---
+title: "XSS, Safe DOM Updates, and Token Storage"
+slug: "xss-safe-dom-token-storage"
+order: 1
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "security", "XSS", "DOM", "tokens", "CSP"]
+summary: "Learn the security habits expected from professional JavaScript developers: avoid unsafe HTML, treat input as untrusted, and store tokens carefully."
+docsLinks:
+  - label: "OWASP XSS Prevention Cheat Sheet"
+    url: "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html"
+  - label: "OWASP DOM based XSS Prevention"
+    url: "https://cheatsheetseries.owasp.org/cheatsheets/DOM_based_XSS_Prevention_Cheat_Sheet.html"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## The Default: Text, Not HTML
+
+```javascript
+message.textContent = userInput;
+```
+
+This displays user input as text. It does not execute markup.
+
+Avoid this unless the HTML is trusted and sanitized:
+
+```javascript
+message.innerHTML = userInput;
+```
+
+## Common DOM XSS Shape
+
+```javascript
+const name = new URLSearchParams(location.search).get('name');
+document.querySelector('#welcome').innerHTML = `Welcome ${name}`;
+```
+
+An attacker can put markup or script-capable payloads in the URL. Prefer safe sinks:
+
+```javascript
+const name = new URLSearchParams(location.search).get('name') ?? 'friend';
+document.querySelector('#welcome').textContent = `Welcome ${name}`;
+```
+
+## Token Storage Is a Tradeoff
+
+Local storage is easy to use but readable by JavaScript. Cookies can be `HttpOnly` so scripts cannot read them, but they need CSRF-aware design. There is no storage choice that makes XSS harmless.
+
+<Callout type="critical">
+The strongest XSS habit is not "sanitize somewhere." It is using safe APIs by default, validating at boundaries, escaping in the right context, and adding CSP as defense in depth.
+</Callout>
+
+<CodeChallenge
+  id="safe-user-text"
+  difficulty="advanced"
+  description="You need to display a user-provided display name in the DOM. Which API is safest by default?"
+  options={["element.innerHTML = name", "element.outerHTML = name", "element.textContent = name", "eval(name)"]}
+  correctAnswer={2}
+  explanation="textContent treats the value as text, not markup. innerHTML parses HTML and is unsafe for untrusted input unless sanitized correctly."
+/>
+

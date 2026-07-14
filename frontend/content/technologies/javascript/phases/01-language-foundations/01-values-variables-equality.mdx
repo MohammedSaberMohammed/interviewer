@@ -1,0 +1,124 @@
+---
+title: "Values, Variables, and Equality"
+slug: "values-variables-equality"
+order: 1
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "variables", "equality", "coercion", "primitives"]
+summary: "Master the small JavaScript rules that prevent large production bugs: scope, equality, truthiness, nullish values, and reference assignment."
+docsLinks:
+  - label: "MDN JavaScript Guide"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide"
+  - label: "MDN Equality comparisons"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Equality_comparisons_and_sameness"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## The Professional Default: `const` First
+
+Use `const` unless the variable must be reassigned. Use `let` for reassignment. Avoid `var` in application code because it is function-scoped and can be read before assignment as `undefined`.
+
+```javascript
+const user = { name: 'Maya' };
+user.name = 'Maya Chen'; // allowed: object contents changed
+
+let retries = 0;
+retries += 1; // allowed: binding reassigned
+
+var oldStyle = 'avoid in new code';
+```
+
+<Callout type="tip">
+`const` protects the binding, not the object. If you need immutable data, create new objects or use dedicated immutability patterns.
+</Callout>
+
+## Equality: Use `===` Unless You Mean Coercion
+
+Most production code should use strict equality:
+
+```javascript
+0 === false;       // false
+'' === false;      // false
+null === undefined; // false
+
+0 == false;        // true
+'' == false;       // true
+null == undefined; // true
+```
+
+The one common deliberate use of loose equality is checking for both `null` and `undefined`:
+
+```javascript
+if (value == null) {
+  // value is null or undefined
+}
+```
+
+## Truthiness Is Not "Has Data"
+
+These are falsy: `false`, `0`, `-0`, `0n`, `''`, `null`, `undefined`, and `NaN`. Everything else is truthy.
+
+```javascript
+Boolean([]); // true
+Boolean({}); // true
+
+if (items.length === 0) {
+  // clear intent: empty array
+}
+```
+
+## `??` Preserves Useful Falsy Values
+
+Use `??` when only `null` and `undefined` should trigger a fallback.
+
+```javascript
+const pageSize = input.pageSize ?? 25; // keeps 0 if 0 is meaningful
+const title = input.title || 'Untitled'; // replaces empty string
+```
+
+## Objects Are Assigned by Reference
+
+```javascript
+const a = { count: 1 };
+const b = a;
+
+b.count = 2;
+console.log(a.count); // 2
+```
+
+For shallow copies, use spread. For nested data, copy the nested branch you change.
+
+```javascript
+const nextUser = {
+  ...user,
+  profile: {
+    ...user.profile,
+    displayName: 'New name',
+  },
+};
+```
+
+<CodeChallenge
+  id="nullish-vs-or"
+  difficulty="foundation"
+  description="A settings form allows pageSize 0 to mean 'show all'. Which defaulting expression preserves that meaning?"
+  options={[
+    "const pageSize = input.pageSize || 25",
+    "const pageSize = input.pageSize ?? 25",
+    "const pageSize = Boolean(input.pageSize) ? input.pageSize : 25",
+    "const pageSize = input.pageSize == false ? 25 : input.pageSize"
+  ]}
+  correctAnswer={1}
+  explanation="The nullish coalescing operator only falls back for null or undefined. Logical OR treats 0 as falsy and would replace it."
+/>
+
+<Quiz
+  id="truthy-array"
+  question="What does Boolean([]) return?"
+  options={["false, because the array is empty", "true, because arrays are objects", "undefined, because it has no elements", "NaN, because arrays coerce oddly"]}
+  correctAnswer={1}
+  explanation="All objects are truthy in JavaScript, including empty arrays and empty objects. Check length when you mean empty."
+/>
+

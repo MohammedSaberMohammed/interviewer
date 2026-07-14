@@ -1,0 +1,22 @@
+{
+    "slug":  "javascript",
+    "title":  "JavaScript",
+    "subtitle":  "Professional JavaScript Interview Prep",
+    "description":  "A practical JavaScript track focused on the knowledge used daily in frontend, full-stack, and Node.js work: language behavior, async code, DOM APIs, modules, testing, security, performance, and production patterns.",
+    "icon":  "Code2",
+    "color":  "yellow",
+    "status":  "active",
+    "order":  3,
+    "defaultLanguage":  "javascript",
+    "docsBaseUrl":  "https://developer.mozilla.org/en-US/docs/Web/JavaScript",
+    "keywords":  [
+                     "JavaScript",
+                     "ES modules",
+                     "async",
+                     "DOM",
+                     "Node.js",
+                     "frontend",
+                     "web APIs"
+                 ],
+    "estimatedTotalHours":  145
+}

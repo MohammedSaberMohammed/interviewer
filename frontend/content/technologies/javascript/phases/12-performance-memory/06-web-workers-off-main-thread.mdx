@@ -1,0 +1,50 @@
+---
+title: "Web Workers and Off-Main-Thread Work"
+slug: "web-workers-off-main-thread"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Web Workers", "performance", "main thread"]
+summary: "Move CPU-heavy work away from rendering and input handling when splitting tasks is not enough."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Move CPU-heavy work away from rendering and input handling when splitting tasks is not enough. Slow JavaScript blocks interaction; leaked references make sessions degrade the longer users keep the app open. The useful answer is the one that predicts the next bug before it ships.
+
+## Default Move
+
+```javascript
+const worker = new Worker(new URL('./worker.js', import.meta.url));
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Risk Check
+
+- Measure the bottleneck before changing code.
+- Reduce initial JavaScript and defer non-critical work.
+- Remove references that outlive their screen, request, or component.
+
+<Callout type="senior">
+Performance claims need evidence. Mention the metric, the tool, and the before/after behavior.
+</Callout>
+
+<CodeChallenge
+  id="web-workers-off-main-thread-check"
+  difficulty="advanced"
+  description="What is a good use for a Web Worker?"
+  options={[
+    "CPU-heavy parsing that would block the UI",
+    "Changing CSS hover color",
+    "Reading a local variable",
+    "Replacing HTTPS"
+  ]}
+  correctAnswer={0}
+  explanation="CPU-heavy parsing that would block the UI is the correct choice for this practical JavaScript scenario."
+/>

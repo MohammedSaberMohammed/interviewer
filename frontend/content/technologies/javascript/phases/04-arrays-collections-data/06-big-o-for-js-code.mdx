@@ -1,0 +1,51 @@
+---
+title: "Big-O for JavaScript Code"
+slug: "big-o-for-js-code"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Big O", "performance", "collections"]
+summary: "Reason about nested loops, repeated find calls, sorting cost, and lookup structures in practical JavaScript."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Reason about nested loops, repeated find calls, sorting cost, and lookup structures in practical JavaScript. List transformations sit behind search, reports, tables, permissions, and API joins, so clarity and complexity both matter. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Production-Friendly Code
+
+```javascript
+const usersById = new Map(users.map((user) => [user.id, user]));
+const owners = orders.map((order) => usersById.get(order.ownerId));
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Interview Angle
+
+- Use map for shape changes, filter for removal, and reduce only when it stays readable.
+- Build lookup maps before joining large collections.
+- Copy arrays before mutating operations like sort.
+
+<Callout type="senior">
+The senior signal is choosing a structure that makes the next operation cheap and the current code readable.
+</Callout>
+
+<CodeChallenge
+  id="big-o-for-js-code-check"
+  difficulty="intermediate"
+  description="A loop over orders that calls users.find for each order is usually what complexity?"
+  options={[
+    "O(1)",
+    "O(log n)",
+    "O(n*m)",
+    "O(n) always"
+  ]}
+  correctAnswer={2}
+  explanation="O(n*m) is the correct choice for this practical JavaScript scenario."
+/>

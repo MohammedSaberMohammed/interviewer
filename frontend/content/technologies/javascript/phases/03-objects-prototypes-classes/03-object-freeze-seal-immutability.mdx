@@ -1,0 +1,51 @@
+---
+title: "Freeze, Seal, and Immutability Boundaries"
+slug: "freeze-seal-immutability"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Object.freeze", "immutability"]
+summary: "Use immutability where it helps and know the limits of shallow object protection."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Use immutability where it helps and know the limits of shallow object protection. Object bugs usually look like missing fields, unexpected shared mutation, or inherited data being treated as trusted input. The useful answer is the one that predicts the next bug before it ships.
+
+## Production-Friendly Code
+
+```javascript
+const frozen = Object.freeze({ nested: { enabled: true } });
+frozen.nested.enabled = false; // nested object is still mutable
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Interview Angle
+
+- Check whether a property is own or inherited.
+- Copy the nested branch you change, not just the top object.
+- Reject dangerous dynamic keys before merging data.
+
+<Callout type="senior">
+Do not turn object questions into philosophy. Explain lookup, ownership, mutation, and the safer pattern you would ship.
+</Callout>
+
+<CodeChallenge
+  id="freeze-seal-immutability-check"
+  difficulty="intermediate"
+  description="Object.freeze(user) does what by default?"
+  options={[
+    "Deep-freezes every nested object",
+    "Prevents changes to the top-level object only",
+    "Converts all fields to strings",
+    "Prevents reads from the object"
+  ]}
+  correctAnswer={1}
+  explanation="Prevents changes to the top-level object only is the correct choice for this practical JavaScript scenario."
+/>

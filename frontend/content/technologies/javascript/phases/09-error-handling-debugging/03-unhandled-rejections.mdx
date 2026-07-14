@@ -1,0 +1,50 @@
+---
+title: "Unhandled Rejections"
+slug: "unhandled-rejections"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Promise", "unhandled rejection", "async"]
+summary: "Prevent promise failures from disappearing or crashing at the wrong layer."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises#error_handling"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Prevent promise failures from disappearing or crashing at the wrong layer. Bad error handling either hides the cause or crashes too far away from the real failure. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Default Move
+
+```javascript
+void sendAnalytics().catch(reportError);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Risk Check
+
+- Catch only where you can add context, recover, or report.
+- Keep the original error available through cause or structured logging.
+- Turn fixed bugs into tests when the behavior is important.
+
+<Callout type="senior">
+The professional move is not catching more; it is putting the boundary in the right place.
+</Callout>
+
+<CodeChallenge
+  id="unhandled-rejections-check"
+  difficulty="intermediate"
+  description="What is the risk of calling an async function without await, return, or catch?"
+  options={[
+    "Its rejection may be unhandled",
+    "It becomes synchronous",
+    "It cannot use fetch",
+    "It deep-clones all arguments"
+  ]}
+  correctAnswer={0}
+  explanation="Its rejection may be unhandled is the correct choice for this practical JavaScript scenario."
+/>

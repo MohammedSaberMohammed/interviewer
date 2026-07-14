@@ -1,0 +1,51 @@
+---
+title: "Dates, Numbers, and Strings Gotchas"
+slug: "date-number-string-gotchas"
+order: 5
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Date", "Number", "String", "Intl"]
+summary: "Handle the values that break real applications: floating-point math, date parsing, time zones, and user-facing formatting."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Handle the values that break real applications: floating-point math, date parsing, time zones, and user-facing formatting. A small assumption here can corrupt state, hide valid user input, or make an API response look safer than it is. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Code Shape
+
+```javascript
+const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+formatter.format(19.99);
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Readiness Check
+
+- Confirm the actual runtime type before leaning on syntax.
+- Default missing values without replacing valid falsy values.
+- Normalize external data once, close to the boundary.
+
+<Callout type="senior">
+For fundamentals, interviewers are listening for precision. Say what JavaScript does, then show the practical guardrail you would use.
+</Callout>
+
+<CodeChallenge
+  id="date-number-string-gotchas-check"
+  difficulty="foundation"
+  description="Why should currency calculations avoid plain floating-point arithmetic?"
+  options={[
+    "It is slower than strings",
+    "Binary floating-point cannot exactly represent many decimal fractions",
+    "Numbers cannot be serialized to JSON",
+    "Intl requires BigInt"
+  ]}
+  correctAnswer={1}
+  explanation="Binary floating-point cannot exactly represent many decimal fractions is the correct choice for this practical JavaScript scenario."
+/>

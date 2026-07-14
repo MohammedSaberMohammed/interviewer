@@ -1,0 +1,50 @@
+---
+title: "Testing Async Code"
+slug: "async-testing"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "testing", "async", "promises"]
+summary: "Test promises, timers, retries, and loading states without race conditions or arbitrary sleeps."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://vitest.dev/guide/mocking/timers"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Test promises, timers, retries, and loading states without race conditions or arbitrary sleeps. Tests become valuable when they protect behavior and stay resilient while implementation changes. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Default Move
+
+```javascript
+const result = input == null ? fallback : transform(input);
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Risk Check
+
+- Use unit tests for deterministic rules.
+- Mock network, time, storage, and third-party systems.
+- Reserve e2e tests for flows the business cannot afford to break.
+
+<Callout type="senior">
+A strong testing answer explains why a test belongs at that level, not just which library you prefer.
+</Callout>
+
+<CodeChallenge
+  id="async-testing-check"
+  difficulty="intermediate"
+  description="What should an async test usually do with the promise under test?"
+  options={[
+    "await it or return it",
+    "Ignore it",
+    "Stringify it first",
+    "Wrap it in CSS"
+  ]}
+  correctAnswer={0}
+  explanation="await it or return it is the correct choice for this practical JavaScript scenario."
+/>

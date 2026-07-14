@@ -1,0 +1,119 @@
+---
+title: "Closures, `this`, and Callbacks"
+slug: "closures-this-callbacks"
+order: 1
+difficulty: "foundation"
+readingTime: 13
+status: "published"
+tags: ["JavaScript", "closures", "this", "callbacks", "arrow functions"]
+summary: "Learn closures and this through real patterns: callbacks, event handlers, factories, memoization, and method calls."
+docsLinks:
+  - label: "MDN Closures"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Closures"
+  - label: "MDN Arrow functions"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## A Closure Is a Function Plus Its Surrounding Scope
+
+Closures are created constantly in professional JavaScript: event handlers, React hooks, Express middleware, memoized helpers, and data mappers all rely on them.
+
+```javascript
+function createCounter() {
+  let count = 0;
+
+  return function increment() {
+    count += 1;
+    return count;
+  };
+}
+
+const next = createCounter();
+next(); // 1
+next(); // 2
+```
+
+The returned function still has access to `count` because it was created inside `createCounter`.
+
+## The Practical Closure Trap
+
+```javascript
+for (var i = 0; i < 3; i += 1) {
+  setTimeout(() => console.log(i), 0);
+}
+// 3, 3, 3
+```
+
+`var` creates one function-scoped `i`. Every callback sees the same variable after the loop ends. Use `let` for a new binding per iteration.
+
+```javascript
+for (let i = 0; i < 3; i += 1) {
+  setTimeout(() => console.log(i), 0);
+}
+// 0, 1, 2
+```
+
+## `this` Is About the Call Site
+
+For regular functions, `this` is usually decided by how the function is called.
+
+```javascript
+const user = {
+  name: 'Ava',
+  speak() {
+    return this.name;
+  },
+};
+
+user.speak(); // 'Ava'
+
+const speak = user.speak;
+speak(); // undefined in strict mode
+```
+
+Arrow functions do not have their own `this`. They capture `this` from the surrounding scope.
+
+```javascript
+class Timer {
+  seconds = 0;
+
+  start() {
+    setInterval(() => {
+      this.seconds += 1;
+    }, 1000);
+  }
+}
+```
+
+<Callout type="warning">
+Avoid arrow functions as object prototype methods when you need dynamic `this`. Use them for callbacks where lexical `this` is exactly the point.
+</Callout>
+
+## Interview-Ready Rule
+
+When asked about closures, do not define them abstractly and stop. Give a real use: "A closure lets a callback keep access to variables from the function that created it, which is why factories, memoization, event handlers, and async callbacks can remember state."
+
+<CodeChallenge
+  id="closure-loop-output"
+  difficulty="foundation"
+  description="What does this log? for (var i = 0; i < 3; i++) setTimeout(() => console.log(i), 0)"
+  options={["0, 1, 2", "1, 2, 3", "3, 3, 3", "undefined, undefined, undefined"]}
+  correctAnswer={2}
+  explanation="var is function-scoped, so all callbacks close over the same i. The timer callbacks run after the loop has completed and i is 3."
+/>
+
+<Quiz
+  id="arrow-this"
+  question="What is the most important this-related difference between an arrow function and a regular function?"
+  options={[
+    "Arrow functions always bind this to the object before the dot",
+    "Arrow functions capture this from the surrounding scope",
+    "Regular functions cannot be used as callbacks",
+    "Regular functions always run in strict mode"
+  ]}
+  correctAnswer={1}
+  explanation="Arrow functions do not create their own this binding. They use the this value from the lexical scope where they were created."
+/>
+

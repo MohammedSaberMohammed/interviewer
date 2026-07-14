@@ -1,0 +1,20 @@
+{
+    "slug":  "01-language-foundations",
+    "number":  1,
+    "title":  "Language Foundations",
+    "subtitle":  "The JavaScript behavior that shows up in real code reviews",
+    "level":  "junior",
+    "estimatedHours":  10,
+    "emoji":  "JS",
+    "color":  "yellow",
+    "description":  "Build a reliable mental model for values, variables, equality, coercion, copying, and modern syntax. The goal is not trivia; it is avoiding bugs in everyday code.",
+    "prerequisites":  [
+
+                      ],
+    "learningOutcomes":  [
+                             "Choose const, let, and var correctly",
+                             "Predict equality and coercion outcomes without relying on memorized trivia",
+                             "Use destructuring, spread, optional chaining, and nullish coalescing safely",
+                             "Explain why primitives and object references behave differently"
+                         ]
+}

@@ -1,0 +1,51 @@
+---
+title: "Node Event Loop and libuv"
+slug: "node-event-loop-libuv"
+order: 2
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Node.js", "event loop", "libuv"]
+summary: "Understand Node scheduling enough to reason about timers, I/O, nextTick, and CPU blocking."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/learn/asynchronous-work/event-loop-timers-and-nexttick"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Understand Node scheduling enough to reason about timers, I/O, nextTick, and CPU blocking. Server-side JavaScript has to survive concurrency, slow dependencies, deploy signals, and malformed input. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Ship This Shape
+
+```javascript
+Promise.resolve().then(() => console.log('microtask'));
+setTimeout(() => console.log('timer'), 0);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Review Pass
+
+- Fail fast on missing configuration.
+- Add timeouts to outbound calls.
+- Shut down gracefully instead of dropping in-flight work.
+
+<Callout type="senior">
+Production Node answers should cover operations: logs, health, timeouts, shutdown, and event-loop safety.
+</Callout>
+
+<CodeChallenge
+  id="node-event-loop-libuv-check"
+  difficulty="advanced"
+  description="What happens during a long synchronous loop in Node?"
+  options={[
+    "Other JS callbacks wait",
+    "Node creates infinite threads",
+    "Promises run on the GPU",
+    "HTTP stops existing permanently"
+  ]}
+  correctAnswer={0}
+  explanation="Other JS callbacks wait is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,53 @@
+---
+title: "Process Signals and Graceful Shutdown"
+slug: "process-signals-shutdown"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Node.js", "signals", "shutdown", "production"]
+summary: "Handle SIGTERM, stop accepting work, finish in-flight requests, and close resources cleanly."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/api/process.html"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Handle SIGTERM, stop accepting work, finish in-flight requests, and close resources cleanly. Server-side JavaScript has to survive concurrency, slow dependencies, deploy signals, and malformed input. Treat the syntax as a tool, then explain the operational consequence.
+
+## Production-Friendly Code
+
+```javascript
+process.on('SIGTERM', async () => {
+  server.close();
+  await db.close();
+});
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Interview Angle
+
+- Fail fast on missing configuration.
+- Add timeouts to outbound calls.
+- Shut down gracefully instead of dropping in-flight work.
+
+<Callout type="senior">
+Production Node answers should cover operations: logs, health, timeouts, shutdown, and event-loop safety.
+</Callout>
+
+<CodeChallenge
+  id="process-signals-shutdown-check"
+  difficulty="advanced"
+  description="What should a service usually do on SIGTERM?"
+  options={[
+    "Begin graceful shutdown",
+    "Ignore it forever",
+    "Delete package.json",
+    "Start infinite retries"
+  ]}
+  correctAnswer={0}
+  explanation="Begin graceful shutdown is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,72 @@
+---
+title: "A Practical JavaScript Testing Strategy"
+slug: "practical-testing-strategy"
+order: 1
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "testing", "unit tests", "integration tests", "mocks", "quality"]
+summary: "Test behavior at the right level: pure functions, API boundaries, async states, and critical browser flows."
+docsLinks:
+  - label: "Vitest Guide"
+    url: "https://vitest.dev/guide/"
+  - label: "Testing Library Guiding Principles"
+    url: "https://testing-library.com/docs/guiding-principles"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Test the Risk, Not the File Count
+
+Pure transformations are cheap to unit test:
+
+```javascript
+export function groupByStatus(tickets) {
+  return tickets.reduce((groups, ticket) => {
+    const status = ticket.status;
+    groups[status] ??= [];
+    groups[status].push(ticket);
+    return groups;
+  }, {});
+}
+```
+
+API and browser behavior usually need integration-style tests around the boundary.
+
+## Good Tests Read Like Requirements
+
+```javascript
+it('shows an error when the profile save request fails', async () => {
+  server.use(failProfileSave());
+
+  render(<ProfileForm />);
+  await user.click(screen.getByRole('button', { name: /save/i }));
+
+  expect(await screen.findByText(/could not save/i)).toBeVisible();
+});
+```
+
+The test does not care whether the component uses a specific helper internally. It cares about visible behavior.
+
+## Mock at Boundaries
+
+Mock network calls, time, storage, and third-party SDKs. Avoid mocking your own small pure functions unless the dependency is genuinely expensive or unstable.
+
+<Callout type="tip">
+A healthy test suite has a few e2e tests for critical flows, more integration tests for feature behavior, and many small unit tests for pure logic.
+</Callout>
+
+<CodeChallenge
+  id="mock-boundary"
+  difficulty="intermediate"
+  description="Which dependency is usually the best candidate to mock in a JavaScript feature test?"
+  options={[
+    "A one-line formatName helper",
+    "The network API boundary",
+    "The array map method",
+    "The component being tested"
+  ]}
+  correctAnswer={1}
+  explanation="Mock unstable external boundaries like network calls. Keep internal implementation details real where practical."
+/>
+

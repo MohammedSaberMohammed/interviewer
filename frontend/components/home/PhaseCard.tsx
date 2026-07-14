@@ -1,5 +1,22 @@
 import Link from 'next/link'
-import { Clock, BookOpen } from 'lucide-react'
+import {
+  BookOpen,
+  Boxes,
+  Braces,
+  Bug,
+  Clock,
+  Code2,
+  Gauge,
+  ListTree,
+  MonitorSmartphone,
+  Package,
+  Send,
+  Server,
+  ShieldCheck,
+  SquareFunction,
+  TestTube2,
+  Timer,
+} from 'lucide-react'
 import { PHASE_LEVEL_CONFIG } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import type { Phase } from '@/types'
@@ -17,6 +34,7 @@ const EMOJI_BG: Record<string, string> = {
   violet: 'bg-violet-100 dark:bg-violet-900/30',
   purple: 'bg-purple-100 dark:bg-purple-900/30',
   amber:  'bg-amber-100 dark:bg-amber-900/30',
+  yellow: 'bg-yellow-100 dark:bg-yellow-900/30',
   teal:   'bg-teal-100 dark:bg-teal-900/30',
   rose:   'bg-rose-100 dark:bg-rose-900/30',
   cyan:   'bg-cyan-100 dark:bg-cyan-900/30',
@@ -25,9 +43,28 @@ const EMOJI_BG: Record<string, string> = {
   slate:  'bg-slate-100 dark:bg-slate-800/50',
 }
 
+const JAVASCRIPT_PHASE_ICONS = {
+  '01-language-foundations': Braces,
+  '02-functions-scope-closures': SquareFunction,
+  '03-objects-prototypes-classes': Boxes,
+  '04-arrays-collections-data': ListTree,
+  '05-async-event-loop': Timer,
+  '06-modules-tooling-packages': Package,
+  '07-browser-dom-web-apis': MonitorSmartphone,
+  '08-forms-networking-storage': Send,
+  '09-error-handling-debugging': Bug,
+  '10-testing-quality': TestTube2,
+  '11-security': ShieldCheck,
+  '12-performance-memory': Gauge,
+  '13-node-production-patterns': Server,
+} as const
+
 export function PhaseCard({ phase, techSlug, completedCount = 0, className }: PhaseCardProps) {
   const levelConfig = PHASE_LEVEL_CONFIG[phase.level]
   const emojiBg = EMOJI_BG[phase.color] ?? EMOJI_BG.indigo
+  const PhaseIcon = techSlug === 'javascript'
+    ? JAVASCRIPT_PHASE_ICONS[phase.slug as keyof typeof JAVASCRIPT_PHASE_ICONS] ?? Code2
+    : null
   const totalLessons = phase.lessons.length
   const isComplete = totalLessons > 0 && completedCount === totalLessons
   const pct = totalLessons === 0 ? 0 : Math.round((completedCount / totalLessons) * 100)
@@ -44,7 +81,11 @@ export function PhaseCard({ phase, techSlug, completedCount = 0, className }: Ph
         <div className="flex items-center justify-between px-4 pt-4 pb-3">
           <div className="flex items-center gap-3">
             <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl text-xl', emojiBg)}>
-              {phase.emoji}
+              {PhaseIcon ? (
+                <PhaseIcon className="h-5 w-5 text-yellow-700 dark:text-yellow-300" aria-hidden="true" />
+              ) : (
+                phase.emoji
+              )}
             </div>
             <span className="text-xs font-semibold text-muted-foreground">Phase {phase.number}</span>
           </div>

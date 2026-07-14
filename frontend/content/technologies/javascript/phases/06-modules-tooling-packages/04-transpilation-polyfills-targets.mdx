@@ -1,0 +1,52 @@
+---
+title: "Transpilation, Polyfills, and Targets"
+slug: "transpilation-polyfills-targets"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Babel", "polyfills", "browser targets"]
+summary: "Know the difference between syntax transforms and runtime polyfills so browser support decisions are deliberate."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Glossary/Polyfill"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Know the difference between syntax transforms and runtime polyfills so browser support decisions are deliberate. Module and build decisions affect what code ships, when it loads, and whether production behaves like local development. Treat the syntax as a tool, then explain the operational consequence.
+
+## Production-Friendly Code
+
+```javascript
+if (!Array.prototype.toSorted) {
+  // load a polyfill only for browsers that need it
+}
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Interview Angle
+
+- Separate build-time replacement from runtime configuration.
+- Know which dependencies are shipped to users or servers.
+- Use code splitting where delayed loading improves startup.
+
+<Callout type="senior">
+Tooling knowledge is practical when you can explain the artifact: chunks, env replacement, dependency graph, and runtime format.
+</Callout>
+
+<CodeChallenge
+  id="transpilation-polyfills-targets-check"
+  difficulty="intermediate"
+  description="What does a polyfill provide?"
+  options={[
+    "Missing runtime API behavior",
+    "A prettier config",
+    "A package lock",
+    "A CSS reset only"
+  ]}
+  correctAnswer={0}
+  explanation="Missing runtime API behavior is the correct choice for this practical JavaScript scenario."
+/>

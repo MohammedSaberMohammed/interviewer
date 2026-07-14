@@ -8,6 +8,7 @@ import { useProgressStore } from '@/stores/progressStore'
 import { DifficultyBadge } from './DifficultyBadge'
 import { AddToBasketButton } from '@/components/basket/AddToBasketButton'
 import { useLessonContext } from '@/components/lesson/LessonContext'
+import { shuffleChallengeOptions } from './challengeShuffle'
 import type { Difficulty } from '@/types'
 
 interface QuizProps {
@@ -24,17 +25,7 @@ interface QuizProps {
 
 export function Quiz({ id, difficulty = 'foundation', prompt, question, options = [], correctAnswer, explanation, hints }: QuizProps) {
   const displayPrompt = prompt ?? question ?? ''
-  const [shuffled] = useState(() => {
-    const indexed = options.map((opt, i) => ({ opt, isCorrect: i === correctAnswer }))
-    for (let i = indexed.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[indexed[i], indexed[j]] = [indexed[j]!, indexed[i]!]
-    }
-    return {
-      options: indexed.map(({ opt }) => opt),
-      correctAnswer: indexed.findIndex(({ isCorrect }) => isCorrect),
-    }
-  })
+  const [shuffled] = useState(() => shuffleChallengeOptions(id, options, correctAnswer))
   const [selected, setSelected] = useState<number | null>(null)
   const [submitted, setSubmitted] = useState(false)
   const [hintIndex, setHintIndex] = useState(0)

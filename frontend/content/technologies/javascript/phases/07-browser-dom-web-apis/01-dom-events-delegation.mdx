@@ -1,0 +1,77 @@
+---
+title: "DOM Events and Delegation"
+slug: "dom-events-delegation"
+order: 1
+difficulty: "intermediate"
+readingTime: 11
+status: "published"
+tags: ["JavaScript", "DOM", "events", "event delegation", "browser"]
+summary: "Handle dynamic UI without attaching hundreds of listeners or accidentally creating memory leaks."
+docsLinks:
+  - label: "MDN Event reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/Events"
+  - label: "MDN EventTarget.addEventListener"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/EventTarget/addEventListener"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Prefer Intentional DOM Updates
+
+```javascript
+const status = document.querySelector('[data-status]');
+status.textContent = 'Saved';
+```
+
+Use `textContent` for text. Reach for `innerHTML` only when the HTML is trusted and sanitized.
+
+## Event Delegation
+
+Instead of adding a listener to every row, add one listener to a stable parent.
+
+```javascript
+const list = document.querySelector('[data-user-list]');
+
+list.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-delete-user]');
+
+  if (!button || !list.contains(button)) return;
+
+  const userId = button.dataset.deleteUser;
+  deleteUser(userId);
+});
+```
+
+This works for rows added later because events bubble up to the parent.
+
+## Clean Up Long-Lived Listeners
+
+```javascript
+function mount() {
+  const onResize = () => updateLayout();
+  window.addEventListener('resize', onResize);
+
+  return () => {
+    window.removeEventListener('resize', onResize);
+  };
+}
+```
+
+<Callout type="tip">
+For modern event cleanup, you can also pass an AbortSignal to addEventListener and abort it when the feature unmounts.
+</Callout>
+
+<CodeChallenge
+  id="delegation-benefit"
+  difficulty="intermediate"
+  description="Why is event delegation useful for a table where rows can be added after page load?"
+  options={[
+    "It stops events from bubbling",
+    "A parent listener can handle events from current and future matching children",
+    "It makes click events synchronous",
+    "It removes the need to check event.target"
+  ]}
+  correctAnswer={1}
+  explanation="Because bubbling events reach the parent, one stable listener can handle matching child elements even when they are created later."
+/>
+

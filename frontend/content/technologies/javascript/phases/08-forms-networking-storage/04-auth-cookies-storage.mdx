@@ -1,0 +1,51 @@
+---
+title: "Auth, Cookies, and Browser Storage"
+slug: "auth-cookies-storage"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "auth", "cookies", "localStorage"]
+summary: "Compare storage options for auth-related data and understand XSS and CSRF tradeoffs."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Compare storage options for auth-related data and understand XSS and CSRF tradeoffs. These flows combine user intent, server truth, transient failures, and data that may survive after the tab closes. Keep the explanation tied to behavior you can observe in a debugger, test, or production incident.
+
+## Default Move
+
+```javascript
+// Store small preferences in localStorage.
+// Prefer HttpOnly cookies for session tokens.
+```
+
+Keep the implementation explicit enough that ownership, failure, and the next likely change are easy to see.
+
+## Risk Check
+
+- Check response.ok instead of assuming fetch rejects on HTTP errors.
+- Keep request state explicit in the UI.
+- Store only values that are safe to expose to page scripts.
+
+<Callout type="senior">
+For forms and network work, describe both the happy path and what the user sees when it fails.
+</Callout>
+
+<CodeChallenge
+  id="auth-cookies-storage-check"
+  difficulty="advanced"
+  description="What does HttpOnly prevent?"
+  options={[
+    "JavaScript from reading the cookie",
+    "The cookie from being sent over HTTPS",
+    "The server from reading the cookie",
+    "All CSRF by itself"
+  ]}
+  correctAnswer={0}
+  explanation="JavaScript from reading the cookie is the correct choice for this practical JavaScript scenario."
+/>

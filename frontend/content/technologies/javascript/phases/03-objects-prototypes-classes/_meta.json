@@ -1,0 +1,20 @@
+{
+    "slug":  "03-objects-prototypes-classes",
+    "number":  3,
+    "title":  "Objects, Prototypes, and Classes",
+    "subtitle":  "How property lookup and modern class syntax actually work",
+    "level":  "junior",
+    "estimatedHours":  9,
+    "emoji":  "obj",
+    "color":  "yellow",
+    "description":  "Learn objects as they are used in app code: spreading, property lookup, prototypes, class fields, and safe composition.",
+    "prerequisites":  [
+                          "Functions, Scope, and Closures"
+                      ],
+    "learningOutcomes":  [
+                             "Explain prototype lookup without over-theorizing",
+                             "Use classes and object literals appropriately",
+                             "Avoid accidental shared mutable state",
+                             "Understand method placement and property ownership"
+                         ]
+}

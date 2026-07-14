@@ -1,0 +1,52 @@
+---
+title: "Async Iteration and Streams"
+slug: "async-iteration-streams"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "async iteration", "streams", "for await"]
+summary: "Process values arriving over time without buffering everything in memory."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Process values arriving over time without buffering everything in memory. The bug often appears only under latency: stale responses, swallowed rejections, blocked rendering, or tasks finishing out of order. The useful answer is the one that predicts the next bug before it ships.
+
+## Practical Implementation
+
+```javascript
+for await (const chunk of stream) {
+  processChunk(chunk);
+}
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Questions
+
+- Start independent work together.
+- Use allSettled when partial failure is still useful.
+- Add cancellation or timeout behavior at user and network boundaries.
+
+<Callout type="senior">
+Async answers should include ordering, failure, and cancellation. Syntax alone is not enough.
+</Callout>
+
+<CodeChallenge
+  id="async-iteration-streams-check"
+  difficulty="advanced"
+  description="What does for await...of consume?"
+  options={[
+    "Only arrays",
+    "Async iterables",
+    "Only DOM nodes",
+    "Only JSON strings"
+  ]}
+  correctAnswer={1}
+  explanation="Async iterables is the correct choice for this practical JavaScript scenario."
+/>

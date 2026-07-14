@@ -1,0 +1,52 @@
+---
+title: "Observers and Browser Scheduling"
+slug: "observers-browser-scheduling"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "IntersectionObserver", "ResizeObserver", "requestAnimationFrame"]
+summary: "Use observers and scheduling APIs for lazy loading, responsive UI, and smooth animation work."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Intersection_Observer_API"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Use observers and scheduling APIs for lazy loading, responsive UI, and smooth animation work. The browser is a shared runtime for rendering, input, accessibility, storage, and network events. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Ship This Shape
+
+```javascript
+const observer = new IntersectionObserver(([entry]) => {
+  if (entry.isIntersecting) loadMore();
+});
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Pass
+
+- Use safe DOM sinks for untrusted text.
+- Prefer delegation for dynamic child elements.
+- Release observers, timers, and listeners when ownership ends.
+
+<Callout type="senior">
+Browser API answers should mention user impact: responsiveness, accessibility, memory, and security.
+</Callout>
+
+<CodeChallenge
+  id="observers-browser-scheduling-check"
+  difficulty="advanced"
+  description="Which use case fits IntersectionObserver?"
+  options={[
+    "Detecting when an element enters the viewport",
+    "Parsing JSON faster",
+    "Encrypting cookies",
+    "Creating a class method"
+  ]}
+  correctAnswer={0}
+  explanation="Detecting when an element enters the viewport is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,52 @@
+{
+    "terms":  [
+                  {
+                      "term":  "Closure",
+                      "definition":  "A function bundled with references to the lexical scope where it was created."
+                  },
+                  {
+                      "term":  "Event loop",
+                      "definition":  "The runtime mechanism that executes stack work, then queued tasks and microtasks."
+                  },
+                  {
+                      "term":  "Microtask",
+                      "definition":  "A high-priority queued job used by Promise reactions and queueMicrotask."
+                  },
+                  {
+                      "term":  "Prototype",
+                      "definition":  "An object used as a fallback for property lookup and method sharing."
+                  },
+                  {
+                      "term":  "ES module",
+                      "definition":  "The standard JavaScript module system using import and export."
+                  },
+                  {
+                      "term":  "Tree-shaking",
+                      "definition":  "Build-time removal of unused module exports from a bundle."
+                  },
+                  {
+                      "term":  "Debounce",
+                      "definition":  "Delay work until input stops changing for a defined interval."
+                  },
+                  {
+                      "term":  "Throttle",
+                      "definition":  "Limit work so it runs at most once per interval."
+                  },
+                  {
+                      "term":  "XSS",
+                      "definition":  "Cross-site scripting: attacker-controlled script execution in a trusted page."
+                  },
+                  {
+                      "term":  "AbortController",
+                      "definition":  "A browser and Node API for canceling fetch and other abortable async operations."
+                  },
+                  {
+                      "term":  "CommonJS",
+                      "definition":  "The older Node.js module system using require and module.exports."
+                  },
+                  {
+                      "term":  "Nullish",
+                      "definition":  "The two values null and undefined."
+                  }
+              ]
+}

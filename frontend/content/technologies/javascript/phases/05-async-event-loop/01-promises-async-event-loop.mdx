@@ -1,0 +1,122 @@
+---
+title: "Promises, Async/Await, and Event Loop Ordering"
+slug: "promises-async-event-loop"
+order: 1
+difficulty: "intermediate"
+readingTime: 14
+status: "published"
+tags: ["JavaScript", "Promise", "async", "await", "event loop", "microtasks"]
+summary: "Understand async JavaScript through the scheduling rules that affect API calls, UI updates, timers, and interview snippets."
+docsLinks:
+  - label: "MDN Using promises"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises"
+  - label: "MDN await"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await"
+  - label: "MDN JavaScript execution model"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Execution_model"
+---
+
+import { Callout, CodeChallenge, Quiz } from '@/components/lesson'
+
+## `await` Pauses the Function, Not the Thread
+
+```javascript
+async function loadUser(id) {
+  const response = await fetch(`/api/users/${id}`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to load user: ${response.status}`);
+  }
+
+  return response.json();
+}
+```
+
+While `loadUser` waits, the browser or Node process can continue handling other work.
+
+## Sequential vs Concurrent
+
+If tasks do not depend on each other, start them together.
+
+```javascript
+// Slow: waits for user, then waits for permissions
+const user = await fetchUser(id);
+const permissions = await fetchPermissions(id);
+
+// Better: starts both immediately
+const [user, permissions] = await Promise.all([
+  fetchUser(id),
+  fetchPermissions(id),
+]);
+```
+
+Use `Promise.allSettled` when you need every result even if some fail.
+
+## Microtasks Beat Timers
+
+```javascript
+console.log('sync');
+
+setTimeout(() => console.log('timer'), 0);
+
+Promise.resolve().then(() => console.log('promise'));
+
+console.log('end');
+```
+
+Output:
+
+```text
+sync
+end
+promise
+timer
+```
+
+Promise callbacks run as microtasks after the current call stack, before timer tasks.
+
+## Cancel Stale Work
+
+Search boxes and route changes often create stale requests. Use `AbortController`.
+
+```javascript
+let currentController;
+
+async function search(query) {
+  currentController?.abort();
+  currentController = new AbortController();
+
+  const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+    signal: currentController.signal,
+  });
+
+  return response.json();
+}
+```
+
+<Callout type="senior">
+Good async code is not "use await everywhere." It is knowing when to sequence, when to run concurrently, where to catch, and how to cancel work the user no longer needs.
+</Callout>
+
+<CodeChallenge
+  id="event-loop-order"
+  difficulty="intermediate"
+  description="What is the output order? console.log('A'); setTimeout(() => console.log('B'), 0); Promise.resolve().then(() => console.log('C')); console.log('D');"
+  options={["A, B, C, D", "A, D, C, B", "A, C, D, B", "C, A, D, B"]}
+  correctAnswer={1}
+  explanation="Synchronous code logs A and D first. Promise reaction microtasks run before timer tasks, so C comes before B."
+/>
+
+<Quiz
+  id="promise-all-use"
+  question="When should you prefer Promise.all?"
+  options={[
+    "When async tasks depend on each other's result",
+    "When independent async tasks can run at the same time",
+    "When you want to ignore all errors",
+    "Only inside browser code, never Node.js"
+  ]}
+  correctAnswer={1}
+  explanation="Promise.all starts independent work concurrently and waits for all of it. It rejects when the first member rejects."
+/>
+

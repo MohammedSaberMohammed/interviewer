@@ -36,6 +36,11 @@ const TECH_STYLE_MAP: Record<string, {
     accent: 'from-cyan-500/10 to-sky-500/5',
     glow:   'group-hover:shadow-[0_0_40px_oklch(0.70_0.20_220_/_0.18)]',
   },
+  yellow: {
+    pill:   'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
+    accent: 'from-yellow-400/15 to-amber-500/10',
+    glow:   'group-hover:shadow-[0_0_40px_oklch(0.86_0.18_95_/_0.22)]',
+  },
 }
 
 export default function TechnologiesPage() {

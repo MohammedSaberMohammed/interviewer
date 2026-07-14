@@ -1,0 +1,50 @@
+---
+title: "CSP and Trusted Types"
+slug: "csp-trusted-types"
+order: 3
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "CSP", "Trusted Types", "security"]
+summary: "Use browser defenses that reduce the blast radius of injection bugs."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Use browser defenses that reduce the blast radius of injection bugs. Security issues in JavaScript often come from treating strings, origins, packages, or tokens as more trustworthy than they are. Treat the syntax as a tool, then explain the operational consequence.
+
+## Production-Friendly Code
+
+```javascript
+Content-Security-Policy: script-src 'self'; object-src 'none'
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Interview Angle
+
+- Trace source to sink before approving DOM changes.
+- Avoid script-readable storage for sensitive credentials.
+- Review dependency and CSP changes as part of the feature.
+
+<Callout type="senior">
+Security answers should be concrete: name the source, the sink, the attacker-controlled value, and the safer API.
+</Callout>
+
+<CodeChallenge
+  id="csp-trusted-types-check"
+  difficulty="advanced"
+  description="What is CSP best described as?"
+  options={[
+    "Defense in depth against injection and loading risks",
+    "A replacement for validation",
+    "A package manager",
+    "A JavaScript compiler"
+  ]}
+  correctAnswer={0}
+  explanation="Defense in depth against injection and loading risks is the correct choice for this practical JavaScript scenario."
+/>

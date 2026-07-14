@@ -1,0 +1,72 @@
+---
+title: "Data Transformations That Hold Up"
+slug: "data-transformations"
+order: 1
+difficulty: "foundation"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "arrays", "map", "filter", "reduce", "Set", "Map"]
+summary: "Use array methods, Map, and Set for the transformations developers actually write in product code."
+docsLinks:
+  - label: "MDN Array"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array"
+  - label: "MDN Map"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map"
+  - label: "MDN Set"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Pick the Method That Says Your Intent
+
+```javascript
+const activeUsers = users.filter((user) => user.active);
+const emails = activeUsers.map((user) => user.email);
+const total = orders.reduce((sum, order) => sum + order.amount, 0);
+```
+
+If `reduce` becomes a puzzle, split the work or use a loop. Professional code is optimized for the next reader too.
+
+## Use `Set` for Deduping
+
+```javascript
+const tags = ['react', 'js', 'react', 'node'];
+const uniqueTags = [...new Set(tags)];
+```
+
+## Use `Map` for Fast Lookup
+
+```javascript
+const usersById = new Map(users.map((user) => [user.id, user]));
+const owner = usersById.get(ticket.ownerId);
+```
+
+This is clearer and faster than repeatedly scanning an array with `find` inside another loop.
+
+## Sorting Mutates
+
+`sort` changes the array in place. Copy first when working with state.
+
+```javascript
+const sorted = [...users].sort((a, b) => a.name.localeCompare(b.name));
+```
+
+<Callout type="trap">
+Default sort converts values to strings. `[10, 2, 1].sort()` becomes `[1, 10, 2]`. Provide a comparator for numbers.
+</Callout>
+
+<CodeChallenge
+  id="sort-numeric"
+  difficulty="foundation"
+  description="Which comparator sorts numbers ascending?"
+  options={[
+    "(a, b) => String(a).localeCompare(String(b))",
+    "(a, b) => a - b",
+    "(a, b) => a > b",
+    "() => Math.random()"
+  ]}
+  correctAnswer={1}
+  explanation="A numeric comparator returns a negative, zero, or positive number. a - b sorts ascending."
+/>
+

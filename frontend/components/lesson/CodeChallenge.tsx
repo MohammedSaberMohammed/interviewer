@@ -9,6 +9,7 @@ import { DifficultyBadge } from './DifficultyBadge'
 import { DocsLink } from './DocsLink'
 import { AddToBasketButton } from '@/components/basket/AddToBasketButton'
 import { useLessonContext } from '@/components/lesson/LessonContext'
+import { shuffleChallengeOptions } from './challengeShuffle'
 import type { Difficulty } from '@/types'
 
 interface CodeChallengeProps {
@@ -19,7 +20,7 @@ interface CodeChallengeProps {
   description?: string
   question?: string
   title?: string
-  code: string
+  code?: string
   language?: string
   options: string[]
   correctAnswer: number
@@ -45,17 +46,7 @@ export function CodeChallenge({
 }: CodeChallengeProps) {
   const displayPrompt = prompt ?? description ?? question ?? ''
   const displayTitle = title ?? 'Code Challenge'
-  const [shuffled] = useState(() => {
-    const indexed = options.map((opt, i) => ({ opt, isCorrect: i === correctAnswer }))
-    for (let i = indexed.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[indexed[i], indexed[j]] = [indexed[j]!, indexed[i]!]
-    }
-    return {
-      options: indexed.map(({ opt }) => opt),
-      correctAnswer: indexed.findIndex(({ isCorrect }) => isCorrect),
-    }
-  })
+  const [shuffled] = useState(() => shuffleChallengeOptions(id, options, correctAnswer))
   const [selected, setSelected] = useState<number | null>(null)
   const [submitted, setSubmitted] = useState(false)
   const [hintIndex, setHintIndex] = useState(0)
@@ -114,20 +105,22 @@ export function CodeChallenge({
 
       <div className="p-4 space-y-4">
         {/* Code block */}
-        <div className="overflow-hidden rounded-lg border border-border dark:border-[oklch(0.820_0.155_195/0.10)]"
-          style={{ boxShadow: '0 2px 12px oklch(0 0 0 / 0.30)' }}>
-          <div className="flex items-center gap-2 border-b border-border dark:border-[oklch(0.820_0.155_195/0.10)] bg-muted/50 dark:bg-[oklch(0.075_0.014_264)] px-3 py-1.5">
-            <div className="flex gap-1.5" aria-hidden="true">
-              <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]/60" />
-              <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]/60" />
-              <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]/60" />
+        {code && (
+          <div className="overflow-hidden rounded-lg border border-border dark:border-[oklch(0.820_0.155_195/0.10)]"
+            style={{ boxShadow: '0 2px 12px oklch(0 0 0 / 0.30)' }}>
+            <div className="flex items-center gap-2 border-b border-border dark:border-[oklch(0.820_0.155_195/0.10)] bg-muted/50 dark:bg-[oklch(0.075_0.014_264)] px-3 py-1.5">
+              <div className="flex gap-1.5" aria-hidden="true">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#FF5F57]/60" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[#FEBC2E]/60" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[#28C840]/60" />
+              </div>
+              <span className="text-xs font-mono text-muted-foreground ml-1">{language}</span>
             </div>
-            <span className="text-xs font-mono text-muted-foreground ml-1">{language}</span>
+            <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[oklch(0.068_0.014_264)] p-4 text-sm font-mono leading-relaxed">
+              <code className={`language-${language} text-slate-800 dark:text-slate-100`}>{code}</code>
+            </pre>
           </div>
-          <pre className="overflow-x-auto bg-[#f6f8fa] dark:bg-[oklch(0.068_0.014_264)] p-4 text-sm font-mono leading-relaxed">
-            <code className={`language-${language} text-slate-800 dark:text-slate-100`}>{code}</code>
-          </pre>
-        </div>
+        )}
 
         {/* Question prompt */}
         <p className="text-sm font-medium leading-relaxed">
