@@ -1,0 +1,52 @@
+---
+title: "Callbacks to Promises"
+slug: "callbacks-to-promises"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "callbacks", "promises", "async"]
+summary: "Understand callback-style APIs, promisification, and how promise chains improve error flow."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Using_promises"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Understand callback-style APIs, promisification, and how promise chains improve error flow. The bug often appears only under latency: stale responses, swallowed rejections, blocked rendering, or tasks finishing out of order. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Ship This Shape
+
+```javascript
+readFile('config.json')
+  .then(JSON.parse)
+  .catch(reportConfigError);
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Pass
+
+- Start independent work together.
+- Use allSettled when partial failure is still useful.
+- Add cancellation or timeout behavior at user and network boundaries.
+
+<Callout type="senior">
+Async answers should include ordering, failure, and cancellation. Syntax alone is not enough.
+</Callout>
+
+<CodeChallenge
+  id="callbacks-to-promises-check"
+  difficulty="intermediate"
+  description="Where does a thrown error inside .then go?"
+  options={[
+    "To the next catch in the chain",
+    "Nowhere",
+    "To setTimeout",
+    "Only to window.onerror"
+  ]}
+  correctAnswer={0}
+  explanation="To the next catch in the chain is the correct choice for this practical JavaScript scenario."
+/>

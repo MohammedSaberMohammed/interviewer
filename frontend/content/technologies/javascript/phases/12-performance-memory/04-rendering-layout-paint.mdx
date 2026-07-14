@@ -1,0 +1,51 @@
+---
+title: "Rendering, Layout, and Paint"
+slug: "rendering-layout-paint"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "rendering", "layout", "paint", "DOM"]
+summary: "Avoid forced synchronous layout and write DOM updates that cooperate with the browser rendering pipeline."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://web.dev/articles/avoid-large-complex-layouts-and-layout-thrashing"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Failure Mode
+
+Avoid forced synchronous layout and write DOM updates that cooperate with the browser rendering pipeline. Slow JavaScript blocks interaction; leaked references make sessions degrade the longer users keep the app open. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Working Pattern
+
+```javascript
+const heights = cards.map((card) => card.offsetHeight);
+cards.forEach((card, i) => { card.style.minHeight = heights[i] + 'px'; });
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## What To Verify
+
+- Measure the bottleneck before changing code.
+- Reduce initial JavaScript and defer non-critical work.
+- Remove references that outlive their screen, request, or component.
+
+<Callout type="senior">
+Performance claims need evidence. Mention the metric, the tool, and the before/after behavior.
+</Callout>
+
+<CodeChallenge
+  id="rendering-layout-paint-check"
+  difficulty="advanced"
+  description="What causes layout thrashing?"
+  options={[
+    "Repeatedly mixing layout reads and writes",
+    "Using const",
+    "Parsing JSON once",
+    "Using textContent"
+  ]}
+  correctAnswer={0}
+  explanation="Repeatedly mixing layout reads and writes is the correct choice for this practical JavaScript scenario."
+/>

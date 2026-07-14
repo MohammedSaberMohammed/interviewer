@@ -1,0 +1,52 @@
+---
+title: "File Uploads and Downloads"
+slug: "file-upload-download"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "files", "Blob", "File", "downloads"]
+summary: "Handle File, Blob, multipart uploads, object URLs, and cleanup for download links."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/File_API"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Handle File, Blob, multipart uploads, object URLs, and cleanup for download links. These flows combine user intent, server truth, transient failures, and data that may survive after the tab closes. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Default Move
+
+```javascript
+const url = URL.createObjectURL(blob);
+link.href = url;
+URL.revokeObjectURL(url);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Risk Check
+
+- Check response.ok instead of assuming fetch rejects on HTTP errors.
+- Keep request state explicit in the UI.
+- Store only values that are safe to expose to page scripts.
+
+<Callout type="senior">
+For forms and network work, describe both the happy path and what the user sees when it fails.
+</Callout>
+
+<CodeChallenge
+  id="file-upload-download-check"
+  difficulty="intermediate"
+  description="After using URL.createObjectURL for a temporary download, what should you eventually call?"
+  options={[
+    "URL.revokeObjectURL",
+    "JSON.parse",
+    "document.write",
+    "Promise.any"
+  ]}
+  correctAnswer={0}
+  explanation="URL.revokeObjectURL is the correct choice for this practical JavaScript scenario."
+/>

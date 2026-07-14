@@ -1,0 +1,52 @@
+---
+title: "Pure Functions and Side Effects"
+slug: "pure-functions-side-effects"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "pure functions", "side effects", "testing"]
+summary: "Separate deterministic transformation logic from I/O so code is easier to test, debug, and reuse."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Glossary/Function"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Separate deterministic transformation logic from I/O so code is easier to test, debug, and reuse. Function behavior becomes visible when callbacks run later, methods are passed around, or a helper accidentally keeps old state alive. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Default Move
+
+```javascript
+function total(items) {
+  return items.reduce((sum, item) => sum + item.price, 0);
+}
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Risk Check
+
+- Name the variables the function closes over.
+- Pick arrow or regular function based on this binding.
+- Keep callback side effects obvious and test the logic around them.
+
+<Callout type="senior">
+A good closure answer includes a real use case: event handlers, factories, memoization, or async callbacks that remember state.
+</Callout>
+
+<CodeChallenge
+  id="pure-functions-side-effects-check"
+  difficulty="intermediate"
+  description="Which function is pure?"
+  options={[
+    "Date.now()",
+    "Math.max(a, b)",
+    "localStorage.getItem(key)",
+    "console.log(value)"
+  ]}
+  correctAnswer={1}
+  explanation="Math.max(a, b) is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,50 @@
+---
+title: "CSRF, CORS, and Origins"
+slug: "csrf-cors-origin"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "CSRF", "CORS", "origin", "cookies"]
+summary: "Understand browser security boundaries around credentials, cross-origin requests, and cookie-based auth."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Understand browser security boundaries around credentials, cross-origin requests, and cookie-based auth. Security issues in JavaScript often come from treating strings, origins, packages, or tokens as more trustworthy than they are. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Practical Implementation
+
+```javascript
+fetch('/api/session', { credentials: 'include' });
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## Review Questions
+
+- Trace source to sink before approving DOM changes.
+- Avoid script-readable storage for sensitive credentials.
+- Review dependency and CSP changes as part of the feature.
+
+<Callout type="senior">
+Security answers should be concrete: name the source, the sink, the attacker-controlled value, and the safer API.
+</Callout>
+
+<CodeChallenge
+  id="csrf-cors-origin-check"
+  difficulty="advanced"
+  description="What does CORS primarily control?"
+  options={[
+    "Whether browsers allow frontend code to read cross-origin responses",
+    "Whether servers can receive HTTP requests",
+    "Whether SQL queries are valid",
+    "Whether cookies are encrypted"
+  ]}
+  correctAnswer={0}
+  explanation="Whether browsers allow frontend code to read cross-origin responses is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,55 @@
+---
+title: "Promise Combinators"
+slug: "promise-combinators"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Promise.all", "Promise.race", "Promise.any", "allSettled"]
+summary: "Use all, allSettled, race, and any for real concurrency requirements."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Use all, allSettled, race, and any for real concurrency requirements. The bug often appears only under latency: stale responses, swallowed rejections, blocked rendering, or tasks finishing out of order. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Code Shape
+
+```javascript
+const [user, permissions] = await Promise.all([
+  fetchUser(id),
+  fetchPermissions(id),
+]);
+
+const results = await Promise.allSettled(batch.map(saveItem));
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Readiness Check
+
+- Start independent work together.
+- Use allSettled when partial failure is still useful.
+- Add cancellation or timeout behavior at user and network boundaries.
+
+<Callout type="senior">
+Async answers should include ordering, failure, and cancellation. Syntax alone is not enough.
+</Callout>
+
+<CodeChallenge
+  id="promise-combinators-check"
+  difficulty="intermediate"
+  description="Which combinator reports every promise outcome without failing fast?"
+  options={[
+    "Promise.all",
+    "Promise.race",
+    "Promise.allSettled",
+    "Promise.any"
+  ]}
+  correctAnswer={2}
+  explanation="Promise.allSettled is the correct choice for this practical JavaScript scenario."
+/>

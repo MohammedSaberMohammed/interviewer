@@ -1,0 +1,73 @@
+---
+title: "Fetch, Request States, and Storage"
+slug: "fetch-request-states-storage"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "fetch", "HTTP", "forms", "localStorage", "AbortController"]
+summary: "Use fetch like a professional: check HTTP status, parse carefully, model UI states, and store only appropriate data."
+docsLinks:
+  - label: "MDN Fetch API"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API"
+  - label: "MDN Web Storage API"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Storage_API"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Fetch Does Not Reject on HTTP 500
+
+```javascript
+async function getJson(url, options) {
+  const response = await fetch(url, options);
+
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+```
+
+`fetch` rejects for network-level failures. HTTP errors still produce a response object.
+
+## Model UI States Explicitly
+
+```javascript
+const state = {
+  status: 'idle', // idle | loading | success | empty | error
+  data: null,
+  error: null,
+};
+```
+
+Clear states avoid screens that spin forever or show stale data after an error.
+
+## Store Small, Non-Sensitive Values
+
+```javascript
+localStorage.setItem('theme', 'dark');
+const theme = localStorage.getItem('theme') ?? 'system';
+```
+
+Do not store access tokens or sensitive personal data in localStorage. Treat browser storage as readable by script running on the page.
+
+<Callout type="warning">
+Before persisting form data, ask whether it is sensitive, whether it expires, and whether it must sync across tabs or devices. Storage choice is a product and security decision, not just a convenience.
+</Callout>
+
+<CodeChallenge
+  id="fetch-ok"
+  difficulty="intermediate"
+  description="A fetch call receives HTTP 404. What happens by default?"
+  options={[
+    "The promise rejects automatically",
+    "The promise resolves with a Response whose ok property is false",
+    "response.json() returns null automatically",
+    "The browser retries the request once"
+  ]}
+  correctAnswer={1}
+  explanation="fetch only rejects for network errors and aborts. For HTTP errors, check response.ok or response.status."
+/>
+

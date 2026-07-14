@@ -1,0 +1,53 @@
+---
+title: "HTTP Handler Patterns"
+slug: "http-handler-patterns"
+order: 3
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Node.js", "HTTP", "Express", "Fastify"]
+summary: "Structure request handlers around validation, service calls, status mapping, and centralized error handling."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/api/http.html"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Structure request handlers around validation, service calls, status mapping, and centralized error handling. Server-side JavaScript has to survive concurrency, slow dependencies, deploy signals, and malformed input. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Ship This Shape
+
+```javascript
+app.post('/orders', async (req, res, next) => {
+  try { res.status(201).json(await createOrder(req.body)); }
+  catch (error) { next(error); }
+});
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## Review Pass
+
+- Fail fast on missing configuration.
+- Add timeouts to outbound calls.
+- Shut down gracefully instead of dropping in-flight work.
+
+<Callout type="senior">
+Production Node answers should cover operations: logs, health, timeouts, shutdown, and event-loop safety.
+</Callout>
+
+<CodeChallenge
+  id="http-handler-patterns-check"
+  difficulty="advanced"
+  description="What should a route handler usually not do?"
+  options={[
+    "Mix large business logic, validation, logging, and persistence in one long function",
+    "Return a status code",
+    "Parse request input",
+    "Call a service"
+  ]}
+  correctAnswer={0}
+  explanation="Mix large business logic, validation, logging, and persistence in one long function is the correct choice for this practical JavaScript scenario."
+/>

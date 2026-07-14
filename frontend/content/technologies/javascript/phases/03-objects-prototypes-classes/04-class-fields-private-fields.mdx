@@ -1,0 +1,53 @@
+---
+title: "Class Fields and Private Fields"
+slug: "class-fields-private-fields"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "classes", "private fields", "static"]
+summary: "Use modern class fields, private fields, static helpers, and constructors without confusing instance and prototype state."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Use modern class fields, private fields, static helpers, and constructors without confusing instance and prototype state. Object bugs usually look like missing fields, unexpected shared mutation, or inherited data being treated as trusted input. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Default Move
+
+```javascript
+class Session {
+  #token;
+  constructor(token) { this.#token = token; }
+}
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Risk Check
+
+- Check whether a property is own or inherited.
+- Copy the nested branch you change, not just the top object.
+- Reject dangerous dynamic keys before merging data.
+
+<Callout type="senior">
+Do not turn object questions into philosophy. Explain lookup, ownership, mutation, and the safer pattern you would ship.
+</Callout>
+
+<CodeChallenge
+  id="class-fields-private-fields-check"
+  difficulty="intermediate"
+  description="What does #token mean in a class?"
+  options={[
+    "A convention only",
+    "A runtime-private class field",
+    "A TypeScript-only field",
+    "A static import alias"
+  ]}
+  correctAnswer={1}
+  explanation="A runtime-private class field is the correct choice for this practical JavaScript scenario."
+/>

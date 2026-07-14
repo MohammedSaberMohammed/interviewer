@@ -1,0 +1,52 @@
+---
+title: "Lint, Format, and Typecheck Discipline"
+slug: "lint-format-typecheck"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "ESLint", "Prettier", "TypeScript", "quality"]
+summary: "Use automated checks to keep code review about behavior instead of style debates."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://eslint.org/docs/latest/use/getting-started"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Use automated checks to keep code review about behavior instead of style debates. Tests become valuable when they protect behavior and stay resilient while implementation changes. Treat the syntax as a tool, then explain the operational consequence.
+
+## Ship This Shape
+
+```javascript
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Review Pass
+
+- Use unit tests for deterministic rules.
+- Mock network, time, storage, and third-party systems.
+- Reserve e2e tests for flows the business cannot afford to break.
+
+<Callout type="senior">
+A strong testing answer explains why a test belongs at that level, not just which library you prefer.
+</Callout>
+
+<CodeChallenge
+  id="lint-format-typecheck-check"
+  difficulty="intermediate"
+  description="What problem does a formatter primarily solve?"
+  options={[
+    "Consistent code layout",
+    "Runtime authentication",
+    "Database replication",
+    "HTTP caching"
+  ]}
+  correctAnswer={0}
+  explanation="Consistent code layout is the correct choice for this practical JavaScript scenario."
+/>

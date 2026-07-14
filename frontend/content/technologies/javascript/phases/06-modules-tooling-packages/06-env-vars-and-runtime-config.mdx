@@ -1,0 +1,51 @@
+---
+title: "Environment Variables and Runtime Config"
+slug: "env-vars-runtime-config"
+order: 6
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "environment variables", "configuration"]
+summary: "Avoid leaking secrets and understand build-time vs runtime configuration in frontend and Node apps."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/api/process.html#processenv"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Avoid leaking secrets and understand build-time vs runtime configuration in frontend and Node apps. Module and build decisions affect what code ships, when it loads, and whether production behaves like local development. Keep the explanation tied to behavior you can observe in a debugger, test, or production incident.
+
+## Practical Implementation
+
+```javascript
+const apiBaseUrl = process.env.API_BASE_URL;
+if (!apiBaseUrl) throw new Error('Missing API_BASE_URL');
+```
+
+Keep the implementation explicit enough that ownership, failure, and the next likely change are easy to see.
+
+## Review Questions
+
+- Separate build-time replacement from runtime configuration.
+- Know which dependencies are shipped to users or servers.
+- Use code splitting where delayed loading improves startup.
+
+<Callout type="senior">
+Tooling knowledge is practical when you can explain the artifact: chunks, env replacement, dependency graph, and runtime format.
+</Callout>
+
+<CodeChallenge
+  id="env-vars-runtime-config-check"
+  difficulty="intermediate"
+  description="Why are frontend environment variables not secrets?"
+  options={[
+    "They are usually embedded into client-delivered code",
+    "Browsers encrypt them automatically",
+    "Only admins can view JavaScript",
+    "They never leave the server"
+  ]}
+  correctAnswer={0}
+  explanation="They are usually embedded into client-delivered code is the correct choice for this practical JavaScript scenario."
+/>

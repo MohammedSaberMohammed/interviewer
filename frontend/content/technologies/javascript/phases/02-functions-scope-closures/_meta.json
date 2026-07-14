@@ -1,0 +1,20 @@
+{
+    "slug":  "02-functions-scope-closures",
+    "number":  2,
+    "title":  "Functions, Scope, and Closures",
+    "subtitle":  "Callbacks, lexical scope, this, and the closure bugs interviewers love",
+    "level":  "junior",
+    "estimatedHours":  10,
+    "emoji":  "fn",
+    "color":  "yellow",
+    "description":  "Understand how functions capture variables, how this is decided, and why arrow functions are not just shorter syntax.",
+    "prerequisites":  [
+                          "Language Foundations"
+                      ],
+    "learningOutcomes":  [
+                             "Explain closures with practical examples",
+                             "Choose regular functions and arrow functions deliberately",
+                             "Predict this binding in methods and callbacks",
+                             "Avoid loop and callback scope traps"
+                         ]
+}

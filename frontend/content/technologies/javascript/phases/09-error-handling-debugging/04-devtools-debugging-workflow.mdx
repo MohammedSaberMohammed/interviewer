@@ -1,0 +1,51 @@
+---
+title: "DevTools Debugging Workflow"
+slug: "devtools-debugging-workflow"
+order: 4
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "DevTools", "debugging", "breakpoints"]
+summary: "Use breakpoints, watch expressions, network inspection, performance traces, and source maps in a repeatable workflow."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.chrome.com/docs/devtools/javascript"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Use breakpoints, watch expressions, network inspection, performance traces, and source maps in a repeatable workflow. Bad error handling either hides the cause or crashes too far away from the real failure. The useful answer is the one that predicts the next bug before it ships.
+
+## Default Move
+
+```javascript
+debugger;
+inspectRuntimeValue(state.currentUser);
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Risk Check
+
+- Catch only where you can add context, recover, or report.
+- Keep the original error available through cause or structured logging.
+- Turn fixed bugs into tests when the behavior is important.
+
+<Callout type="senior">
+The professional move is not catching more; it is putting the boundary in the right place.
+</Callout>
+
+<CodeChallenge
+  id="devtools-debugging-workflow-check"
+  difficulty="intermediate"
+  description="Why prefer a breakpoint over many console logs for a complex bug?"
+  options={[
+    "You can inspect live scope and step through execution",
+    "It changes production behavior",
+    "It minifies code",
+    "It disables promises"
+  ]}
+  correctAnswer={0}
+  explanation="You can inspect live scope and step through execution is the correct choice for this practical JavaScript scenario."
+/>

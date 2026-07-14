@@ -23,9 +23,10 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
   return (
     <aside
       className={cn(
-        'w-full rounded-2xl border border-border bg-card/80 dark:bg-card dark:border-[oklch(0.26_0.014_264/0.6)] backdrop-blur-xl p-5',
+        'w-full rounded-2xl border border-border bg-card/80 dark:bg-[oklch(0.103_0.018_264/0.90)] dark:border-[oklch(0.820_0.155_195/0.10)] backdrop-blur-xl p-5',
         className
       )}
+      style={{ boxShadow: 'var(--sidebar-shadow, none)' }}
       aria-label="Phase lessons"
     >
       {/* Phase tag */}
@@ -52,7 +53,7 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                   className={cn(
                     'flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs transition-all duration-200',
                     isActive
-                      ? 'bg-[oklch(0.72_0.18_195/0.1)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.72_0.18_195/0.15)] dark:text-[oklch(0.82_0.18_195)]'
+                      ? 'bg-[oklch(0.72_0.18_195/0.12)] text-[oklch(0.44_0.18_230)] dark:bg-[oklch(0.820_0.155_195/0.12)] dark:text-[oklch(0.88_0.155_195)] sidebar-item-active'
                       : isPlaceholder
                         ? 'text-muted-foreground/70 cursor-not-allowed'
                         : isComplete
@@ -72,8 +73,8 @@ export function Sidebar({ techSlug, phaseSlug, phaseTitle, lessons, className }:
                   ) : isActive ? (
                     <span
                       aria-hidden="true"
-                      className="h-2.5 w-2.5 shrink-0 rounded-full bg-[oklch(0.72_0.18_195)]"
-                      style={{ boxShadow: '0 0 10px oklch(0.72 0.18 195 / 0.7)' }}
+                      className="h-2.5 w-2.5 shrink-0 rounded-full bg-[oklch(0.820_0.155_195)]"
+                      style={{ boxShadow: '0 0 12px oklch(0.820 0.155 195 / 0.80), 0 0 4px oklch(0.820 0.155 195 / 0.90)' }}
                     />
                   ) : (
                     <span

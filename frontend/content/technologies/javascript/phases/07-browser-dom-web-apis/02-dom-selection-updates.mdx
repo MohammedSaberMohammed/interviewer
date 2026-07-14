@@ -1,0 +1,51 @@
+---
+title: "DOM Selection and Updates"
+slug: "dom-selection-updates"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "DOM", "querySelector", "textContent"]
+summary: "Select, update, and create DOM nodes with safe APIs and predictable performance."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Document/querySelector"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Select, update, and create DOM nodes with safe APIs and predictable performance. The browser is a shared runtime for rendering, input, accessibility, storage, and network events. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Ship This Shape
+
+```javascript
+const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+formatter.format(19.99);
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Review Pass
+
+- Use safe DOM sinks for untrusted text.
+- Prefer delegation for dynamic child elements.
+- Release observers, timers, and listeners when ownership ends.
+
+<Callout type="senior">
+Browser API answers should mention user impact: responsiveness, accessibility, memory, and security.
+</Callout>
+
+<CodeChallenge
+  id="dom-selection-updates-check"
+  difficulty="intermediate"
+  description="Which property should you prefer for untrusted plain text?"
+  options={[
+    "innerHTML",
+    "outerHTML",
+    "textContent",
+    "insertAdjacentHTML"
+  ]}
+  correctAnswer={2}
+  explanation="textContent is the correct choice for this practical JavaScript scenario."
+/>

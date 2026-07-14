@@ -1,0 +1,51 @@
+---
+title: "Coercion and Truthiness in Practice"
+slug: "coercion-truthiness-in-practice"
+order: 4
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "coercion", "truthy", "falsy"]
+summary: "Avoid common coercion bugs in form values, query strings, flags, and conditional rendering."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Glossary/Truthy"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Bug Pattern
+
+Avoid common coercion bugs in form values, query strings, flags, and conditional rendering. A small assumption here can corrupt state, hide valid user input, or make an API response look safer than it is. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Production-Friendly Code
+
+```javascript
+const hasItems = Array.isArray(items) && items.length > 0;
+const pageSize = input.pageSize ?? 25;
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Interview Angle
+
+- Confirm the actual runtime type before leaning on syntax.
+- Default missing values without replacing valid falsy values.
+- Normalize external data once, close to the boundary.
+
+<Callout type="senior">
+For fundamentals, interviewers are listening for precision. Say what JavaScript does, then show the practical guardrail you would use.
+</Callout>
+
+<CodeChallenge
+  id="coercion-truthiness-in-practice-check"
+  difficulty="foundation"
+  description="Which value is truthy?"
+  options={[
+    "0",
+    "empty string",
+    "[]",
+    "NaN"
+  ]}
+  correctAnswer={2}
+  explanation="[] is the correct choice for this practical JavaScript scenario."
+/>

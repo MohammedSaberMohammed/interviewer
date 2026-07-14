@@ -42,7 +42,8 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
   if (items.length === 0) return null
 
   return (
-    <nav aria-label="On this page" className={cn('rounded-2xl border border-border bg-card/80 dark:bg-card dark:border-[oklch(0.26_0.014_264/0.6)] p-4 mb-4', className)}>
+    <nav aria-label="On this page" className={cn('rounded-2xl border border-border bg-card/80 dark:bg-[oklch(0.103_0.018_264/0.90)] dark:border-[oklch(0.820_0.155_195/0.10)] p-4 mb-4', className)}
+      style={{ boxShadow: '0 0 0 1px oklch(0.820 0.155 195 / 0.06), 0 8px 32px oklch(0 0 0 / 0.45)' }}>
       <p className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground dark:text-[oklch(0.58_0.012_264)]">
         On This Page
       </p>
@@ -57,8 +58,8 @@ export function TableOfContents({ items, className }: TableOfContentsProps) {
                 item.level === 3 && 'pl-5',
                 item.level === 4 && 'pl-7',
                 activeId === item.id
-                  ? 'border-[oklch(0.44_0.18_230)] text-[oklch(0.44_0.18_230)] dark:border-[oklch(0.72_0.18_195)] dark:text-[oklch(0.82_0.18_195)] font-medium'
-                  : 'border-border text-foreground/55 dark:text-[oklch(0.65_0.010_264)] hover:text-foreground dark:hover:text-foreground hover:border-muted-foreground'
+                  ? 'border-[oklch(0.44_0.18_230)] text-[oklch(0.44_0.18_230)] dark:border-[oklch(0.820_0.155_195)] dark:text-[oklch(0.88_0.155_195)] font-medium'
+                  : 'border-border text-foreground/55 dark:text-[oklch(0.65_0.010_264)] hover:text-foreground dark:hover:text-foreground hover:border-muted-foreground dark:hover:border-[oklch(0.820_0.155_195/0.40)]'
               )}
               onClick={(e) => {
                 e.preventDefault()

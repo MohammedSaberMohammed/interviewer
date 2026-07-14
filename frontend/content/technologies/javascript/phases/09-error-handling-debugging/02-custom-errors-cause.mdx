@@ -1,0 +1,51 @@
+---
+title: "Custom Errors and Error Cause"
+slug: "custom-errors-cause"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Error", "custom errors", "cause"]
+summary: "Add context without losing the original failure by using error classes and cause."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/cause"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Add context without losing the original failure by using error classes and cause. Bad error handling either hides the cause or crashes too far away from the real failure. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Code Shape
+
+```javascript
+if (response.status === 401) redirectToLogin();
+if (!response.ok) throw new Error('Request failed');
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Readiness Check
+
+- Catch only where you can add context, recover, or report.
+- Keep the original error available through cause or structured logging.
+- Turn fixed bugs into tests when the behavior is important.
+
+<Callout type="senior">
+The professional move is not catching more; it is putting the boundary in the right place.
+</Callout>
+
+<CodeChallenge
+  id="custom-errors-cause-check"
+  difficulty="intermediate"
+  description="Why use new Error(message, { cause })?"
+  options={[
+    "To preserve the lower-level original error",
+    "To silence the stack trace",
+    "To convert errors to arrays",
+    "To make errors asynchronous"
+  ]}
+  correctAnswer={0}
+  explanation="To preserve the lower-level original error is the correct choice for this practical JavaScript scenario."
+/>

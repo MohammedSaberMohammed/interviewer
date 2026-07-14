@@ -1,0 +1,50 @@
+---
+title: "Logging and Observability"
+slug: "logging-observability"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "logging", "observability", "monitoring"]
+summary: "Log useful context, avoid sensitive data, and connect client and server failures with IDs and traces."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/console"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Log useful context, avoid sensitive data, and connect client and server failures with IDs and traces. Bad error handling either hides the cause or crashes too far away from the real failure. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Ship This Shape
+
+```javascript
+logger.error({ requestId, err }, 'Checkout failed');
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## Review Pass
+
+- Catch only where you can add context, recover, or report.
+- Keep the original error available through cause or structured logging.
+- Turn fixed bugs into tests when the behavior is important.
+
+<Callout type="senior">
+The professional move is not catching more; it is putting the boundary in the right place.
+</Callout>
+
+<CodeChallenge
+  id="logging-observability-check"
+  difficulty="advanced"
+  description="What should usually not be logged?"
+  options={[
+    "Request IDs",
+    "Error names",
+    "User passwords or tokens",
+    "Feature flag names"
+  ]}
+  correctAnswer={2}
+  explanation="User passwords or tokens is the correct choice for this practical JavaScript scenario."
+/>

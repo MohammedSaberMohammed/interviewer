@@ -1,0 +1,75 @@
+---
+title: "Bundle Size, Runtime Work, and Memory Leaks"
+slug: "bundle-runtime-memory"
+order: 1
+difficulty: "advanced"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "performance", "memory", "code splitting", "long tasks"]
+summary: "Improve JavaScript performance with practical habits: ship less code, defer non-critical work, avoid repeated layout reads, and clean up references."
+docsLinks:
+  - label: "web.dev JavaScript startup optimization"
+    url: "https://web.dev/articles/optimizing-content-efficiency-javascript-startup-optimization"
+  - label: "web.dev Code-split JavaScript"
+    url: "https://web.dev/learn/performance/code-split-javascript"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## The Fastest JavaScript Is Code You Do Not Ship Yet
+
+```javascript
+async function openReports() {
+  const { ReportsPanel } = await import('./ReportsPanel.js');
+  return ReportsPanel.mount();
+}
+```
+
+Code splitting keeps non-critical features out of the initial payload.
+
+## Avoid Layout Thrashing
+
+Bad pattern: read layout and write style repeatedly.
+
+```javascript
+for (const item of items) {
+  const height = item.offsetHeight;
+  item.style.width = `${height * 2}px`;
+}
+```
+
+Better: read first, then write.
+
+```javascript
+const heights = items.map((item) => item.offsetHeight);
+
+items.forEach((item, index) => {
+  item.style.width = `${heights[index] * 2}px`;
+});
+```
+
+## Common Leak Patterns
+
+1. Global arrays that keep growing.
+2. Event listeners not removed after unmount.
+3. Timers and intervals that continue after the UI disappears.
+4. Closures retaining large objects longer than needed.
+
+<Callout type="senior">
+Performance work starts with measurement: bundle analysis, browser Performance panel, real-user metrics, and before/after checks. "This feels faster" is not enough for production decisions.
+</Callout>
+
+<CodeChallenge
+  id="leak-listener"
+  difficulty="advanced"
+  description="Which pattern most directly prevents a resize listener memory leak?"
+  options={[
+    "Use var for the handler",
+    "Remove the exact handler with removeEventListener during cleanup",
+    "Wrap the handler in JSON.stringify",
+    "Call preventDefault in the handler"
+  ]}
+  correctAnswer={1}
+  explanation="The browser can keep references through registered listeners. Remove long-lived listeners when the related feature unmounts."
+/>
+

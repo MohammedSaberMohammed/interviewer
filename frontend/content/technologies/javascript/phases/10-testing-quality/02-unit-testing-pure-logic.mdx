@@ -1,0 +1,52 @@
+---
+title: "Unit Testing Pure Logic"
+slug: "unit-testing-pure-logic"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "unit testing", "pure functions"]
+summary: "Write fast, focused tests for deterministic transformations and business rules."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://vitest.dev/guide/"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Write fast, focused tests for deterministic transformations and business rules. Tests become valuable when they protect behavior and stay resilient while implementation changes. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Practical Implementation
+
+```javascript
+function total(items) {
+  return items.reduce((sum, item) => sum + item.price, 0);
+}
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Review Questions
+
+- Use unit tests for deterministic rules.
+- Mock network, time, storage, and third-party systems.
+- Reserve e2e tests for flows the business cannot afford to break.
+
+<Callout type="senior">
+A strong testing answer explains why a test belongs at that level, not just which library you prefer.
+</Callout>
+
+<CodeChallenge
+  id="unit-testing-pure-logic-check"
+  difficulty="intermediate"
+  description="What is the best target for a small unit test?"
+  options={[
+    "A pure price calculation",
+    "A full checkout in the browser",
+    "A real payment gateway",
+    "A production database migration"
+  ]}
+  correctAnswer={0}
+  explanation="A pure price calculation is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,51 @@
+---
+title: "Event Loop Traps"
+slug: "event-loop-traps"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "event loop", "microtasks", "timers", "Node.js"]
+summary: "Avoid starvation, timer assumptions, and ordering mistakes across browser and Node runtimes."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Execution_model"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Real Project Context
+
+Avoid starvation, timer assumptions, and ordering mistakes across browser and Node runtimes. The bug often appears only under latency: stale responses, swallowed rejections, blocked rendering, or tasks finishing out of order. The useful answer is the one that predicts the next bug before it ships.
+
+## Practical Implementation
+
+```javascript
+Promise.resolve().then(() => console.log('microtask'));
+setTimeout(() => console.log('timer'), 0);
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Questions
+
+- Start independent work together.
+- Use allSettled when partial failure is still useful.
+- Add cancellation or timeout behavior at user and network boundaries.
+
+<Callout type="senior">
+Async answers should include ordering, failure, and cancellation. Syntax alone is not enough.
+</Callout>
+
+<CodeChallenge
+  id="event-loop-traps-check"
+  difficulty="advanced"
+  description="What can happen if code continuously queues microtasks?"
+  options={[
+    "Timers and rendering can be delayed",
+    "The call stack becomes immutable",
+    "Promises stop resolving",
+    "CSS stops loading permanently"
+  ]}
+  correctAnswer={0}
+  explanation="Timers and rendering can be delayed is the correct choice for this practical JavaScript scenario."
+/>

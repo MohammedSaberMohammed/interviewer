@@ -1,0 +1,50 @@
+---
+title: "E2E Tests for Critical Flows"
+slug: "e2e-critical-flows"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "e2e", "Playwright", "testing"]
+summary: "Use end-to-end tests sparingly for the flows that must never break."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://playwright.dev/docs/intro"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Use end-to-end tests sparingly for the flows that must never break. Tests become valuable when they protect behavior and stay resilient while implementation changes. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Concrete Pattern
+
+```javascript
+await page.getByRole('button', { name: 'Checkout' }).click();
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## Trap To Avoid
+
+- Use unit tests for deterministic rules.
+- Mock network, time, storage, and third-party systems.
+- Reserve e2e tests for flows the business cannot afford to break.
+
+<Callout type="senior">
+A strong testing answer explains why a test belongs at that level, not just which library you prefer.
+</Callout>
+
+<CodeChallenge
+  id="e2e-critical-flows-check"
+  difficulty="advanced"
+  description="Which flow is a good e2e candidate?"
+  options={[
+    "Login plus purchase happy path",
+    "Every helper function",
+    "A CSS color token only",
+    "A private class method"
+  ]}
+  correctAnswer={0}
+  explanation="Login plus purchase happy path is the correct choice for this practical JavaScript scenario."
+/>

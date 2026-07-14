@@ -1,0 +1,51 @@
+---
+title: "FormData and Validation"
+slug: "formdata-validation"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "forms", "FormData", "validation"]
+summary: "Collect form values, validate at the edge, and separate client convenience from server authority."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/FormData"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Collect form values, validate at the edge, and separate client convenience from server authority. These flows combine user intent, server truth, transient failures, and data that may survive after the tab closes. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Code Shape
+
+```javascript
+const formData = new FormData(form);
+const email = String(formData.get('email') ?? '').trim();
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Readiness Check
+
+- Check response.ok instead of assuming fetch rejects on HTTP errors.
+- Keep request state explicit in the UI.
+- Store only values that are safe to expose to page scripts.
+
+<Callout type="senior">
+For forms and network work, describe both the happy path and what the user sees when it fails.
+</Callout>
+
+<CodeChallenge
+  id="formdata-validation-check"
+  difficulty="intermediate"
+  description="Why must the server validate even if the client already validates?"
+  options={[
+    "Client validation can be bypassed",
+    "Server validation is faster CSS",
+    "Browsers require duplicate validation",
+    "JSON cannot contain invalid data"
+  ]}
+  correctAnswer={0}
+  explanation="Client validation can be bypassed is the correct choice for this practical JavaScript scenario."
+/>

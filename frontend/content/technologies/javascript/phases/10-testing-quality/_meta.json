@@ -1,0 +1,20 @@
+{
+    "slug":  "10-testing-quality",
+    "number":  10,
+    "title":  "Testing and Code Quality",
+    "subtitle":  "Unit, integration, e2e, mocks, linting, formatting, and maintainable tests",
+    "level":  "mid",
+    "estimatedHours":  10,
+    "emoji":  "test",
+    "color":  "yellow",
+    "description":  "Focus testing effort where it catches real regressions: pure logic, API boundaries, async behavior, and critical user flows.",
+    "prerequisites":  [
+                          "Error Handling and Debugging"
+                      ],
+    "learningOutcomes":  [
+                             "Choose the right test level",
+                             "Test async code without timing flakiness",
+                             "Mock boundaries instead of implementation details",
+                             "Use linting and formatting to keep code review focused"
+                         ]
+}

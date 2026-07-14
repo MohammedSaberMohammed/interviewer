@@ -1,0 +1,56 @@
+---
+title: "Debounce, Throttle, and Memoize"
+slug: "debounce-throttle-memoize"
+order: 5
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "debounce", "throttle", "memoization"]
+summary: "Learn the closure-based utilities used in search boxes, scroll handlers, resize handlers, and expensive calculations."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/setTimeout"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Learn the closure-based utilities used in search boxes, scroll handlers, resize handlers, and expensive calculations. Function behavior becomes visible when callbacks run later, methods are passed around, or a helper accidentally keeps old state alive. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Concrete Pattern
+
+```javascript
+function debounce(fn, delay) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
+}
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Trap To Avoid
+
+- Name the variables the function closes over.
+- Pick arrow or regular function based on this binding.
+- Keep callback side effects obvious and test the logic around them.
+
+<Callout type="senior">
+A good closure answer includes a real use case: event handlers, factories, memoization, or async callbacks that remember state.
+</Callout>
+
+<CodeChallenge
+  id="debounce-throttle-memoize-check"
+  difficulty="intermediate"
+  description="Which UI behavior is the best fit for debounce?"
+  options={[
+    "Autosaving after typing stops",
+    "Running animation every frame",
+    "Parsing a module at startup",
+    "Handling every mousemove event exactly once"
+  ]}
+  correctAnswer={0}
+  explanation="Autosaving after typing stops is the correct choice for this practical JavaScript scenario."
+/>

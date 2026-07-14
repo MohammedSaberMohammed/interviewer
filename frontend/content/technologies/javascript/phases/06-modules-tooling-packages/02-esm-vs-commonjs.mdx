@@ -1,0 +1,51 @@
+---
+title: "ESM vs CommonJS"
+slug: "esm-vs-commonjs"
+order: 2
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "ESM", "CommonJS", "Node.js"]
+summary: "Understand import/export, require/module.exports, package type, and interop pain points."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/api/esm.html"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Failure Mode
+
+Understand import/export, require/module.exports, package type, and interop pain points. Module and build decisions affect what code ships, when it loads, and whether production behaves like local development. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Working Pattern
+
+```javascript
+import { readFile } from 'node:fs/promises';
+export async function loadConfig(path) { return readFile(path, 'utf8'); }
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## What To Verify
+
+- Separate build-time replacement from runtime configuration.
+- Know which dependencies are shipped to users or servers.
+- Use code splitting where delayed loading improves startup.
+
+<Callout type="senior">
+Tooling knowledge is practical when you can explain the artifact: chunks, env replacement, dependency graph, and runtime format.
+</Callout>
+
+<CodeChallenge
+  id="esm-vs-commonjs-check"
+  difficulty="intermediate"
+  description="In Node.js, what does type module usually change?"
+  options={[
+    ".js files are treated as ES modules",
+    "npm installs faster",
+    "JSON becomes invalid",
+    "CSS is bundled automatically"
+  ]}
+  correctAnswer={0}
+  explanation=".js files are treated as ES modules is the correct choice for this practical JavaScript scenario."
+/>

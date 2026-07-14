@@ -1,0 +1,83 @@
+---
+title: "Node.js Service Basics That Matter"
+slug: "node-service-basics"
+order: 1
+difficulty: "advanced"
+readingTime: 13
+status: "published"
+tags: ["JavaScript", "Node.js", "services", "errors", "environment", "production"]
+summary: "Learn the Node.js patterns that show up in backend JavaScript interviews and production services: async errors, config, request boundaries, and runtime constraints."
+docsLinks:
+  - label: "Node.js Event Loop"
+    url: "https://nodejs.org/learn/asynchronous-work/event-loop-timers-and-nexttick"
+  - label: "Node.js Errors"
+    url: "https://nodejs.org/api/errors.html"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Node Is Great at I/O, Not Blocking CPU Work
+
+Node can handle many concurrent I/O operations because file, network, and timer work does not block the JavaScript call stack. CPU-heavy work can still block the process.
+
+```javascript
+// Bad in a request handler if the input can be huge
+const result = expensiveSynchronousCalculation(payload);
+```
+
+Move heavy work to a worker, queue, database, or service designed for it.
+
+## Validate Configuration at Startup
+
+```javascript
+function requireEnv(name) {
+  const value = process.env[name];
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+
+  return value;
+}
+
+export const config = {
+  databaseUrl: requireEnv('DATABASE_URL'),
+  nodeEnv: process.env.NODE_ENV ?? 'development',
+};
+```
+
+Failing fast is better than discovering missing config during the first customer request.
+
+## Request Handlers Need Boundaries
+
+```javascript
+app.post('/orders', async (req, res, next) => {
+  try {
+    const order = await createOrder(req.body);
+    res.status(201).json(order);
+  } catch (error) {
+    next(error);
+  }
+});
+```
+
+Centralized error middleware can map known errors to HTTP statuses, log unexpected errors, and avoid leaking internals to clients.
+
+<Callout type="senior">
+Production Node interviews often test judgment more than syntax: do you validate inputs, avoid blocking the event loop, handle rejected promises, log with context, and shut down gracefully?
+</Callout>
+
+<CodeChallenge
+  id="node-blocking"
+  difficulty="advanced"
+  description="Why can a large synchronous CPU task inside a Node request handler hurt all users?"
+  options={[
+    "It blocks the JavaScript thread and delays other callbacks",
+    "Node automatically opens a new process for every request",
+    "Promises cannot be used in Node",
+    "HTTP responses must always be synchronous"
+  ]}
+  correctAnswer={0}
+  explanation="Node runs JavaScript on the main thread. Long synchronous CPU work blocks the event loop from processing other ready callbacks."
+/>
+

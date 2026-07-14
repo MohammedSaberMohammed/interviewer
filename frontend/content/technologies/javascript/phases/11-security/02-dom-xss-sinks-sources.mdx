@@ -1,0 +1,51 @@
+---
+title: "DOM XSS Sources and Sinks"
+slug: "dom-xss-sources-sinks"
+order: 2
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "XSS", "DOM", "security"]
+summary: "Identify attacker-controlled sources and dangerous sinks before code reaches production."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://cheatsheetseries.owasp.org/cheatsheets/DOM_based_XSS_Prevention_Cheat_Sheet.html"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Identify attacker-controlled sources and dangerous sinks before code reaches production. Security issues in JavaScript often come from treating strings, origins, packages, or tokens as more trustworthy than they are. The useful answer is the one that predicts the next bug before it ships.
+
+## Ship This Shape
+
+```javascript
+element.textContent = userInput; // safe text sink
+// Avoid innerHTML for untrusted values.
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Pass
+
+- Trace source to sink before approving DOM changes.
+- Avoid script-readable storage for sensitive credentials.
+- Review dependency and CSP changes as part of the feature.
+
+<Callout type="senior">
+Security answers should be concrete: name the source, the sink, the attacker-controlled value, and the safer API.
+</Callout>
+
+<CodeChallenge
+  id="dom-xss-sources-sinks-check"
+  difficulty="advanced"
+  description="Which sink is dangerous with unsanitized user input?"
+  options={[
+    "textContent",
+    "innerHTML",
+    "setAttribute for aria-label",
+    "createTextNode"
+  ]}
+  correctAnswer={1}
+  explanation="innerHTML is the correct choice for this practical JavaScript scenario."
+/>

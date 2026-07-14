@@ -1,0 +1,21 @@
+{
+    "slug":  "11-security",
+    "number":  11,
+    "title":  "Security for JavaScript Developers",
+    "subtitle":  "XSS, unsafe HTML, tokens, dependencies, CSP, and supply-chain basics",
+    "level":  "senior",
+    "estimatedHours":  11,
+    "emoji":  "sec",
+    "color":  "yellow",
+    "description":  "Cover the security topics JavaScript developers are expected to know in product teams: XSS prevention, safe DOM APIs, token storage, dependency risk, and CSP.",
+    "prerequisites":  [
+                          "Browser, DOM, and Web APIs",
+                          "Forms, Networking, and Storage"
+                      ],
+    "learningOutcomes":  [
+                             "Prevent common DOM XSS mistakes",
+                             "Avoid unsafe token storage assumptions",
+                             "Evaluate dependency risk pragmatically",
+                             "Explain CSP as defense in depth"
+                         ]
+}

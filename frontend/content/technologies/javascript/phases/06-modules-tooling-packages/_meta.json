@@ -1,0 +1,20 @@
+{
+    "slug":  "06-modules-tooling-packages",
+    "number":  6,
+    "title":  "Modules, Tooling, and Packages",
+    "subtitle":  "ES modules, npm, bundlers, TypeScript boundaries, and modern build choices",
+    "level":  "mid",
+    "estimatedHours":  10,
+    "emoji":  "pkg",
+    "color":  "yellow",
+    "description":  "Understand the JavaScript tooling most teams actually use: package scripts, dependency types, ES modules, dynamic imports, bundling, linting, and environment configuration.",
+    "prerequisites":  [
+                          "Language Foundations"
+                      ],
+    "learningOutcomes":  [
+                             "Explain ES modules and CommonJS tradeoffs",
+                             "Read package.json scripts and dependency intent",
+                             "Use dynamic import for code splitting",
+                             "Understand why Vite and modern tooling are common"
+                         ]
+}

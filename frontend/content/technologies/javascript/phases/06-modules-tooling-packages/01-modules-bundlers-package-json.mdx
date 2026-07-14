@@ -1,0 +1,82 @@
+---
+title: "Modules, Bundlers, and `package.json`"
+slug: "modules-bundlers-package-json"
+order: 1
+difficulty: "intermediate"
+readingTime: 12
+status: "published"
+tags: ["JavaScript", "ES modules", "npm", "Vite", "bundlers", "package.json"]
+summary: "Learn the tooling vocabulary used in real teams: imports, exports, package scripts, dependency types, and code splitting."
+docsLinks:
+  - label: "MDN JavaScript modules"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules"
+  - label: "State of JavaScript 2024 Build Tools"
+    url: "https://2024.stateofjs.com/en-US/libraries/build_tools/"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## ES Modules Are the Default Mental Model
+
+```javascript
+// math.js
+export function add(a, b) {
+  return a + b;
+}
+
+// app.js
+import { add } from './math.js';
+```
+
+ES module imports are static, which helps tools analyze dependencies, split bundles, and remove unused exports.
+
+## Dynamic Import Loads Later
+
+```javascript
+button.addEventListener('click', async () => {
+  const { openChart } = await import('./chart.js');
+  openChart();
+});
+```
+
+This keeps heavy chart code out of the initial page load.
+
+## Read `package.json` Like a Maintainer
+
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}
+```
+
+Runtime packages go in `dependencies`. Build and test tools usually go in `devDependencies`.
+
+<Callout type="info">
+Modern surveys consistently show Vite and Vitest as prominent choices because teams care about fast local feedback. You do not need to memorize every bundler, but you should know what bundlers solve: module resolution, transpilation, code splitting, optimization, and environment replacement.
+</Callout>
+
+<CodeChallenge
+  id="dynamic-import-purpose"
+  difficulty="intermediate"
+  description="What is the main practical reason to use import('./chart.js') inside a click handler?"
+  options={[
+    "It makes the imported module global",
+    "It can load non-critical code only when needed",
+    "It disables tree-shaking",
+    "It converts CommonJS to JSON"
+  ]}
+  correctAnswer={1}
+  explanation="Dynamic import returns a promise and lets bundlers split that module into a later-loaded chunk."
+/>
+

@@ -1,0 +1,86 @@
+---
+title: "Prototypes, Classes, and Composition"
+slug: "prototypes-classes-composition"
+order: 1
+difficulty: "foundation"
+readingTime: 11
+status: "published"
+tags: ["JavaScript", "objects", "prototypes", "classes", "composition"]
+summary: "Understand prototype lookup just enough to debug real code and answer class/object interview questions cleanly."
+docsLinks:
+  - label: "MDN Inheritance and the prototype chain"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Inheritance_and_the_prototype_chain"
+  - label: "MDN Classes"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes"
+---
+
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Objects Have Own Properties and Prototype Properties
+
+When you read `obj.name`, JavaScript checks the object first. If it is not found, it walks the prototype chain.
+
+```javascript
+const defaults = { role: 'viewer' };
+const user = Object.create(defaults);
+user.name = 'Nora';
+
+user.name; // own property
+user.role; // found on prototype
+```
+
+This is why `Object.hasOwn(user, 'role')` is false even though `user.role` returns a value.
+
+## Classes Are Prototype Syntax
+
+Class methods are shared on the prototype. Instance fields live on each object.
+
+```javascript
+class Cart {
+  items = [];
+
+  add(item) {
+    this.items.push(item);
+  }
+}
+
+const a = new Cart();
+const b = new Cart();
+a.add('book');
+
+console.log(b.items); // []
+```
+
+## Prefer Composition for App Features
+
+Inheritance is sometimes useful, but many JavaScript apps are easier to maintain with small objects and functions.
+
+```javascript
+function withTimestamps(record) {
+  const now = new Date().toISOString();
+  return {
+    ...record,
+    createdAt: record.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+```
+
+<Callout type="senior">
+For interviews, avoid arguing that classes are "fake." A stronger answer: JavaScript classes are syntax over prototypes, and you still need to understand prototype lookup for debugging, method sharing, and framework internals.
+</Callout>
+
+<CodeChallenge
+  id="own-vs-prototype"
+  difficulty="foundation"
+  description="An object returns a value for user.role, but Object.hasOwn(user, 'role') is false. What is the most likely reason?"
+  options={[
+    "The property exists on the prototype chain",
+    "The property is private",
+    "The object is frozen",
+    "Object.hasOwn does not work with strings"
+  ]}
+  correctAnswer={0}
+  explanation="Property lookup walks the prototype chain, but Object.hasOwn only checks properties directly on the object."
+/>
+

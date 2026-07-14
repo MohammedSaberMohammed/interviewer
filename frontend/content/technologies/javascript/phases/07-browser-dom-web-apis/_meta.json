@@ -1,0 +1,20 @@
+{
+    "slug":  "07-browser-dom-web-apis",
+    "number":  7,
+    "title":  "Browser, DOM, and Web APIs",
+    "subtitle":  "Events, rendering, DOM updates, and APIs used by real interfaces",
+    "level":  "mid",
+    "estimatedHours":  12,
+    "emoji":  "dom",
+    "color":  "yellow",
+    "description":  "Move from language knowledge to browser work: selecting elements, events, delegation, layout-safe updates, timers, observers, and accessibility-aware DOM code.",
+    "prerequisites":  [
+                          "Async and the Event Loop"
+                      ],
+    "learningOutcomes":  [
+                             "Use DOM selection and updates safely",
+                             "Apply event delegation in dynamic lists",
+                             "Avoid expensive layout thrashing",
+                             "Choose browser APIs for common UI work"
+                         ]
+}

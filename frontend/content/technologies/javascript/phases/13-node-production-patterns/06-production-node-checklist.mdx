@@ -1,0 +1,50 @@
+---
+title: "Production Node Checklist"
+slug: "production-node-checklist"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Node.js", "production", "observability"]
+summary: "Review Node services for config validation, async errors, logging, health checks, timeouts, and dependency safety."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/en/learn/getting-started/nodejs-the-difference-between-development-and-production"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Review Node services for config validation, async errors, logging, health checks, timeouts, and dependency safety. Server-side JavaScript has to survive concurrency, slow dependencies, deploy signals, and malformed input. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Concrete Pattern
+
+```javascript
+await fetch(url, { signal: AbortSignal.timeout(3000) });
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## Trap To Avoid
+
+- Fail fast on missing configuration.
+- Add timeouts to outbound calls.
+- Shut down gracefully instead of dropping in-flight work.
+
+<Callout type="senior">
+Production Node answers should cover operations: logs, health, timeouts, shutdown, and event-loop safety.
+</Callout>
+
+<CodeChallenge
+  id="production-node-checklist-check"
+  difficulty="advanced"
+  description="Which item belongs in a production Node checklist?"
+  options={[
+    "Timeouts on outbound calls",
+    "Secrets committed to git",
+    "Ignoring rejected promises",
+    "Synchronous CPU work in every request"
+  ]}
+  correctAnswer={0}
+  explanation="Timeouts on outbound calls is the correct choice for this practical JavaScript scenario."
+/>

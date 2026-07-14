@@ -1,0 +1,21 @@
+{
+    "slug":  "12-performance-memory",
+    "number":  12,
+    "title":  "Performance and Memory",
+    "subtitle":  "Ship less JavaScript, avoid long tasks, prevent leaks, and measure first",
+    "level":  "senior",
+    "estimatedHours":  12,
+    "emoji":  "perf",
+    "color":  "yellow",
+    "description":  "Practice performance decisions that matter: bundle size, code splitting, event listener cleanup, layout work, batching, and user-centered metrics.",
+    "prerequisites":  [
+                          "Modules, Tooling, and Packages",
+                          "Browser, DOM, and Web APIs"
+                      ],
+    "learningOutcomes":  [
+                             "Reduce initial JavaScript with code splitting",
+                             "Identify memory leak patterns",
+                             "Avoid layout thrashing and long tasks",
+                             "Use measurement instead of guessing"
+                         ]
+}

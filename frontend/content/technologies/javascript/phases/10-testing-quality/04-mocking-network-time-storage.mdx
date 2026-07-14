@@ -1,0 +1,51 @@
+---
+title: "Mocking Network, Time, and Storage"
+slug: "mocking-network-time-storage"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "mocks", "network", "time", "storage"]
+summary: "Mock unstable platform boundaries while keeping your own behavior real."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://mswjs.io/docs/"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Mock unstable platform boundaries while keeping your own behavior real. Tests become valuable when they protect behavior and stay resilient while implementation changes. Treat the syntax as a tool, then explain the operational consequence.
+
+## Ship This Shape
+
+```javascript
+// Store small preferences in localStorage.
+// Prefer HttpOnly cookies for session tokens.
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Review Pass
+
+- Use unit tests for deterministic rules.
+- Mock network, time, storage, and third-party systems.
+- Reserve e2e tests for flows the business cannot afford to break.
+
+<Callout type="senior">
+A strong testing answer explains why a test belongs at that level, not just which library you prefer.
+</Callout>
+
+<CodeChallenge
+  id="mocking-network-time-storage-check"
+  difficulty="advanced"
+  description="Which is a good boundary to mock?"
+  options={[
+    "HTTP API responses",
+    "Array.prototype.map",
+    "The component under test entirely",
+    "Every local variable"
+  ]}
+  correctAnswer={0}
+  explanation="HTTP API responses is the correct choice for this practical JavaScript scenario."
+/>

@@ -1,0 +1,52 @@
+---
+title: "Cancellation, Timeouts, and Retries"
+slug: "cancellation-timeouts-retries"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "AbortController", "timeouts", "retries", "fetch"]
+summary: "Build resilient request flows that cancel stale work, time out slow calls, and retry only safe operations."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/AbortController"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Failure Mode
+
+Build resilient request flows that cancel stale work, time out slow calls, and retry only safe operations. The bug often appears only under latency: stale responses, swallowed rejections, blocked rendering, or tasks finishing out of order. A good rule of thumb is only valuable if it helps you choose safer code under pressure.
+
+## Working Pattern
+
+```javascript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000);
+await fetch(url, { signal: controller.signal });
+```
+
+Make the risky part visible instead of hiding it behind a dense expression.
+
+## What To Verify
+
+- Start independent work together.
+- Use allSettled when partial failure is still useful.
+- Add cancellation or timeout behavior at user and network boundaries.
+
+<Callout type="senior">
+Async answers should include ordering, failure, and cancellation. Syntax alone is not enough.
+</Callout>
+
+<CodeChallenge
+  id="cancellation-timeouts-retries-check"
+  difficulty="advanced"
+  description="What does AbortController primarily provide?"
+  options={[
+    "A signal to cancel abortable work",
+    "Automatic HTTP retries",
+    "JSON schema validation",
+    "A replacement for Promise"
+  ]}
+  correctAnswer={0}
+  explanation="A signal to cancel abortable work is the correct choice for this practical JavaScript scenario."
+/>

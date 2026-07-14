@@ -1,0 +1,52 @@
+---
+title: "Defensive Code Without Noise"
+slug: "defensive-code-without-noise"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "defensive programming", "validation", "errors"]
+summary: "Validate untrusted boundaries without filling trusted internal code with meaningless checks."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/throw"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Validate untrusted boundaries without filling trusted internal code with meaningless checks. Bad error handling either hides the cause or crashes too far away from the real failure. The useful answer is the one that predicts the next bug before it ships.
+
+## Ship This Shape
+
+```javascript
+if (!Array.isArray(payload.items)) {
+  throw new Error('Invalid items');
+}
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Pass
+
+- Catch only where you can add context, recover, or report.
+- Keep the original error available through cause or structured logging.
+- Turn fixed bugs into tests when the behavior is important.
+
+<Callout type="senior">
+The professional move is not catching more; it is putting the boundary in the right place.
+</Callout>
+
+<CodeChallenge
+  id="defensive-code-without-noise-check"
+  difficulty="advanced"
+  description="Where is validation most important?"
+  options={[
+    "At untrusted boundaries like user input and external APIs",
+    "After every local variable assignment",
+    "Only in comments",
+    "Only after rendering"
+  ]}
+  correctAnswer={0}
+  explanation="At untrusted boundaries like user input and external APIs is the correct choice for this practical JavaScript scenario."
+/>

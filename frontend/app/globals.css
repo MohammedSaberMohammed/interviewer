@@ -153,52 +153,52 @@
 
 /* ─── Dark mode ─────────────────────────────────────────────────────────── */
 .dark {
-  /* Base — lifted from pure black so content layers are readable */
-  --background: oklch(0.118 0.014 264);            /* ~#0E0E18 — dark slate, not void */
-  --foreground: oklch(0.940 0.004 264);             /* #F1F1F3 */
+  /* Base — ultra-dark atmospheric void */
+  --background: oklch(0.063 0.012 264);            /* #030610 deep space */
+  --foreground: oklch(0.940 0.004 264);             /* #F5F7FA */
 
-  /* Card — visibly above background */
-  --card: oklch(0.155 0.014 264);                  /* ~#151520 */
+  /* Card — elevated above the void */
+  --card: oklch(0.103 0.018 264);                  /* #080D1A */
   --card-foreground: oklch(0.940 0.004 264);
 
   /* Popover — top elevation */
-  --popover: oklch(0.185 0.014 264);
+  --popover: oklch(0.138 0.020 264);
   --popover-foreground: oklch(0.940 0.004 264);
 
-  /* Primary — brighter indigo for dark bg */
-  --primary: oklch(0.695 0.190 264);               /* #818CF8 */
-  --primary-foreground: oklch(0.118 0.014 264);
+  /* Primary — bright cyan (terminal / elite dev-tool aesthetic) */
+  --primary: oklch(0.820 0.155 195);               /* #00D8F0 cyan */
+  --primary-foreground: oklch(0.063 0.012 264);
 
   /* Secondary */
-  --secondary: oklch(0.195 0.014 264);
+  --secondary: oklch(0.128 0.018 264);
   --secondary-foreground: oklch(0.850 0.006 264);
 
   /* Muted */
-  --muted: oklch(0.188 0.012 264);
+  --muted: oklch(0.118 0.014 264);
   --muted-foreground: oklch(0.480 0.010 264);      /* #6B7280 */
 
-  /* Accent */
-  --accent: oklch(0.215 0.035 264);
-  --accent-foreground: oklch(0.695 0.190 264);
+  /* Accent — cyan-tinted elevated surface */
+  --accent: oklch(0.138 0.030 195);
+  --accent-foreground: oklch(0.820 0.155 195);
 
   /* Destructive */
   --destructive: oklch(0.63 0.22 27);
 
   /* Border / Input / Ring */
-  --border: oklch(0.172 0.014 264);               /* #1C1C22 */
-  --input:  oklch(0.185 0.012 264);
-  --ring:   oklch(0.695 0.190 264);
+  --border: oklch(0.148 0.016 264);
+  --input:  oklch(0.158 0.016 264);
+  --ring:   oklch(0.820 0.155 195);
 
   /* Brand */
-  --brand: oklch(0.695 0.190 264);
-  --brand-foreground: oklch(0.076 0.012 264);
+  --brand: oklch(0.820 0.155 195);
+  --brand-foreground: oklch(0.063 0.012 264);
   --gradient-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 60%, #A78BFA 100%);
 
-  /* Legacy brand aliases — vivid on dark backgrounds */
-  --brand-cyan:         oklch(0.695 0.190 264);   /* → bright indigo */
-  --brand-magenta:      oklch(0.72  0.220 295);   /* → bright violet */
-  --brand-amber:        oklch(0.78  0.180 85);    /* → bright amber  */
-  --brand-text-cyan:    oklch(0.75  0.190 264);
+  /* Legacy brand aliases — now true cyan in dark mode */
+  --brand-cyan:         oklch(0.820 0.155 195);   /* actual bright cyan */
+  --brand-magenta:      oklch(0.72  0.220 295);
+  --brand-amber:        oklch(0.78  0.180 85);
+  --brand-text-cyan:    oklch(0.82  0.155 195);   /* bright cyan text */
   --brand-text-magenta: oklch(0.78  0.220 295);
   --brand-text-amber:   oklch(0.88  0.180 85);
 
@@ -208,12 +208,12 @@
   --danger:  oklch(0.63 0.22 27);
 
   /* Callout backgrounds — rich dark tints */
-  --callout-info:     oklch(0.140 0.040 240);
-  --callout-tip:      oklch(0.140 0.045 150);
-  --callout-warning:  oklch(0.140 0.040 80);
-  --callout-critical: oklch(0.140 0.045 20);
-  --callout-trap:     oklch(0.140 0.038 290);
-  --callout-senior:   oklch(0.140 0.040 264);
+  --callout-info:     oklch(0.100 0.038 240);
+  --callout-tip:      oklch(0.100 0.042 150);
+  --callout-warning:  oklch(0.100 0.038 80);
+  --callout-critical: oklch(0.100 0.042 20);
+  --callout-trap:     oklch(0.100 0.036 290);
+  --callout-senior:   oklch(0.100 0.038 264);
 
   /* Difficulty */
   --difficulty-foundation:   oklch(0.72 0.20 145);
@@ -537,7 +537,66 @@ html.dark .shiki span {
   border: 1px solid oklch(0.72 0.18 195 / 0.15);
 }
 .dark .prose-lesson :not(pre) > code {
-  background: oklch(0.72 0.18 195 / 0.12);
-  color: oklch(0.82 0.18 195);
-  border-color: oklch(0.72 0.18 195 / 0.2);
+  background: oklch(0.82 0.155 195 / 0.10);
+  color: oklch(0.88 0.155 195);
+  border-color: oklch(0.82 0.155 195 / 0.22);
+}
+
+/* ─── Dark mode: atmospheric body background ─────────────────────────────── */
+/* Three ambient light sources: cyan from top, emerald from top-right,       */
+/* purple from bottom-left. Subtle — cinematic depth without distraction.    */
+html.dark body {
+  background-image:
+    radial-gradient(ellipse 90% 45% at 50% -2%, oklch(0.820 0.155 195 / 0.055) 0%, transparent 55%),
+    radial-gradient(ellipse 55% 32% at 88% 8%,  oklch(0.720 0.195 155 / 0.030) 0%, transparent 50%),
+    radial-gradient(ellipse 45% 40% at 10% 92%, oklch(0.640 0.215 295 / 0.022) 0%, transparent 50%);
+}
+
+/* ─── Dark mode glow utilities ───────────────────────────────────────────── */
+
+/* Code challenge card: cyan edge glow + deep shadow */
+.dark .challenge-card {
+  box-shadow:
+    0 0 0 1px oklch(0.820 0.155 195 / 0.16),
+    0 0 40px oklch(0.820 0.155 195 / 0.06),
+    0 16px 48px oklch(0 0 0 / 0.55);
+  border-color: oklch(0.820 0.155 195 / 0.18) !important;
+}
+
+/* Sidebar active item: cyan inset glow + soft ambient */
+.dark .sidebar-item-active {
+  box-shadow:
+    inset 0 0 0 1px oklch(0.820 0.155 195 / 0.24),
+    0 0 20px oklch(0.820 0.155 195 / 0.10);
+}
+
+/* Sidebar panel: subtle cyan edge + deep shadow */
+.dark aside[aria-label="Phase lessons"] {
+  box-shadow:
+    0 0 0 1px oklch(0.820 0.155 195 / 0.08),
+    0 8px 32px oklch(0 0 0 / 0.50);
+}
+
+/* Elevated surface: glass-panel treatment */
+.dark .glass-panel {
+  background: oklch(0.103 0.018 264 / 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-color: oklch(0.820 0.155 195 / 0.10) !important;
+}
+
+/* Navbar bottom glow border */
+.dark .navbar-border-glow {
+  background: linear-gradient(90deg,
+    transparent 0%,
+    oklch(0.820 0.155 195 / 0.35) 40%,
+    oklch(0.820 0.155 195 / 0.35) 60%,
+    transparent 100%
+  );
+}
+
+/* H2 section heading bar — brighter on ultra-dark bg */
+.dark .prose-lesson h2::before {
+  background: linear-gradient(180deg, oklch(0.820 0.155 195), oklch(0.70 0.240 320));
+  box-shadow: 0 0 10px oklch(0.820 0.155 195 / 0.4);
 }

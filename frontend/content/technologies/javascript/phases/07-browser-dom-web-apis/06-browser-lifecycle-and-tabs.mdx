@@ -1,0 +1,52 @@
+---
+title: "Browser Lifecycle, Tabs, and Visibility"
+slug: "browser-lifecycle-tabs"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Page Visibility", "lifecycle", "tabs"]
+summary: "Handle visibility changes, online/offline state, beforeunload limits, and cross-tab expectations."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Page_Visibility_API"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Failure Mode
+
+Handle visibility changes, online/offline state, beforeunload limits, and cross-tab expectations. The browser is a shared runtime for rendering, input, accessibility, storage, and network events. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Working Pattern
+
+```javascript
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pausePolling();
+});
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## What To Verify
+
+- Use safe DOM sinks for untrusted text.
+- Prefer delegation for dynamic child elements.
+- Release observers, timers, and listeners when ownership ends.
+
+<Callout type="senior">
+Browser API answers should mention user impact: responsiveness, accessibility, memory, and security.
+</Callout>
+
+<CodeChallenge
+  id="browser-lifecycle-tabs-check"
+  difficulty="advanced"
+  description="What can the Page Visibility API tell you?"
+  options={[
+    "Whether the document is hidden or visible",
+    "The user password strength",
+    "The exact battery serial number",
+    "Which React component rendered last"
+  ]}
+  correctAnswer={0}
+  explanation="Whether the document is hidden or visible is the correct choice for this practical JavaScript scenario."
+/>

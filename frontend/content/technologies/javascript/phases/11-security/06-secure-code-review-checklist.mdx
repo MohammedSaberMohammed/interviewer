@@ -1,0 +1,50 @@
+---
+title: "Secure JavaScript Code Review Checklist"
+slug: "secure-code-review-checklist"
+order: 6
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "security review", "checklist", "XSS"]
+summary: "Review JavaScript changes for unsafe HTML, token exposure, open redirects, dependency risk, and missing validation."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://cheatsheetseries.owasp.org/"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Review JavaScript changes for unsafe HTML, token exposure, open redirects, dependency risk, and missing validation. Security issues in JavaScript often come from treating strings, origins, packages, or tokens as more trustworthy than they are. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Ship This Shape
+
+```javascript
+const result = input == null ? fallback : transform(input);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Review Pass
+
+- Trace source to sink before approving DOM changes.
+- Avoid script-readable storage for sensitive credentials.
+- Review dependency and CSP changes as part of the feature.
+
+<Callout type="senior">
+Security answers should be concrete: name the source, the sink, the attacker-controlled value, and the safer API.
+</Callout>
+
+<CodeChallenge
+  id="secure-code-review-checklist-check"
+  difficulty="advanced"
+  description="Which change deserves close security review?"
+  options={[
+    "Rendering URL query values as HTML",
+    "Renaming a local variable",
+    "Adding a CSS margin",
+    "Sorting imports"
+  ]}
+  correctAnswer={0}
+  explanation="Rendering URL query values as HTML is the correct choice for this practical JavaScript scenario."
+/>

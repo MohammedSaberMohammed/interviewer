@@ -1,0 +1,51 @@
+---
+title: "Dependency and Supply-Chain Risk"
+slug: "dependency-supply-chain-risk"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "npm", "supply chain", "security"]
+summary: "Manage package risk with lockfiles, audits, minimal dependencies, and careful install habits."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://docs.npmjs.com/auditing-package-dependencies-for-security-vulnerabilities"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Manage package risk with lockfiles, audits, minimal dependencies, and careful install habits. Security issues in JavaScript often come from treating strings, origins, packages, or tokens as more trustworthy than they are. Treat the syntax as a tool, then explain the operational consequence.
+
+## Ship This Shape
+
+```javascript
+// dependencies: code needed at runtime
+// devDependencies: build, lint, and test tools
+```
+
+Reach for cleverness only after the plain version has a measured problem.
+
+## Review Pass
+
+- Trace source to sink before approving DOM changes.
+- Avoid script-readable storage for sensitive credentials.
+- Review dependency and CSP changes as part of the feature.
+
+<Callout type="senior">
+Security answers should be concrete: name the source, the sink, the attacker-controlled value, and the safer API.
+</Callout>
+
+<CodeChallenge
+  id="dependency-supply-chain-risk-check"
+  difficulty="advanced"
+  description="Why commit a lockfile for an app?"
+  options={[
+    "To make dependency resolution reproducible",
+    "To hide source code",
+    "To replace tests",
+    "To store API secrets"
+  ]}
+  correctAnswer={0}
+  explanation="To make dependency resolution reproducible is the correct choice for this practical JavaScript scenario."
+/>

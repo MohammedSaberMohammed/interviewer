@@ -1,0 +1,51 @@
+---
+title: "Hoisting and the Temporal Dead Zone"
+slug: "hoisting-temporal-dead-zone"
+order: 2
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "hoisting", "let", "const", "var"]
+summary: "Predict what can be read before declaration and explain why let and const fail differently from var."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Glossary/Hoisting"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Predict what can be read before declaration and explain why let and const fail differently from var. Function behavior becomes visible when callbacks run later, methods are passed around, or a helper accidentally keeps old state alive. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Default Move
+
+```javascript
+console.log(count); // ReferenceError
+let count = 1;
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Risk Check
+
+- Name the variables the function closes over.
+- Pick arrow or regular function based on this binding.
+- Keep callback side effects obvious and test the logic around them.
+
+<Callout type="senior">
+A good closure answer includes a real use case: event handlers, factories, memoization, or async callbacks that remember state.
+</Callout>
+
+<CodeChallenge
+  id="hoisting-temporal-dead-zone-check"
+  difficulty="foundation"
+  description="What happens when reading a let variable before its declaration runs?"
+  options={[
+    "undefined",
+    "ReferenceError",
+    "null",
+    "The previous value"
+  ]}
+  correctAnswer={1}
+  explanation="ReferenceError is the correct choice for this practical JavaScript scenario."
+/>

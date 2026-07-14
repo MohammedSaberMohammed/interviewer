@@ -1,10 +1,10 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { getAllTechSlugs, getAllPhases, getTechMeta } from '@/lib/content'
-import { PhaseRoadmap } from '@/components/phases/PhaseRoadmap'
-import { PhasesHeader } from '@/components/phases/PhasesHeader'
+import { PhaseCard } from '@/components/home/PhaseCard'
 import { Navbar } from '@/components/layout/Navbar'
 import { Footer } from '@/components/layout/Footer'
+import { PhasesHeader } from '@/components/phases/PhasesHeader'
 
 interface Props {
   params: Promise<{ techSlug: string }>
@@ -34,19 +34,13 @@ export default async function PhasesPage({ params }: Props) {
   return (
     <>
       <Navbar techSlug={techSlug} />
-      <main id="main-content" className="overflow-x-hidden">
-        {/* Ambient radial bg */}
-        <div
-          className="pointer-events-none fixed inset-0 -z-10 opacity-40"
-          style={{ background: 'radial-gradient(ellipse 60% 40% at 50% 0%, oklch(0.72 0.18 195 / 0.08) 0%, transparent 60%)' }}
-          aria-hidden
-        />
-
-        <div className="container mx-auto px-4 pt-12 pb-6 max-w-5xl">
-          <PhasesHeader techSlug={techSlug} totalLessons={totalLessons} techTitle={tech.title} />
+      <main id="main-content" className="container mx-auto px-4 py-10">
+        <PhasesHeader techSlug={techSlug} totalLessons={totalLessons} techTitle={tech.title} />
+        <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {phases.map((phase) => (
+            <PhaseCard key={phase.slug} phase={phase} techSlug={techSlug} />
+          ))}
         </div>
-
-        <PhaseRoadmap phases={phases} techSlug={techSlug} />
       </main>
       <Footer />
     </>

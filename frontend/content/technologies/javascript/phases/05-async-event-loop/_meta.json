@@ -1,0 +1,20 @@
+{
+    "slug":  "05-async-event-loop",
+    "number":  5,
+    "title":  "Async and the Event Loop",
+    "subtitle":  "Promises, async/await, scheduling, cancellation, and concurrency",
+    "level":  "mid",
+    "estimatedHours":  14,
+    "emoji":  "io",
+    "color":  "yellow",
+    "description":  "Learn the async knowledge that appears in nearly every JavaScript interview and every API-heavy application.",
+    "prerequisites":  [
+                          "Functions, Scope, and Closures"
+                      ],
+    "learningOutcomes":  [
+                             "Use promises and async/await safely",
+                             "Predict task and microtask ordering",
+                             "Run independent async work concurrently",
+                             "Cancel stale requests with AbortController"
+                         ]
+}

@@ -1,0 +1,52 @@
+---
+title: "Offline Cache and Service Worker Basics"
+slug: "offline-cache-service-worker-basics"
+order: 5
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "service workers", "cache", "offline"]
+summary: "Understand the service worker and Cache API basics behind offline-first and resilient web apps."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Understand the service worker and Cache API basics behind offline-first and resilient web apps. These flows combine user intent, server truth, transient failures, and data that may survive after the tab closes. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Ship This Shape
+
+```javascript
+self.addEventListener('fetch', (event) => {
+  event.respondWith(fetch(event.request));
+});
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Review Pass
+
+- Check response.ok instead of assuming fetch rejects on HTTP errors.
+- Keep request state explicit in the UI.
+- Store only values that are safe to expose to page scripts.
+
+<Callout type="senior">
+For forms and network work, describe both the happy path and what the user sees when it fails.
+</Callout>
+
+<CodeChallenge
+  id="offline-cache-service-worker-basics-check"
+  difficulty="advanced"
+  description="What can a service worker intercept?"
+  options={[
+    "Network requests for its scope",
+    "Private class fields",
+    "Database indexes only",
+    "Every OS process"
+  ]}
+  correctAnswer={0}
+  explanation="Network requests for its scope is the correct choice for this practical JavaScript scenario."
+/>

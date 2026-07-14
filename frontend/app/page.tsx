@@ -22,6 +22,10 @@ const TECH_COLOR_MAP: Record<string, { pill: string; glow: string }> = {
     pill: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 border-blue-200 dark:border-blue-800',
     glow: 'group-hover:shadow-[0_0_30px_oklch(0.55_0.22_264_/_0.20)]',
   },
+  yellow: {
+    pill: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
+    glow: 'group-hover:shadow-[0_0_30px_oklch(0.86_0.18_95_/_0.24)]',
+  },
 }
 
 const FEATURES = [
@@ -58,7 +62,7 @@ const FEATURES = [
   {
     icon: Users,
     title: 'Multi-Technology',
-    description: 'One cohesive platform. Master .NET and Angular today — with more technologies on the roadmap.',
+    description: 'One cohesive platform. Master .NET, Angular, and JavaScript today — with more technologies on the roadmap.',
     badge: 'Growing library',
   },
 ]
@@ -67,7 +71,7 @@ const SOCIAL_PROOF = [
   { value: '13', label: 'Structured phases' },
   { value: '200+', label: 'Lessons & challenges' },
   { value: '4', label: 'Seniority levels' },
-  { value: '2', label: 'Technologies' },
+  { value: '3', label: 'Technologies' },
 ]
 
 export default function HomePage() {
@@ -94,7 +98,7 @@ export default function HomePage() {
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
               </span>
-              Now with Angular support
+              Now with JavaScript support
             </div>
 
             <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold leading-[1.08] tracking-[-0.04em] mb-7">

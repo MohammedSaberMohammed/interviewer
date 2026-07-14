@@ -1,0 +1,53 @@
+---
+title: "Function Declarations vs Expressions"
+slug: "function-declarations-expressions"
+order: 3
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "functions", "declarations"]
+summary: "Choose declarations, expressions, and arrows based on hoisting, naming, stack traces, and this behavior."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Functions"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Why Teams Care
+
+Choose declarations, expressions, and arrows based on hoisting, naming, stack traces, and this behavior. Function behavior becomes visible when callbacks run later, methods are passed around, or a helper accidentally keeps old state alive. The useful answer is the one that predicts the next bug before it ships.
+
+## Code Shape
+
+```javascript
+run();
+function run() {
+  return 'available before this line';
+}
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Readiness Check
+
+- Name the variables the function closes over.
+- Pick arrow or regular function based on this binding.
+- Keep callback side effects obvious and test the logic around them.
+
+<Callout type="senior">
+A good closure answer includes a real use case: event handlers, factories, memoization, or async callbacks that remember state.
+</Callout>
+
+<CodeChallenge
+  id="function-declarations-expressions-check"
+  difficulty="foundation"
+  description="Which function form is fully callable before its declaration in the same scope?"
+  options={[
+    "Function declaration",
+    "const arrow function",
+    "Function expression assigned to let",
+    "Method shorthand outside an object"
+  ]}
+  correctAnswer={0}
+  explanation="Function declaration is the correct choice for this practical JavaScript scenario."
+/>

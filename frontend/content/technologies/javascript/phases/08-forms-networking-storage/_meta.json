@@ -1,0 +1,20 @@
+{
+    "slug":  "08-forms-networking-storage",
+    "number":  8,
+    "title":  "Forms, Networking, and Storage",
+    "subtitle":  "Fetch, validation, JSON, browser storage, and resilient request flows",
+    "level":  "mid",
+    "estimatedHours":  12,
+    "emoji":  "api",
+    "color":  "yellow",
+    "description":  "Handle data at the edges of the app: form input, request states, HTTP errors, JSON parsing, retries, aborts, and local persistence.",
+    "prerequisites":  [
+                          "Browser, DOM, and Web APIs"
+                      ],
+    "learningOutcomes":  [
+                             "Write safe fetch wrappers",
+                             "Handle loading, success, empty, and error states",
+                             "Validate user input before trusting it",
+                             "Choose cookies, localStorage, and sessionStorage appropriately"
+                         ]
+}

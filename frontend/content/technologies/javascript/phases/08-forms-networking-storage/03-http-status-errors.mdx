@@ -1,0 +1,51 @@
+---
+title: "HTTP Status and Error Mapping"
+slug: "http-status-errors"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "HTTP", "fetch", "errors"]
+summary: "Translate HTTP responses into useful user states and developer diagnostics."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## When You Reach For It
+
+Translate HTTP responses into useful user states and developer diagnostics. These flows combine user intent, server truth, transient failures, and data that may survive after the tab closes. Keep the explanation tied to behavior you can observe in a debugger, test, or production incident.
+
+## Concrete Pattern
+
+```javascript
+if (response.status === 401) redirectToLogin();
+if (!response.ok) throw new Error('Request failed');
+```
+
+Keep the implementation explicit enough that ownership, failure, and the next likely change are easy to see.
+
+## Trap To Avoid
+
+- Check response.ok instead of assuming fetch rejects on HTTP errors.
+- Keep request state explicit in the UI.
+- Store only values that are safe to expose to page scripts.
+
+<Callout type="senior">
+For forms and network work, describe both the happy path and what the user sees when it fails.
+</Callout>
+
+<CodeChallenge
+  id="http-status-errors-check"
+  difficulty="intermediate"
+  description="Which status usually means authentication is required or invalid?"
+  options={[
+    "200",
+    "301",
+    "401",
+    "500"
+  ]}
+  correctAnswer={2}
+  explanation="401 is the correct choice for this practical JavaScript scenario."
+/>

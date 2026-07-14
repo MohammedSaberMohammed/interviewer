@@ -1,0 +1,53 @@
+---
+title: "Event Phases and Defaults"
+slug: "event-phases-defaults"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "events", "capturing", "bubbling", "preventDefault"]
+summary: "Understand capturing, target, bubbling, preventDefault, and stopPropagation without breaking accessibility."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/Event_bubbling"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Where It Breaks
+
+Understand capturing, target, bubbling, preventDefault, and stopPropagation without breaking accessibility. The browser is a shared runtime for rendering, input, accessibility, storage, and network events. The useful answer is the one that predicts the next bug before it ships.
+
+## Ship This Shape
+
+```javascript
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  save(new FormData(form));
+});
+```
+
+Prefer the version a teammate can modify safely during an incident or late-stage review.
+
+## Review Pass
+
+- Use safe DOM sinks for untrusted text.
+- Prefer delegation for dynamic child elements.
+- Release observers, timers, and listeners when ownership ends.
+
+<Callout type="senior">
+Browser API answers should mention user impact: responsiveness, accessibility, memory, and security.
+</Callout>
+
+<CodeChallenge
+  id="event-phases-defaults-check"
+  difficulty="intermediate"
+  description="What does preventDefault do?"
+  options={[
+    "Stops the browser default action when cancelable",
+    "Stops all parent listeners always",
+    "Deletes the event target",
+    "Converts the event to a promise"
+  ]}
+  correctAnswer={0}
+  explanation="Stops the browser default action when cancelable is the correct choice for this practical JavaScript scenario."
+/>

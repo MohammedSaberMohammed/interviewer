@@ -1,0 +1,21 @@
+{
+    "slug":  "13-node-production-patterns",
+    "number":  13,
+    "title":  "Node.js and Production Patterns",
+    "subtitle":  "Runtime behavior, APIs, streams, environment config, logging, and resilient services",
+    "level":  "senior",
+    "estimatedHours":  15,
+    "emoji":  "node",
+    "color":  "yellow",
+    "description":  "Finish with server-side JavaScript patterns used in real teams: Node module behavior, async errors, process configuration, request handlers, streams, logging, and deployment readiness.",
+    "prerequisites":  [
+                          "Async and the Event Loop",
+                          "Error Handling and Debugging"
+                      ],
+    "learningOutcomes":  [
+                             "Handle async errors in Node services",
+                             "Use environment configuration safely",
+                             "Understand Node event loop implications",
+                             "Write production-ready request handlers"
+                         ]
+}

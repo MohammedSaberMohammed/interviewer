@@ -1,0 +1,51 @@
+---
+title: "Higher-Order Functions"
+slug: "higher-order-functions"
+order: 4
+difficulty: "foundation"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "higher-order functions", "callbacks"]
+summary: "Use functions that accept or return functions for filtering, retries, event handling, and small reusable policies."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Glossary/First-class_Function"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Failure Mode
+
+Use functions that accept or return functions for filtering, retries, event handling, and small reusable policies. Function behavior becomes visible when callbacks run later, methods are passed around, or a helper accidentally keeps old state alive. Use the concept to narrow the failure mode, not to recite trivia.
+
+## Working Pattern
+
+```javascript
+const byRole = (role) => (user) => user.role === role;
+users.filter(byRole('admin'));
+```
+
+Leave the code in a shape that is easy to test at the behavior boundary.
+
+## What To Verify
+
+- Name the variables the function closes over.
+- Pick arrow or regular function based on this binding.
+- Keep callback side effects obvious and test the logic around them.
+
+<Callout type="senior">
+A good closure answer includes a real use case: event handlers, factories, memoization, or async callbacks that remember state.
+</Callout>
+
+<CodeChallenge
+  id="higher-order-functions-check"
+  difficulty="foundation"
+  description="What makes a function higher-order?"
+  options={[
+    "It uses async",
+    "It accepts a function or returns a function",
+    "It is declared at the top of a file",
+    "It has more than one parameter"
+  ]}
+  correctAnswer={1}
+  explanation="It accepts a function or returns a function is the correct choice for this practical JavaScript scenario."
+/>

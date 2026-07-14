@@ -1,0 +1,51 @@
+---
+title: "Sorting, Grouping, and Pagination"
+slug: "sorting-grouping-pagination"
+order: 3
+difficulty: "intermediate"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "sorting", "grouping", "pagination"]
+summary: "Implement the everyday list operations behind dashboards, tables, and search results."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/sort"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Implement the everyday list operations behind dashboards, tables, and search results. List transformations sit behind search, reports, tables, permissions, and API joins, so clarity and complexity both matter. The practical test is whether another engineer can predict the behavior from the code shape.
+
+## Default Move
+
+```javascript
+const sorted = [...users].sort((a, b) => a.name.localeCompare(b.name));
+const page = sorted.slice(offset, offset + limit);
+```
+
+Choose names and structure that preserve the business rule, not just the shortest syntax.
+
+## Risk Check
+
+- Use map for shape changes, filter for removal, and reduce only when it stays readable.
+- Build lookup maps before joining large collections.
+- Copy arrays before mutating operations like sort.
+
+<Callout type="senior">
+The senior signal is choosing a structure that makes the next operation cheap and the current code readable.
+</Callout>
+
+<CodeChallenge
+  id="sorting-grouping-pagination-check"
+  difficulty="intermediate"
+  description="What is important about Array.prototype.sort?"
+  options={[
+    "It mutates the original array",
+    "It always sorts numerically",
+    "It returns a Promise",
+    "It ignores compare functions"
+  ]}
+  correctAnswer={0}
+  explanation="It mutates the original array is the correct choice for this practical JavaScript scenario."
+/>

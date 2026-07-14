@@ -1,0 +1,52 @@
+---
+title: "Streams and Backpressure"
+slug: "streams-backpressure"
+order: 4
+difficulty: "advanced"
+readingTime: 10
+status: "published"
+tags: ["JavaScript", "Node.js", "streams", "backpressure"]
+summary: "Use streams for large files and understand why backpressure protects memory."
+docsLinks:
+  - label: "Primary reference"
+    url: "https://nodejs.org/api/stream.html"
+---
+import { Callout, CodeChallenge } from '@/components/lesson'
+
+## Operational Context
+
+Use streams for large files and understand why backpressure protects memory. Server-side JavaScript has to survive concurrency, slow dependencies, deploy signals, and malformed input. Anchor the concept in the runtime effect: what changes, what waits, what mutates, or what becomes unsafe.
+
+## Default Move
+
+```javascript
+for await (const chunk of stream) {
+  processChunk(chunk);
+}
+```
+
+Write the code so the boundary is obvious: what comes in, what can fail, and what leaves the function.
+
+## Risk Check
+
+- Fail fast on missing configuration.
+- Add timeouts to outbound calls.
+- Shut down gracefully instead of dropping in-flight work.
+
+<Callout type="senior">
+Production Node answers should cover operations: logs, health, timeouts, shutdown, and event-loop safety.
+</Callout>
+
+<CodeChallenge
+  id="streams-backpressure-check"
+  difficulty="advanced"
+  description="What does backpressure help prevent?"
+  options={[
+    "Producers overwhelming consumers and memory",
+    "Syntax errors",
+    "CSS cascade issues",
+    "Package version ranges"
+  ]}
+  correctAnswer={0}
+  explanation="Producers overwhelming consumers and memory is the correct choice for this practical JavaScript scenario."
+/>
